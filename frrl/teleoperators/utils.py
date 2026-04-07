@@ -26,7 +26,10 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> Teleoperator:
     elif config.type == "keyboard_ee":
         from .keyboard.teleop_keyboard import KeyboardEndEffectorTeleop
         return KeyboardEndEffectorTeleop(config)
+    elif config.type == "spacemouse":
+        from .spacemouse import SpaceMouseTeleop
+        return SpaceMouseTeleop(config)
     else:
         raise ValueError(
-            f"不支持的遥操作类型 '{config.type}'。可用: keyboard, keyboard_ee"
+            f"不支持的遥操作类型 '{config.type}'。可用: keyboard, keyboard_ee, spacemouse"
         )

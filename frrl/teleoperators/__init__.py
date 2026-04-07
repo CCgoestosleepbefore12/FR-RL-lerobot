@@ -18,3 +18,4 @@ from .config import TeleoperatorConfig
 
 from .teleoperator import Teleoperator
 from .utils import TeleopEvents, make_teleoperator_from_config
+from .spacemouse.configuration_spacemouse import SpaceMouseConfig  # noqa: F401 — 触发注册
