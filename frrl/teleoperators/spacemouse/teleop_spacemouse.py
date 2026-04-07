@@ -30,6 +30,9 @@ class SpaceMouseTeleop(Teleoperator):
         self.config = config
         self._expert = None
         self._connected = False
+        self._last_action = np.zeros(7, dtype=np.float32)
+        self._last_buttons = [0, 0, 0, 0]
+        self._is_intervention = False
 
     # ================================================================
     # 抽象属性实现
@@ -78,55 +81,46 @@ class SpaceMouseTeleop(Teleoperator):
     def get_action(self) -> dict[str, Any]:
         """获取 SpaceMouse 当前动作。
 
-        Returns:
-            dict 包含：
-                - 7 个 action key（与 action_features 对齐）
-                - "is_intervention": bool，SpaceMouse 是否有有效输入
-                - "buttons": list[int]，原始按钮状态
+        返回格式与 InterventionActionProcessorStep 兼容：
+        np.ndarray 7D 动作（processor 会直接用 ndarray 分支处理）。
         """
         if not self._connected or self._expert is None:
             raise RuntimeError("SpaceMouse 未连接，请先调用 connect()")
 
-        raw_action, buttons = self._expert.get_action()
+        raw_action, self._last_buttons = self._expert.get_action()
         # raw_action: 6D [dx, dy, dz, rx, ry, rz]
 
-        # 按钮 → gripper 命令: button[0]=close(-1), button[1]=open(+1), 都没按=0
-        if len(buttons) >= 2:
-            if buttons[0]:
+        # 按钮 → gripper: button[0]=close(-1), button[1]=open(+1), 都没按=0
+        if len(self._last_buttons) >= 2:
+            if self._last_buttons[0]:
                 gripper = -1.0
-            elif buttons[1]:
+            elif self._last_buttons[1]:
                 gripper = 1.0
             else:
                 gripper = 0.0
         else:
             gripper = 0.0
 
-        # 7D 动作: [dx, dy, dz, rx, ry, rz, gripper]
-        action_7d = np.concatenate([raw_action[:6], [gripper]]).astype(np.float32)
-
-        # 干预判断：SpaceMouse 有有效输入（超过死区）或按了按钮
-        is_intervention = (
+        # 7D ndarray: [dx, dy, dz, rx, ry, rz, gripper]
+        # InterventionActionProcessorStep 的 isinstance(teleop_action, np.ndarray) 分支会直接使用
+        self._last_action = np.concatenate([raw_action[:6], [gripper]]).astype(np.float32)
+        self._is_intervention = (
             np.linalg.norm(raw_action[:6]) > self.config.action_threshold
-            or any(buttons)
+            or any(self._last_buttons)
         )
 
-        # 构建返回 dict
-        result = {
-            f"action_{i}": float(action_7d[i]) for i in range(7)
+        return self._last_action
+
+    def get_teleop_events(self) -> dict[str, Any]:
+        """返回遥操作事件，兼容 AddTeleopEventsAsInfoStep (HasTeleopEvents 协议)。"""
+        from frrl.teleoperators.utils import TeleopEvents
+
+        return {
+            TeleopEvents.IS_INTERVENTION: self._is_intervention,
+            TeleopEvents.TERMINATE_EPISODE: False,
+            TeleopEvents.SUCCESS: False,
+            TeleopEvents.RERECORD_EPISODE: False,
         }
-        result["is_intervention"] = is_intervention
-        result["buttons"] = buttons
-
-        return result
-
-    def get_teleop_action(self) -> tuple[np.ndarray, bool]:
-        """便捷方法：直接返回 7D 动作数组和干预标志。
-
-        用于 Actor 的 action_processor pipeline。
-        """
-        result = self.get_action()
-        action = np.array([result[f"action_{i}"] for i in range(7)], dtype=np.float32)
-        return action, result["is_intervention"]
 
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         pass  # SpaceMouse 无反馈通道
