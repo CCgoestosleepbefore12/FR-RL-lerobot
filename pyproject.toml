@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fr-rl-lerobot"
+version = "0.1.0"
+description = "FR-RL: Fault-Resilient RL for robot manipulation with HIL-SERL training"
+requires-python = ">=3.10"
+dependencies = [
+    "gymnasium>=0.28.0",
+    "mujoco>=3.0.0",
+    "numpy",
+    "torch",
+    "torchvision",
+    "einops",
+    "draccus",
+    "grpcio",
+    "grpcio-tools",
+    "protobuf",
+    "pynput",
+    "wandb",
+    "termcolor",
+    "tqdm",
+    "huggingface_hub",
+    "safetensors",
+]
+
+[tool.setuptools.packages.find]
+include = ["frrl*"]

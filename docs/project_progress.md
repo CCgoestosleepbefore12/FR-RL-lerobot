@@ -1,0 +1,369 @@
+# FR-RL 项目进度与实验记录
+
+## 一、项目概述
+
+**题目**: 基于人类介入强化学习的机器人关节故障在线自适应
+
+**一句话定位**: 当机器人存在未知编码器偏差时，通过带有人类引导的在线强化学习（RLPD + HIL），在不停机条件下恢复操作任务性能。
+
+**核心方法**: RLPD（SAC + offline demo buffer + online buffer）+ HIL（人类键盘干预）+ 编码器偏差注入
+
+---
+
+## 二、已完成的工作
+
+### 2.1 代码架构（已完成）
+
+统一的 `frrl` 包，合并了 lerobot HIL-SERL + MuJoCo 仿真环境：
+
+```
+frrl/
+├── envs/
+│   ├── base.py                    # FrankaGymEnv（统一基类 + OSC + 偏差注入）
+│   ├── panda_pick_cube_env.py     # PickCube 任务（主实验环境）
+│   ├── panda_pick_place_env.py    # PickPlace 任务
+│   ├── panda_arrange_boxes_env.py # ArrangeBoxes 任务
+│   └── wrappers/                  # EEAction + 键盘干预 + Viewer 等
+├── controllers/opspace.py         # 统一 OSC 控制器
+├── fault_injection.py             # 编码器偏差注入器
+├── rl/                            # Actor-Learner 训练框架
+├── policies/sac/                  # SAC 策略
+└── ...
+```
+
+### 2.2 编码器偏差注入模型（已完成）
+
+一个偏差源 → 三重影响：
+
+| 影响 | 仿真实现 | 代码位置 |
+|------|---------|---------|
+| ① 初始位置偏移 | `q_true = home - bias` | base.py reset_robot() |
+| ② 执行偏差（Jacobian偏） | 临时替换 qpos → OSC计算 → 恢复 | base.py apply_action() |
+| ③ 感知偏差（FK偏） | `qpos_measured = q_true + bias`, `tcp = biased_FK()` | base.py get_robot_state() |
+
+偏差类型：
+- 固定偏差（episode内不变）
+- 随机偏差（每episode从 U[0, 0.25] rad 采样）
+- 目标关节：Joint 4（肘关节）
+
+### 2.3 观测设计（已完成）
+
+24D 观测向量：
+
+| 维度 | 内容 | 来源 | 准确性 |
+|------|------|------|--------|
+| 0-6 | 关节角度 qpos | 编码器 | ❌ biased |
+| 7-13 | 关节速度 qvel | 编码器导数 | ✓ 正确 |
+| 14 | 夹爪位置 | 控制指令 | ✓ 正确 |
+| 15-17 | 末端位置 tcp | biased FK | ❌ biased |
+| 18-20 | 方块位置 block_pos | 外部传感器 | ✓ 正确 |
+| 21-23 | 真实末端 noisy_real_tcp | 外部定位+5mm噪声 | ✓ 大致正确 |
+
++ 双目图像（front 128×128 + wrist 128×128）→ ResNet10（冻结）→ 特征
+
+### 2.4 训练改进（已完成）
+
+- **Warmup 预训练**: 正式训练前在 offline demo 上预训练 500 步
+- **人类干预数据**: 所有干预 transition 额外加入 offline buffer
+- **Reward 修正**: sparse reward 使用 `_is_success()`（距离<5cm 且 举高>20cm）
+- **Buffer 保存**: 训练结束时保存 online/offline buffer（支持 resume）
+
+---
+
+## 三、实验结果
+
+### 3.1 Baseline: 无偏差策略（18D观测）
+
+| 指标 | 值 |
+|------|---|
+| 训练环境 | PandaPickCubeKeyboard-v0（无偏差） |
+| 观测维度 | 18D |
+| 训练步数 | ~13K actor steps |
+| 成功率 | **100%**（50/50 episodes） |
+| 平均步数 | 13.4 ± 0.6 |
+
+### 3.2 H1验证: 无偏差策略在偏差环境下的退化
+
+| 偏差(rad) | 成功率 | 平均步数 |
+|-----------|--------|---------|
+| 0.00 | 100% | 13.5 |
+| 0.05 | 100% | 13.5 |
+| 0.10 | 80% | 55.9 |
+| 0.15 | 62% | 62.5 |
+| 0.20 | 51% | 99.8 |
+| 0.25 | 5% | 184.5 |
+| 0.30 | 0% | 191.1 |
+
+**结论**: 偏差 >0.1 rad 开始显著影响，>0.25 rad 基本完全失败。
+
+### 3.3 固定偏差策略（24D观测，含 real_tcp）
+
+| 指标 | 值 |
+|------|---|
+| 训练环境 | PandaPickCubeBiasJ4Fixed02Keyboard-v0（固定0.2rad） |
+| 观测维度 | 24D（含 block_pos + noisy_real_tcp） |
+| 训练成功率 | 92% |
+
+**评估结果（偏差曲线）：**
+
+| 偏差(rad) | 无偏差策略 | 固定偏差策略 |
+|-----------|-----------|------------|
+| 0.00 | 100% | 83% |
+| 0.05 | 100% | 87% |
+| 0.10 | 80% | 99% |
+| 0.15 | 62% | 100% |
+| 0.20 | 51% | **100%** |
+| 0.25 | 5% | 100% |
+| 0.30 | 0% | 99% |
+
+**结论**: 策略学到了针对 0.2rad 的补偿，在训练偏差附近最优，但小偏差时过度补偿（83%）。
+
+### 3.4 随机偏差策略（24D观测，核心实验）
+
+| 指标 | 值 |
+|------|---|
+| 训练环境 | PandaPickCubeBiasJ4RandomKeyboard-v0（[0, 0.25]rad） |
+| 观测维度 | 24D |
+| 最佳checkpoint | 10K learner steps |
+| demo数量 | 50 episodes |
+
+**评估结果（10K checkpoint 偏差曲线）：**
+
+| 偏差(rad) | 无偏差策略 | 固定偏差策略 | **随机偏差策略** |
+|-----------|-----------|------------|----------------|
+| 0.00 | 100% | 83% | **92%** |
+| 0.05 | 100% | 87% | **100%** |
+| 0.10 | 80% | 99% | **99%** |
+| 0.15 | 62% | 100% | **96%** |
+| 0.20 | 51% | 100% | **97%** |
+| 0.25 | 5% | 100% | **96%** |
+| 0.30 | 0% | 99% | **99%** |
+
+**关键发现：**
+1. 随机偏差策略全范围 92-100%，是最均衡的
+2. 甚至泛化到训练范围外（0.3rad 99%成功）
+3. 无偏差时也能100%接近（92%），不像固定偏差策略过度补偿
+4. 证明 RLPD + 24D观测（含外部定位）能训练出对任意偏差鲁棒的策略
+
+### 3.5 关键失败实验记录
+
+| 实验 | 观测 | 结果 | 失败原因 |
+|------|------|------|---------|
+| 随机偏差 18D（无real_tcp） | 18D | 82%→42% 退化 | 单步观测无法区分不同bias |
+| 随机偏差 21D（+block_pos） | 21D | 前期靠人工,后期全失败 | 知道目标但不知道自己真实位置 |
+| 随机偏差 24D（数据丢弃bug） | 24D | 失败 | 干预数据99%被错误丢弃 |
+
+**教训**:
+- 18D/21D 失败证明了 noisy_real_tcp 是关键信息
+- 数据丢弃 bug 证明了 offline buffer 的重要性
+- 这些失败实验在论文中是有价值的 negative results
+
+---
+
+## 四、当前系统参数
+
+### 训练配置 (train_hil_sac_base.json)
+
+| 参数 | 值 |
+|------|---|
+| batch_size | 256 |
+| utd_ratio | 2 |
+| discount | 0.97 |
+| temperature_init | 0.01 |
+| critic_lr / actor_lr / temperature_lr | 3e-4 |
+| critic_target_update_weight | 0.005 |
+| num_critics | 2 |
+| num_discrete_actions | 3（夹爪：开/关/保持）|
+| online_buffer_capacity | 100,000 |
+| offline_buffer_capacity | 100,000 |
+| online_step_before_learning | 100 |
+| warmup_steps | 500 |
+| save_freq | 2,000 |
+| vision_encoder | ResNet10（冻结）|
+| state_encoder | Linear(24, 256) + LayerNorm + Tanh |
+| actor_network | [256, 256] |
+| critic_network | [256, 256] |
+
+### 环境配置
+
+| 参数 | 值 |
+|------|---|
+| 控制频率 | 10 Hz (control_dt=0.1s) |
+| 物理频率 | 500 Hz (physics_dt=0.002s) |
+| substeps | 50 |
+| max_episode_steps | 200 |
+| action空间 | 4D（3D xyz + 1D 离散夹爪）|
+| EE step size | 0.025 m/step |
+| 偏差范围 | [0, 0.25] rad（Joint 4）|
+| noisy_real_tcp 噪声 | σ=5mm |
+
+---
+
+## 五、可探索的改进方向
+
+### 5.1 观测改进
+
+**显式偏差信号（优先级：高，改动：小）**
+
+在 24D 观测上追加 `bias_signal = noisy_real_tcp - biased_tcp`（3D），变成 27D。
+直接告诉网络偏差方向和大小，不需要网络自己学减法。
+
+```python
+bias_signal = noisy_real_tcp - biased_tcp  # 显式偏差信号
+agent_pos = concat([robot_state(18), block_pos(3), noisy_real_tcp(3), bias_signal(3)])  # 27D
+```
+
+消融实验：有/无 bias_signal 的对比。
+
+### 5.2 超参数调优
+
+| 改动 | 当前值 | 建议值 | 理由 |
+|------|--------|--------|------|
+| utd_ratio | 2 | **4** | WSRL推荐，样本效率翻倍 |
+| num_critics | 2 | **10** | REDQ风格，Q估计更稳定 |
+| batch_size | 256 | **512** | 更大batch更稳定 |
+
+### 5.3 网络结构改进
+
+**State Encoder 加深（优先级：中）**
+
+```
+当前: Linear(24, 256) → LayerNorm → Tanh  (1层)
+改进: Linear(24, 256) → ReLU → Linear(256, 256) → LayerNorm → Tanh  (2层)
+```
+
+更深的 MLP 更容易学到 biased_tcp 和 real_tcp 之间的非线性关系。
+
+**Vision Encoder 升级（优先级：低，改动：大）**
+
+ResNet10 → DINOv2-Small。DINOv2 的自监督特征有更好的空间理解能力。
+需要修改 PretrainedImageEncoder 支持 ViT 架构（约半天工作量）。
+
+### 5.4 训练策略改进
+
+**课程学习（优先级：中）**
+
+```
+Phase 1 (0-5K steps):    偏差 [0, 0.10] rad  — 先学简单的
+Phase 2 (5K-15K steps):  偏差 [0, 0.20] rad  — 逐步增大
+Phase 3 (15K+ steps):    偏差 [0, 0.25] rad  — 全范围
+```
+
+防止一开始就被大偏差的失败数据淹没。
+
+**Offline 采样比例调整（优先级：中）**
+
+当前 50/50 混合。可以前期 80% offline + 20% online（防退化），后期逐步调回 50/50。
+
+### 5.5 算法层面改进
+
+**Bias Context Encoder / GRU（优先级：中，改动：大）**
+
+从最近 K 步的 (action, Δstate) 推断偏差上下文。
+但之前分析 relative motion 差异小，信号可能弱。
+参考 RMA (Kumar et al., RSS 2021)。
+
+需要和当前 24D（含 real_tcp）方案做对比：
+- 24D + real_tcp：需要外部定位系统
+- GRU context：不需要外部传感器，纯 proprioception
+- 两者适用场景不同
+
+**在线偏差估计器（优先级：中）**
+
+用物理模型（标称 Jacobian）+ 最小二乘法从几步交互数据中估计 bias 向量。
+确定性算法，可解释性强。估计的 bias 作为策略额外输入。
+
+### 5.6 多类型故障扩展
+
+| 故障类型 | 实现复杂度 | 描述 |
+|----------|-----------|------|
+| 编码器噪声 | 简单 | bias 上叠加高斯噪声 |
+| 关节卡死 | 中等 | 某关节力矩限幅/锁定 |
+| 执行器退化 | 简单 | 力矩输出乘衰减系数 |
+| 漂移偏差 | 中等 | bias 在 episode 内缓慢变化 |
+
+### 5.7 Sim-to-Real
+
+- Franka Panda 实机部署
+- 软件层注入编码器偏差（修改关节角度读数）
+- 外部相机获取方块位置和末端真实位置
+- 仿真训练策略 → 真机评估
+
+---
+
+## 六、论文框架
+
+### 核心假设
+
+```
+H1: 编码器偏差显著降低操作任务成功率             ✅ 已验证
+H2: 无偏差策略在随机偏差下失效                   ✅ 已验证
+H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
+    → 全范围鲁棒 (92-100%)
+```
+
+### 论文结构
+
+```
+第1章 Introduction
+第2章 Problem Formulation（POMDP + 偏差因果链）
+第3章 Method（偏差注入 + 24D观测设计 + RLPD + HIL）
+第4章 Experimental Setup
+第5章 Results（偏差曲线对比 + 消融实验）
+第6章 Discussion（局限性 + 未来方向）
+```
+
+### 核心贡献
+
+1. **编码器偏差的精确因果链建模**（一个故障→三重影响）
+2. **外部定位辅助的观测设计**（24D: biased state + real_tcp + block_pos）
+3. **RLPD + HIL 在随机偏差下的鲁棒训练框架**
+4. **仿真实验验证**（三种策略的偏差曲线对比）
+
+---
+
+## 七、待办事项
+
+### 优先级高
+- [ ] 加 bias_signal 显式偏差信号 + UTD=4 重新训练
+- [ ] 补充消融实验：有/无 block_pos、有/无 real_tcp、不同噪声水平
+- [ ] 整理所有实验数据画正式图表
+
+### 优先级中
+- [ ] 课程学习实验
+- [ ] State encoder 加深到2层
+- [ ] noisy_real_tcp 噪声消融（σ=1mm, 5mm, 1cm, 2cm）
+
+### 优先级低
+- [ ] GRU context encoder 实现
+- [ ] DINOv2 替换 ResNet10
+- [ ] 多关节偏差实验
+- [ ] 多故障类型扩展
+- [ ] 真机实验
+
+---
+
+## 八、关键文件路径
+
+| 文件 | 用途 |
+|------|------|
+| `frrl/envs/base.py` | 环境基类 + 偏差注入 |
+| `frrl/envs/panda_pick_cube_env.py` | PickCube 环境（24D观测）|
+| `frrl/rl/learner.py` | Learner（训练循环 + warmup）|
+| `frrl/rl/actor.py` | Actor（环境交互）|
+| `frrl/rl/env_factory.py` | 环境+处理器工厂 |
+| `frrl/policies/sac/modeling_sac.py` | SAC 网络结构 |
+| `configs/train_hil_sac_base.json` | 训练配置 |
+| `scripts/train_hil_sac.sh` | 训练启动脚本 |
+| `scripts/eval_policy.py` | 单环境评估 |
+| `scripts/eval_bias_curve.py` | 偏差曲线评估 |
+| `docs/data_flow.md` | 完整数据流文档 |
+| `docs/fault_simulation_design.md` | 仿真设计文档 |
+
+## 九、实验检查点（Checkpoints）
+
+| 实验 | 路径 | 最佳ckpt |
+|------|------|---------|
+| 无偏差baseline | outputs/train/2026-03-23/02-26-18_frrl_hil_sac_pick_cube/ | last |
+| 固定偏差0.2rad | outputs/train/2026-03-24/21-45-16_frrl_hil_sac_pick_cube_bias/ | last |
+| 随机偏差[0,0.25] | outputs/train/2026-03-25/19-26-27_frrl_hil_sac_pick_cube_bias_random/ | 010000 |

@@ -1,0 +1,29 @@
+name: lerobot
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - ffmpeg
+  - pip
+  - pip:
+      - mujoco==3.3.7
+      - gymnasium>=1.2.0
+      - numpy>=2.0
+      - scipy>=1.15
+      - torch>=2.7
+      - torchvision>=0.22
+      - pyyaml>=6.0
+      - pyyaml-include>=1.4
+      - wandb>=0.21
+      - opencv-python-headless>=4.10
+      - lerobot>=0.4
+      - imageio>=2.37
+      - imageio-ffmpeg>=0.6
+      - glfw>=2.10
+      - dm-control>=1.0
+      - diffusers>=0.35
+      - accelerate>=1.12
+      - safetensors>=0.7
+      - datasets>=4.0
+      - huggingface-hub>=0.35
+      - transformers>=4.50
