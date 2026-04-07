@@ -321,6 +321,19 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
     Returns:
         Tuple of (gym environment, teleoperator device).
     """
+    # Franka Panda 真机环境
+    if hasattr(cfg, 'franka_config') and cfg.franka_config is not None:
+        from frrl.envs.franka_real_env import FrankaRealEnv
+
+        env = FrankaRealEnv(config=cfg.franka_config)
+
+        teleop_device = None
+        if cfg.teleop is not None:
+            teleop_device = make_teleoperator_from_config(cfg.teleop)
+            teleop_device.connect()
+
+        return env, teleop_device
+
     # 仿真环境: robot为None时使用Gymnasium注册的环境
     if cfg.robot is None:
         import frrl.envs  # noqa: F401 — 触发gym_frrl/命名空间注册（包含forked gym_hil环境）
@@ -340,7 +353,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
 
         return env, teleop_device
 
-    # Real robot environment
+    # SO100 真机环境
     assert cfg.robot is not None, "Robot config must be provided for real robot environment"
     assert cfg.teleop is not None, "Teleop config must be provided for real robot environment"
 
@@ -384,6 +397,35 @@ def make_processors(
     terminate_on_success = (
         cfg.processor.reset.terminate_on_success if cfg.processor.reset is not None else True
     )
+
+    # Franka 真机：与仿真相同的 processor pipeline（观测格式已对齐）
+    if hasattr(cfg, 'franka_config') and cfg.franka_config is not None:
+        use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
+
+        action_pipeline_steps = []
+        if teleop_device is not None:
+            action_pipeline_steps.append(AddTeleopActionAsComplimentaryDataStep(teleop_device))
+            action_pipeline_steps.append(AddTeleopEventsAsInfoStep(teleop_device))
+            action_pipeline_steps.append(
+                InterventionActionProcessorStep(
+                    use_gripper=use_gripper,
+                    terminate_on_success=terminate_on_success,
+                ),
+            )
+        action_pipeline_steps.append(Torch2NumpyActionProcessorStep())
+
+        env_pipeline_steps = [
+            Numpy2TorchActionProcessorStep(),
+            VanillaObservationProcessorStep(),
+            AddBatchDimensionProcessorStep(),
+            DeviceProcessorStep(device=device),
+        ]
+
+        return DataProcessorPipeline(
+            steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
+        ), DataProcessorPipeline(
+            steps=action_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
+        )
 
     if cfg.robot is None:
         use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True

@@ -239,6 +239,9 @@ class HILSerlRobotEnvConfig(EnvConfig):
 
     name: str = "gym_frrl"
 
+    # Franka Panda 真机配置（非None时走真机环境）
+    franka_config: Any | None = None
+
     @property
     def package_name(self) -> str:
         return self.name
