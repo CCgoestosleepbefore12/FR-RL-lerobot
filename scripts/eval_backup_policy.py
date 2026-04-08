@@ -35,7 +35,7 @@ from frrl.configs.policies import PreTrainedConfig
 
 
 def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
-             survival_threshold: int, env_task: str):
+             survival_threshold: int, max_steps: int, env_task: str):
     # ── 加载策略 ──
     print(f"加载策略: {checkpoint_path}", flush=True)
     cfg = PreTrainedConfig.from_pretrained(checkpoint_path)
@@ -83,7 +83,6 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
     )
 
     # ── 评估 ──
-    max_steps = 200  # 连续运行上限（包含多次 10 步 episode 的 reset）
     results = []
 
     for ep in range(n_episodes):
@@ -212,8 +211,10 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", required=True, help="模型 checkpoint 路径")
     parser.add_argument("--n_episodes", type=int, default=50, help="评估 episode 数")
     parser.add_argument("--render", action="store_true", help="MuJoCo 可视化")
-    parser.add_argument("--survival_threshold", type=int, default=100,
-                        help="存活判定阈值（步数）")
+    parser.add_argument("--survival_threshold", type=int, default=10,
+                        help="存活判定阈值（步数，默认 10 = 完整 episode）")
+    parser.add_argument("--max_steps", type=int, default=10,
+                        help="每 episode 最大步数")
     parser.add_argument("--env_task", default="PandaBackupPolicyS1-v0",
                         choices=[
                             "PandaBackupPolicyS1-v0",
@@ -226,4 +227,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     evaluate(args.checkpoint, args.n_episodes, args.render,
-             args.survival_threshold, args.env_task)
+             args.survival_threshold, args.max_steps, args.env_task)
