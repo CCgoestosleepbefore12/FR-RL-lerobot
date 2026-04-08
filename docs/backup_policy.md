@@ -227,25 +227,27 @@ obs_pos = pos_history[-(1 + delay)]
 
 ## 9. 文件清单
 
-### 修改
+### 已完成（仿真侧）
 
 ```
-frrl/envs/panda_backup_policy_env.py
-  - 重构观测空间（48D → 28D/38D）
-  - 新增 4 种运动模式
-  - 新增位移惩罚 + 平滑惩罚
-  - 新增 DR 参数（噪声、延迟、速度随机）
-  - 记录 tcp_start 和 action_prev
+frrl/envs/panda_backup_policy_env.py          ✓ 已重构
+  - S1/S2 场景，28D/38D 观测
+  - 4 种运动模式（LINEAR/ARC/STOP_GO/PASSING）
+  - 位移 + 动作幅度 + 平滑惩罚
+  - DR：位置噪声、速度噪声、观测延迟
+  - 编码器偏差路径修复（使用 get_robot_state()）
 
-frrl/envs/__init__.py
-  - 更新 gym 注册（S1、S2 场景变体）
+frrl/envs/__init__.py                          ✓ 已更新
+  - S1/S2/NoDR/BiasJ1 共 6 个 gym 注册
 
-configs/train_hil_sac_backup.json
-  - observation.state.shape: [48] → [28]
-  - dataset_stats 更新匹配新观测范围
+configs/train_hil_sac_backup_s1.json           ✓ 已创建（28D 输入）
+configs/train_hil_sac_backup_s2.json           ✓ 已创建（38D 输入）
+scripts/eval_backup_policy.py                  ✓ 已更新（运动模式+奖励统计）
+scripts/check_backup_env.py                    ✓ 已更新（S1/S2 选择+DR 开关）
+scripts/train_hil_sac.sh                       ✓ 已更新（backup/backup_s2 分支）
 ```
 
-### 新增
+### 待实现（真机侧，需要硬件）
 
 ```
 frrl/vision/__init__.py
@@ -275,19 +277,33 @@ scripts/calibrate_camera.py
 ### 仿真验证
 
 ```bash
-# 1. S1 训练
-python -m frrl.rl.train --config configs/train_hil_sac_backup_s1.json
+# 1. S1 训练（两个终端）
+# 终端 1:
+bash scripts/train_hil_sac.sh backup learner
+# 终端 2:
+bash scripts/train_hil_sac.sh backup actor
 
 # 2. S1 评估（200 步存活率 > 90%）
 python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
     --n_episodes 100 --env_task PandaBackupPolicyS1-v0
 
-# 3. S2 训练
-python -m frrl.rl.train --config configs/train_hil_sac_backup_s2.json
+# 3. 无 DR 对比（测试 DR 带来的鲁棒性提升）
+python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
+    --env_task PandaBackupPolicyS1NoDR-v0
 
-# 4. S2 评估
+# 4. S2 训练
+# 终端 1:
+bash scripts/train_hil_sac.sh backup_s2 learner
+# 终端 2:
+bash scripts/train_hil_sac.sh backup_s2 actor
+
+# 5. S2 评估
 python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
     --n_episodes 100 --env_task PandaBackupPolicyS2-v0
+
+# 6. 可视化环境（调试用）
+python scripts/check_backup_env.py --num_obstacles 1
+python scripts/check_backup_env.py --num_obstacles 2 --no_dr
 ```
 
 ### 真机验证（RT PC 就绪后）
