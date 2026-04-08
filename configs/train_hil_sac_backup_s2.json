@@ -41,7 +41,7 @@
         "state_encoder_hidden_dim": 256,
         "latent_dim": 256,
         "num_discrete_actions": 3,
-        "online_steps": 200000,
+        "online_steps": 50000,
         "online_buffer_capacity": 200000,
         "offline_buffer_capacity": 0,
         "online_step_before_learning": 100,
