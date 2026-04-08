@@ -85,10 +85,16 @@ case "$VARIANT" in
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_hil_sac_safe_bias"
         ;;
     backup)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup.json"
-        echo "=== Backup Policy: 避障训练 ==="
-        TASK_ID="PandaBackupPolicyKeyboard-v0"
-        EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_hil_sac_backup"
+        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1.json"
+        echo "=== Backup Policy S1: 单障碍物避障训练 ==="
+        TASK_ID="PandaBackupPolicyS1-v0"
+        EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1"
+        ;;
+    backup_s2)
+        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s2.json"
+        echo "=== Backup Policy S2: 移动+静止障碍物避障训练 ==="
+        TASK_ID="PandaBackupPolicyS2-v0"
+        EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s2"
         ;;
     custom)
         TASK_ID="${3:?请指定环境ID，例如: FRRLPandaPickPlaceKeyboard-v0}"
@@ -97,7 +103,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "未知任务: $VARIANT"
-        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, custom"
+        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, custom"
         exit 1
         ;;
 esac
@@ -126,7 +132,7 @@ case "$ROLE" in
                 RECORD_CONFIG="$PROJECT_DIR/configs/record_demo_safe_bias.json"
                 DEMO_CACHE="$HOME/.cache/huggingface/lerobot/frrl/pick_place_safe_bias_demo"
                 ;;
-            backup)
+            backup|backup_s2)
                 RECORD_CONFIG="$PROJECT_DIR/configs/record_demo_backup.json"
                 DEMO_CACHE="$HOME/.cache/huggingface/lerobot/frrl/backup_policy_demo"
                 ;;

@@ -1,24 +1,42 @@
 """
 Backup Policy 评估脚本
 
-统计指标：存活率（存活>100步的比例）、平均存活步数、平均最近距离
+评估指标：
+  - 存活率：连续存活步数超过阈值的 episode 比例
+  - 碰撞率：各终止原因的分布
+  - 最近距离：episode 中 TCP 与障碍物的最小距离
+  - 累计奖励：反映位移 + 动作平滑的综合表现
+  - 运动模式分布：4 种运动模式下的存活率对比
 
 用法:
-  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --n_episodes 50
-  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --n_episodes 10 --render
+  # S1 评估
+  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model
+
+  # S2 评估
+  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS2-v0
+
+  # 可视化
+  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --render --n_episodes 10
+
+  # 无 DR 对比（测试策略在精确观测下的表现）
+  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS1NoDR-v0
 """
 
 import argparse
+from collections import defaultdict
+
 import numpy as np
 import torch
-import frrl.envs  # noqa: F401
-import frrl.policies.sac.configuration_sac  # noqa: F401
 import gymnasium as gym
+
+import frrl.envs  # noqa: F401 — 触发 gym 注册
+import frrl.policies.sac.configuration_sac  # noqa: F401 — 触发策略注册
 from frrl.configs.policies import PreTrainedConfig
 
 
-def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_threshold: int = 100, env_task: str = "PandaBackupPolicyS1-v0"):
-    # 加载策略
+def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
+             survival_threshold: int, env_task: str):
+    # ── 加载策略 ──
     print(f"加载策略: {checkpoint_path}", flush=True)
     cfg = PreTrainedConfig.from_pretrained(checkpoint_path)
     cfg.pretrained_path = checkpoint_path
@@ -31,17 +49,17 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_thres
     policy.to(device)
     print(f"策略加载完成, device={device}", flush=True)
 
-    # 创建环境
+    # ── 创建环境 ──
     env = gym.make(f"gym_frrl/{env_task}", image_obs=False)
     print(f"环境: {env_task}", flush=True)
 
-    # 可视化
+    # ── 可视化 ──
     viewer = None
     if render:
         import mujoco.viewer
         viewer = mujoco.viewer.launch_passive(env.unwrapped._model, env.unwrapped._data)
 
-    # 观测处理
+    # ── 观测 processor ──
     from frrl.processor import (
         Numpy2TorchActionProcessorStep,
         VanillaObservationProcessorStep,
@@ -64,17 +82,20 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_thres
         to_output=identity_transition,
     )
 
-    # 评估
+    # ── 评估 ──
+    max_steps = 200  # 连续运行上限（包含多次 10 步 episode 的 reset）
     results = []
+
     for ep in range(n_episodes):
         obs, info = env.reset()
         env_processor.reset()
         transition = env_processor(create_transition(obs))
 
-        done = False
         step = 0
-        max_steps = 200
-        min_hand_dist = float('inf')
+        episode_reward = 0.0
+        min_hand_dist = float("inf")
+        motion_mode = "unknown"
+        done = False
 
         while not done and step < max_steps:
             observation = {
@@ -85,14 +106,15 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_thres
                 action = policy.select_action(batch=observation)
 
             action_np = action.squeeze(0).cpu().numpy()
-
-            # Backup 环境期望 6D 动作，但经过 processor 后可能维度不同
             obs, reward, terminated, truncated, info = env.step(action_np)
             done = terminated or truncated
             step += 1
+            episode_reward += reward
 
-            if 'min_hand_dist' in info:
-                min_hand_dist = min(min_hand_dist, info['min_hand_dist'])
+            if "min_hand_dist" in info:
+                min_hand_dist = min(min_hand_dist, info["min_hand_dist"])
+            if "motion_mode" in info:
+                motion_mode = info["motion_mode"]
 
             if render and viewer is not None:
                 viewer.sync()
@@ -102,58 +124,100 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_thres
             if not done:
                 transition = env_processor(create_transition(obs))
 
-        violation = info.get('violation_type', 'survived' if step >= max_steps else 'unknown')
+        violation = info.get("violation_type", None)
+        if violation is None:
+            violation = "survived" if step >= max_steps else "truncated"
+
         survived = step >= survival_threshold
         results.append({
-            'steps': step,
-            'survived': survived,
-            'min_hand_dist': min_hand_dist,
-            'violation': violation,
-            'displacement': info.get('displacement', 0),
+            "steps": step,
+            "survived": survived,
+            "min_hand_dist": min_hand_dist,
+            "violation": violation,
+            "reward": episode_reward,
+            "motion_mode": motion_mode,
         })
 
-        status = "ALIVE" if step >= max_steps else f"DEAD({violation})"
-        print(f"  EP {ep+1:3d}/{n_episodes}: steps={step:3d} {status} "
-              f"min_dist={min_hand_dist:.3f} disp={info.get('displacement',0):.3f}", flush=True)
+        status = "ALIVE" if step >= max_steps else (
+            f"TRUNC" if violation == "truncated" else f"DEAD({violation})"
+        )
+        dist_str = f"{min_hand_dist:.3f}" if min_hand_dist < float("inf") else "N/A"
+        print(f"  EP {ep+1:3d}/{n_episodes}: steps={step:3d} {status:20s} "
+              f"reward={episode_reward:+.3f} min_dist={dist_str} mode={motion_mode}",
+              flush=True)
 
     if render and viewer is not None:
         viewer.close()
     env.close()
 
-    # 统计
-    steps_list = [r['steps'] for r in results]
-    survival_count = sum(1 for r in results if r['survived'])
-    full_survival = sum(1 for r in results if r['steps'] >= max_steps)
-    dist_list = [r['min_hand_dist'] for r in results if r['min_hand_dist'] < float('inf')]
+    # ── 汇总统计 ──
+    steps_arr = np.array([r["steps"] for r in results])
+    reward_arr = np.array([r["reward"] for r in results])
+    survival_count = sum(1 for r in results if r["survived"])
+    full_survival = sum(1 for r in results if r["steps"] >= max_steps)
+    dist_list = [r["min_hand_dist"] for r in results if r["min_hand_dist"] < float("inf")]
 
-    # 终止原因统计
-    violations = {}
+    # 终止原因
+    violations = defaultdict(int)
     for r in results:
-        v = r['violation']
-        violations[v] = violations.get(v, 0) + 1
+        violations[r["violation"]] += 1
 
-    print(f"\n{'='*60}", flush=True)
-    print(f"Backup Policy 评估结果", flush=True)
-    print(f"{'='*60}", flush=True)
-    print(f"总 episodes: {n_episodes}", flush=True)
-    print(f"存活率 (>={survival_threshold}步): {survival_count}/{n_episodes} ({survival_count/n_episodes*100:.1f}%)", flush=True)
-    print(f"满存活 (200步): {full_survival}/{n_episodes} ({full_survival/n_episodes*100:.1f}%)", flush=True)
-    print(f"平均存活步数: {np.mean(steps_list):.1f} ± {np.std(steps_list):.1f}", flush=True)
+    # 运动模式统计
+    mode_stats = defaultdict(lambda: {"total": 0, "survived": 0, "reward": []})
+    for r in results:
+        m = r["motion_mode"]
+        mode_stats[m]["total"] += 1
+        if r["survived"]:
+            mode_stats[m]["survived"] += 1
+        mode_stats[m]["reward"].append(r["reward"])
+
+    print(f"\n{'='*65}", flush=True)
+    print(f" Backup Policy 评估结果", flush=True)
+    print(f"{'='*65}", flush=True)
+    print(f" 环境: {env_task}", flush=True)
+    print(f" 总 episodes: {n_episodes}", flush=True)
+    print(f" 存活率 (>={survival_threshold}步): "
+          f"{survival_count}/{n_episodes} ({survival_count/n_episodes*100:.1f}%)", flush=True)
+    print(f" 满存活 ({max_steps}步): "
+          f"{full_survival}/{n_episodes} ({full_survival/n_episodes*100:.1f}%)", flush=True)
+    print(f" 平均存活步数: {np.mean(steps_arr):.1f} ± {np.std(steps_arr):.1f}", flush=True)
+    print(f" 平均累计奖励: {np.mean(reward_arr):.3f} ± {np.std(reward_arr):.3f}", flush=True)
     if dist_list:
-        print(f"平均最近距离: {np.mean(dist_list):.3f}m", flush=True)
-    print(f"\n终止原因:", flush=True)
+        print(f" 平均最近距离: {np.mean(dist_list):.3f}m", flush=True)
+
+    print(f"\n 终止原因:", flush=True)
     for v, count in sorted(violations.items(), key=lambda x: -x[1]):
-        print(f"  {v}: {count} ({count/n_episodes*100:.1f}%)", flush=True)
-    print(f"{'='*60}", flush=True)
+        print(f"   {v:20s}: {count:3d} ({count/n_episodes*100:.1f}%)", flush=True)
+
+    print(f"\n 运动模式分析:", flush=True)
+    print(f"   {'模式':<12s} {'数量':>4s} {'存活率':>8s} {'平均奖励':>10s}", flush=True)
+    print(f"   {'-'*38}", flush=True)
+    for mode in sorted(mode_stats.keys()):
+        s = mode_stats[mode]
+        rate = s["survived"] / s["total"] * 100 if s["total"] > 0 else 0
+        avg_r = np.mean(s["reward"]) if s["reward"] else 0
+        print(f"   {mode:<12s} {s['total']:4d} {rate:7.1f}% {avg_r:+10.3f}", flush=True)
+
+    print(f"{'='*65}", flush=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--n_episodes", type=int, default=50)
-    parser.add_argument("--render", action="store_true")
-    parser.add_argument("--survival_threshold", type=int, default=100)
-    parser.add_argument("--env_task", default="PandaBackupPolicyS1-v0")
+    parser = argparse.ArgumentParser(description="Backup Policy 评估")
+    parser.add_argument("--checkpoint", required=True, help="模型 checkpoint 路径")
+    parser.add_argument("--n_episodes", type=int, default=50, help="评估 episode 数")
+    parser.add_argument("--render", action="store_true", help="MuJoCo 可视化")
+    parser.add_argument("--survival_threshold", type=int, default=100,
+                        help="存活判定阈值（步数）")
+    parser.add_argument("--env_task", default="PandaBackupPolicyS1-v0",
+                        choices=[
+                            "PandaBackupPolicyS1-v0",
+                            "PandaBackupPolicyS2-v0",
+                            "PandaBackupPolicyS1NoDR-v0",
+                            "PandaBackupPolicyS1BiasJ1-v0",
+                            "PandaBackupPolicyS2BiasJ1-v0",
+                        ],
+                        help="评估环境 ID")
     args = parser.parse_args()
 
-    evaluate(args.checkpoint, args.n_episodes, args.render, args.survival_threshold, args.env_task)
+    evaluate(args.checkpoint, args.n_episodes, args.render,
+             args.survival_threshold, args.env_task)
