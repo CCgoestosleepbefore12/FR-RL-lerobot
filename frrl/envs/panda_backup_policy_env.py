@@ -46,7 +46,7 @@ from frrl.envs.panda_pick_place_safe_env import (
     ZONE_C_MIN_Y,
     _CARTESIAN_BOUNDS,
 )
-from frrl.envs.base import GymRenderingSpec, MAX_GRIPPER_COMMAND
+from frrl.envs.base import GymRenderingSpec
 from frrl.fault_injection import EncoderBiasConfig
 
 # ── 常量 ──────────────────────────────────────────────────
@@ -347,7 +347,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         for _ in range(5):
             self.apply_action(zero_action)
 
-        self._data.ctrl[self._gripper_ctrl_id] = MAX_GRIPPER_COMMAND
+        self._data.ctrl[self._gripper_ctrl_id] = 0  # Franka Hand: 0=关闭, MAX=全开
         for _ in range(5):
             self.apply_action(zero_action)
 
