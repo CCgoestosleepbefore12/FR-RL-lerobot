@@ -85,6 +85,7 @@ DR_OBS_VEL_STD = 0.01       # 障碍物速度噪声 σ=1cm/s
 DR_TCP_POS_STD = 0.005      # TCP 位置噪声 σ=5mm
 DR_DELAY_MAX = 2            # 最大观测延迟步数
 DR_POS_HISTORY_LEN = 5      # 位置历史缓冲区长度
+OBS_STACK_SIZE = 3           # 帧堆叠数量（1=无堆叠）
 
 
 class MotionMode(Enum):
@@ -113,10 +114,12 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         image_obs: bool = False,
         num_obstacles: int = 1,
         enable_dr: bool = True,
+        obs_stack: int = OBS_STACK_SIZE,
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
     ):
         self._num_obstacles = min(num_obstacles, 2)
         self._enable_dr = enable_dr
+        self._obs_stack = max(obs_stack, 1)
 
         super().__init__(
             seed=seed,
@@ -156,8 +159,12 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._tcp_start = np.zeros(3)
         self._action_prev = np.zeros(6, dtype=np.float32)
 
-        # 观测空间: robot(18) + num_obstacles × obstacle(10)
-        agent_dim = 18 + self._num_obstacles * 10
+        # 帧堆叠：维护最近 N 帧单帧观测
+        self._single_obs_dim = 18 + self._num_obstacles * 10
+        self._obs_history: deque = deque(maxlen=self._obs_stack)
+
+        # 观测空间: single_obs_dim × obs_stack
+        agent_dim = self._single_obs_dim * self._obs_stack
         agent_box = spaces.Box(-np.inf, np.inf, (agent_dim,), dtype=np.float32)
         self.observation_space = spaces.Dict(
             {"pixels": spaces.Dict({
@@ -186,6 +193,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             self._pos_histories[i].append(HIDDEN_POS.copy())
         self._tcp_start = np.zeros(3)
         self._action_prev = np.zeros(6, dtype=np.float32)
+        self._obs_history.clear()
 
         super().reset(seed=seed)
 
@@ -475,7 +483,16 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             ]).astype(np.float32)                               # shape: (10,)
             obstacle_obs.append(obs_i)
 
-        agent_pos = np.concatenate([robot_state, *obstacle_obs])  # shape: (28,) or (38,)
+        single_obs = np.concatenate([robot_state, *obstacle_obs])  # shape: (28,) or (38,)
+
+        # 帧堆叠
+        self._obs_history.append(single_obs)
+        if len(self._obs_history) < self._obs_stack:
+            # 前几步不够 N 帧，用当前帧零填充
+            padding = [np.zeros_like(single_obs)] * (self._obs_stack - len(self._obs_history))
+            agent_pos = np.concatenate([*padding, *self._obs_history])
+        else:
+            agent_pos = np.concatenate(list(self._obs_history))
 
         if self.image_obs:
             front_view, wrist_view = self.render()
