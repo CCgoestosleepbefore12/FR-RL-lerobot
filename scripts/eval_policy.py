@@ -36,9 +36,7 @@ def evaluate(checkpoint_path: str, env_task: str, n_episodes: int, render: bool)
     policy.to(device)
     print(f"策略加载完成, device={device}", flush=True)
 
-    # 创建环境
-    # 用Base-v0创建裸环境，然后手动加EEActionWrapper（不加键盘干预）
-    # 这样策略输出4D，EEActionWrapper转成7D给env
+    # 创建环境（裸环境 + wrapper，不加键盘干预）
     render_mode = "human" if render else "rgb_array"
     base_env = gym.make(f"gym_frrl/{env_task}", image_obs=True, render_mode=render_mode)
 
