@@ -17,7 +17,7 @@ import gymnasium as gym
 from frrl.configs.policies import PreTrainedConfig
 
 
-def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_threshold: int = 100, env_task: str = "PandaBackupPolicyBase-v0"):
+def evaluate(checkpoint_path: str, n_episodes: int, render: bool, survival_threshold: int = 100, env_task: str = "PandaBackupPolicyS1-v0"):
     # 加载策略
     print(f"加载策略: {checkpoint_path}", flush=True)
     cfg = PreTrainedConfig.from_pretrained(checkpoint_path)
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_episodes", type=int, default=50)
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--survival_threshold", type=int, default=100)
-    parser.add_argument("--env_task", default="PandaBackupPolicyBase-v0")
+    parser.add_argument("--env_task", default="PandaBackupPolicyS1-v0")
     args = parser.parse_args()
 
     evaluate(args.checkpoint, args.n_episodes, args.render, args.survival_threshold, args.env_task)

@@ -279,10 +279,28 @@ register(
 # Backup Policy 训练环境
 # ============================================================
 
+# S1: 单个移动障碍物（28D 观测）
 register(
-    id="gym_frrl/PandaBackupPolicyBase-v0",
+    id="gym_frrl/PandaBackupPolicyS1-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=10,
+    kwargs={"num_obstacles": 1},
+)
+
+# S1 无 DR（用于对比实验）
+register(
+    id="gym_frrl/PandaBackupPolicyS1NoDR-v0",
+    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=10,
+    kwargs={"num_obstacles": 1, "enable_dr": False},
+)
+
+# S2: 1 移动 + 1 静止障碍物（38D 观测）
+register(
+    id="gym_frrl/PandaBackupPolicyS2-v0",
+    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=10,
+    kwargs={"num_obstacles": 2},
 )
 
 _BIAS_J1_CONFIG = EncoderBiasConfig(
@@ -293,75 +311,29 @@ _BIAS_J1_CONFIG = EncoderBiasConfig(
     bias_range=[-0.15, 0.15],
 )
 
+# S1 + 编码器偏差
 register(
-    id="gym_frrl/PandaBackupPolicyBiasJ1-v0",
+    id="gym_frrl/PandaBackupPolicyS1BiasJ1-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=10,
-    kwargs={"encoder_bias_config": _BIAS_J1_CONFIG},
+    kwargs={"num_obstacles": 1, "encoder_bias_config": _BIAS_J1_CONFIG},
 )
 
+# S2 + 编码器偏差
 register(
-    id="gym_frrl/PandaBackupPolicyFixed2BiasJ1-v0",
+    id="gym_frrl/PandaBackupPolicyS2BiasJ1-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=10,
-    kwargs={"max_obstacles": 2, "fixed_obstacles": True, "encoder_bias_config": _BIAS_J1_CONFIG},
+    kwargs={"num_obstacles": 2, "encoder_bias_config": _BIAS_J1_CONFIG},
 )
 
-register(
-    id="gym_frrl/PandaBackupPolicyFixed3BiasJ1-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 3, "fixed_obstacles": True, "encoder_bias_config": _BIAS_J1_CONFIG},
-)
-
-register(
-    id="gym_frrl/PandaBackupPolicyMulti2-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 2},
-)
-
-register(
-    id="gym_frrl/PandaBackupPolicyMulti3-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 3},
-)
-
-register(
-    id="gym_frrl/PandaBackupPolicyFixed2-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 2, "fixed_obstacles": True},
-)
-
-register(
-    id="gym_frrl/PandaBackupPolicyMulti3Prox-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 3, "use_proximity_reward": True},
-)
-
-register(
-    id="gym_frrl/PandaBackupPolicyFixed3Prox-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 3, "fixed_obstacles": True, "use_proximity_reward": True},
-)
-
-register(
-    id="gym_frrl/PandaBackupPolicyFixed3-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
-    kwargs={"max_obstacles": 3, "fixed_obstacles": True},
-)
-
+# 键盘可视化调试（基于 S1）
 register(
     id="gym_frrl/PandaBackupPolicyKeyboard-v0",
     entry_point="frrl.envs.wrappers.factory:make_env",
     max_episode_steps=200,
     kwargs={
-        "env_id": "gym_frrl/PandaBackupPolicyBase-v0",
+        "env_id": "gym_frrl/PandaBackupPolicyS1-v0",
         "use_viewer": True,
         "gripper_penalty": 0.0,
         "use_inputs_control": True,
