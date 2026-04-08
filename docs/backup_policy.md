@@ -217,7 +217,7 @@ obs_pos = pos_history[-(1 + delay)]
 | online_steps | 50,000 |
 | online_buffer_capacity | 200,000 |
 | online_step_before_learning | 1,000 |
-| discount | 0.99 |
+| discount | 1.0 |
 | temperature_init | 0.1 |
 | critic_lr | 3e-4 |
 | actor_lr | 3e-4 |

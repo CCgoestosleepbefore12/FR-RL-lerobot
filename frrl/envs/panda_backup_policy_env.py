@@ -16,9 +16,11 @@ Backup Policy 训练环境
   STOP_GO  — 朝 TCP 但随机停顿
   PASSING  — 横穿工作空间，不朝 TCP
 
-奖励：
-  终止: collision / block_drop / zone_c → -1.0
-  存活: -0.5 * ||tcp - tcp_start|| - 0.01 * ||action|| - 0.01 * ||action - action_prev||
+奖励（参考 Kiemel et al. 2024，每步奖励非负）：
+  终止: collision / block_drop / zone_c / displacement>15cm → -10.0
+  存活每步: +0.5 - 0.5*位移 - 0.01*动作幅度 - 0.01*动作变化
+  存活完整 episode: +5.0 bonus
+  discount = 1.0
 
 Domain Randomization（仅观测层，不影响碰撞检测）：
   障碍物位置噪声 N(0, 0.03)   ← MediaPipe + D455 精度

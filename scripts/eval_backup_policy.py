@@ -129,10 +129,12 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
             violation = "survived" if step >= max_steps else "truncated"
 
         survived = step >= survival_threshold
+        final_displacement = info.get("displacement", 0.0)
         results.append({
             "steps": step,
             "survived": survived,
             "min_hand_dist": min_hand_dist,
+            "displacement": final_displacement,
             "violation": violation,
             "reward": episode_reward,
             "motion_mode": motion_mode,
@@ -143,7 +145,8 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
         )
         dist_str = f"{min_hand_dist:.3f}" if min_hand_dist < float("inf") else "N/A"
         print(f"  EP {ep+1:3d}/{n_episodes}: steps={step:3d} {status:20s} "
-              f"reward={episode_reward:+.3f} min_dist={dist_str} mode={motion_mode}",
+              f"reward={episode_reward:+.3f} min_dist={dist_str} "
+              f"disp={final_displacement:.3f} mode={motion_mode}",
               flush=True)
 
     if render and viewer is not None:
@@ -156,6 +159,7 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
     survival_count = sum(1 for r in results if r["survived"])
     full_survival = sum(1 for r in results if r["steps"] >= max_steps)
     dist_list = [r["min_hand_dist"] for r in results if r["min_hand_dist"] < float("inf")]
+    disp_list = [r["displacement"] for r in results]
 
     # 终止原因
     violations = defaultdict(int)
@@ -184,6 +188,8 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
     print(f" 平均累计奖励: {np.mean(reward_arr):.3f} ± {np.std(reward_arr):.3f}", flush=True)
     if dist_list:
         print(f" 平均最近距离: {np.mean(dist_list):.3f}m", flush=True)
+    if disp_list:
+        print(f" 平均终止位移: {np.mean(disp_list):.3f}m ± {np.std(disp_list):.3f}", flush=True)
 
     print(f"\n 终止原因:", flush=True)
     for v, count in sorted(violations.items(), key=lambda x: -x[1]):
