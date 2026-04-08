@@ -56,7 +56,7 @@ ACTION_SCALE = 0.03
 
 # 障碍物生成
 HAND_SPAWN_DIST = (0.12, 0.25)       # 距 TCP 生成距离
-HAND_SPEED_RANGE = (0.008, 0.025)     # 速度范围 m/step
+HAND_SPEED_RANGE = (0.005, 0.015)     # 速度范围 m/step（降速给策略更多反应时间）
 HIDDEN_POS = np.array([0.4, 0.5, 0.05])
 
 HAND_BODY_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
