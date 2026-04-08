@@ -37,8 +37,10 @@ class GripperPenaltyWrapper(gym.Wrapper):
         observation, reward, terminated, truncated, info = self.env.step(action)
 
         info["discrete_penalty"] = 0.0
-        if (action[-1] < -0.5 and self.last_gripper_pos > 0.9) or (
-            action[-1] > 0.5 and self.last_gripper_pos < 0.1
+        # Franka Hand: gripper_pos 0=关闭, 1=打开
+        # 惩罚无效操作：已经关了还关 / 已经开了还开
+        if (action[-1] < -0.5 and self.last_gripper_pos < 0.1) or (
+            action[-1] > 0.5 and self.last_gripper_pos > 0.9
         ):
             info["discrete_penalty"] = self.penalty
 

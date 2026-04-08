@@ -318,7 +318,7 @@ class FrankaGymEnv(MujocoGymEnv):
         return np.concatenate([qpos_measured, qvel, gripper_pose, tcp_pos])
 
     def get_gripper_pose(self) -> np.ndarray:
-        """夹爪开度，归一化到 [0, 1]。0=全开，1=全闭。"""
+        """夹爪开度，归一化到 [0, 1]。Franka Hand: 0=关闭，1=全开。"""
         return np.array([self._data.ctrl[self._gripper_ctrl_id] / MAX_GRIPPER_COMMAND], dtype=np.float32)
 
     def _get_tcp_pos(self) -> np.ndarray:
