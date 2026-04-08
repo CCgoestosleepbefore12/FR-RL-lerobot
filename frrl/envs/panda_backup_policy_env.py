@@ -7,8 +7,8 @@ Backup Policy 训练环境
   S1: 1 个移动障碍物，4 种运动模式随机
   S2: 1 个移动障碍物 + 1 个静止障碍物
 
-观测：robot_state(18) + num_obstacles × obstacle_info(10)
-  S1: 28D, S2: 38D
+观测：(robot_state(18) + num_obstacles × obstacle_info(10)) × 3帧堆叠
+  S1: 84D (28×3), S2: 114D (38×3)
 
 运动模式：
   LINEAR   — 匀速直线朝 TCP
@@ -26,7 +26,7 @@ Domain Randomization（仅观测层，不影响碰撞检测）：
   障碍物位置噪声 N(0, 0.03)   ← MediaPipe + D455 精度
   障碍物速度噪声 N(0, 0.01)   ← 帧间差分抖动
   观测延迟 U(0, 2) 步          ← 检测延迟
-  障碍物速度 U(0.008, 0.025)  ← 不同手速
+  障碍物速度 U(0.005, 0.015)  ← 不同手速
   TCP 位置噪声 N(0, 0.005)    ← 已有
 
 参考: Kiemel et al. "Safe RL of Robot Trajectories in the Presence of Moving Obstacles", IEEE RAL 2024
