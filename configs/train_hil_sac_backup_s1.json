@@ -45,7 +45,7 @@
         "online_buffer_capacity": 200000,
         "offline_buffer_capacity": 0,
         "online_step_before_learning": 1000,
-        "discount": 0.99,
+        "discount": 1.0,
         "temperature_init": 0.1,
         "num_critics": 2,
         "critic_lr": 3e-4,

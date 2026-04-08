@@ -65,10 +65,14 @@ TCP_INIT_X = (0.20, 0.55)
 TCP_INIT_Y = (-0.30, 0.15)
 TCP_INIT_Z = (0.05, 0.30)
 
-# 奖励系数
-DISPLACEMENT_COEFF = 0.5
-ACTION_NORM_COEFF = 0.01
-ACTION_SMOOTH_COEFF = 0.01
+# 奖励参数（参考 Kiemel et al. 2024: 每步奖励非负，碰撞大惩罚）
+SURVIVAL_REWARD = 0.5            # 每步存活基础正奖励
+DISPLACEMENT_COEFF = 0.5         # 位移软惩罚系数
+ACTION_NORM_COEFF = 0.01         # 动作幅度惩罚
+ACTION_SMOOTH_COEFF = 0.01       # 动作平滑惩罚
+TERMINATION_PENALTY = -10.0      # 碰撞/掉块/越界/跑远 终止惩罚
+SURVIVAL_BONUS = 5.0             # 存活完整 episode 的 bonus
+MAX_DISPLACEMENT = 0.15          # 位移硬上限 15cm，超过视为任务失败
 
 # 路过模式速度倍率（路过比朝TCP运动快，模拟人手快速经过）
 PASSING_SPEED_MULT = 1.3
@@ -248,22 +252,30 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             terminated = True
             safety_info = {"safety_violation": True, "violation_type": "block_dropped"}
 
+        # 位移硬上限检测
+        tcp = self._data.site_xpos[self._pinch_site_id].copy()
+        displacement = float(np.linalg.norm(tcp - self._tcp_start))
+        if not terminated and displacement > MAX_DISPLACEMENT:
+            terminated = True
+            safety_info = {"safety_violation": True, "violation_type": "excessive_displacement"}
+
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
-        # 奖励
+        # 奖励（参考 Kiemel et al. 2024: 每步奖励非负，终止大惩罚）
         if terminated:
-            reward = -1.0
+            reward = TERMINATION_PENALTY
         else:
-            tcp = self._data.site_xpos[self._pinch_site_id].copy()
-            displacement = float(np.linalg.norm(tcp - self._tcp_start))
             action_norm = float(np.linalg.norm(action_6d))
             action_diff = float(np.linalg.norm(action_6d - self._action_prev))
 
             reward = (
-                -DISPLACEMENT_COEFF * displacement
+                SURVIVAL_REWARD
+                - DISPLACEMENT_COEFF * displacement
                 - ACTION_NORM_COEFF * action_norm
                 - ACTION_SMOOTH_COEFF * action_diff
             )
+            if truncated:
+                reward += SURVIVAL_BONUS
 
         self._action_prev = action_6d.copy()
 
@@ -272,6 +284,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             "succeed": False,
             "hand_collisions": self._hand_collisions,
             "min_hand_dist": self._min_hand_dist,
+            "displacement": displacement,
             "num_obstacles": self._num_obstacles,
             "motion_mode": self._motion_mode.name,
             **safety_info,
