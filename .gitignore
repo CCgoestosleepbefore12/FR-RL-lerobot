@@ -7,5 +7,6 @@ build/
 wandb/
 outputs/
 checkpoints/
+!checkpoints/backup_policy_s1/
 *.pt
 *.pth
