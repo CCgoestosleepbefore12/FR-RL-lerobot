@@ -147,6 +147,9 @@ class SACConfig(PreTrainedConfig):
     async_prefetch: bool = False
     # Number of steps before learning starts
     online_step_before_learning: int = 100
+    # Offline-demo warmup: number of gradient steps on offline buffer before
+    # switching to online interaction. Set to 0 to disable warmup.
+    offline_warmup_steps: int = 500
     # Frequency of policy updates
     policy_update_freq: int = 1
 
@@ -195,7 +198,11 @@ class SACConfig(PreTrainedConfig):
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
 
     # Optimizations
-    use_torch_compile: bool = True
+    # torch.compile can break on some GPU / Python / CUDA combos; all current
+    # production configs (configs/train_hil_sac_*.json) disable it explicitly.
+    # Default is False so the repo works out of the box; enable in a config when
+    # you've confirmed it compiles cleanly on your setup.
+    use_torch_compile: bool = False
 
     def __post_init__(self):
         super().__post_init__()

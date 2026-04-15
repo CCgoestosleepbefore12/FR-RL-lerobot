@@ -111,7 +111,7 @@ register(
     entry_point="frrl.envs.wrappers.factory:make_env",
     max_episode_steps=200,
     kwargs={
-        "env_id": "gym_frrl/FRRLPandaPickPlaceBase-v0",
+        "env_id": "gym_frrl/FRRLPandaPickPlace-v0",
         "use_viewer": True,
         "gripper_penalty": -0.05,
         "use_inputs_control": True,

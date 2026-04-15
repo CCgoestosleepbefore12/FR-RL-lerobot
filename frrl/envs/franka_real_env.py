@@ -177,12 +177,12 @@ class FrankaRealEnv(gym.Env):
         self._update_currpos()
         obs = self._compute_observation()
         reward = self.compute_reward(obs)
-        done = (
-            self.curr_path_length >= self.config.max_episode_length
-            or reward
-            or self.terminate
-        )
-        return obs, int(reward), done, False, {"succeed": reward}
+        # Separate terminated (task success / user stop) from truncated (time limit):
+        # gymnasium's bootstrap logic relies on this split (terminated disables bootstrap,
+        # truncated keeps it). Conflating both into `done` silently biases Q estimates.
+        terminated = bool(reward or self.terminate)
+        truncated = self.curr_path_length >= self.config.max_episode_length
+        return obs, int(reward), terminated, truncated, {"succeed": reward}
 
     def close(self):
         if self._camera_manager is not None:
@@ -394,9 +394,12 @@ class FrankaRealEnv(gym.Env):
         requests.post(self.url + "clearerr")
 
     def _set_encoder_bias(self, bias: list):
-        """设置编码器偏差（通过 Flask Server → ROS param → C++ 控制器）。"""
+        """设置编码器偏差（通过 Flask Server → /encoder_bias topic → C++ 控制器）。
+
+        Fails loud: swallowing network/server errors here would mean silently
+        training with zero bias while believing the fault is injected, which
+        is an experimental-result landmine.
+        """
         import requests
-        try:
-            requests.post(self.url + "set_encoder_bias", json={"bias": bias})
-        except Exception as e:
-            logging.warning(f"设置 encoder bias 失败（Flask Server 可能未支持此路由）: {e}")
+        r = requests.post(self.url + "set_encoder_bias", json={"bias": bias}, timeout=2.0)
+        r.raise_for_status()

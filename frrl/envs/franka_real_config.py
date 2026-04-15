@@ -17,7 +17,8 @@ class FrankaRealConfig:
     """Franka Panda 真机环境配置。"""
 
     # Flask Server 连接（RT PC）
-    server_url: str = "http://192.168.1.1:5000/"
+    # IP 必须匹配 RT PC 上 USB 网卡的静态地址。见 docs/rt_pc_runbook.md。
+    server_url: str = "http://192.168.100.1:5000/"
 
     # RealSense D455 相机配置
     cameras: Dict[str, dict] = field(default_factory=lambda: {

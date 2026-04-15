@@ -360,8 +360,8 @@ def add_actor_information_and_train(
     # ================================================================
     # 热启动：在offline demo上预训练，让策略有基本能力再开始online交互
     # ================================================================
-    if offline_replay_buffer is not None and not cfg.resume:
-        warmup_steps = 500
+    if offline_replay_buffer is not None and not cfg.resume and cfg.policy.offline_warmup_steps > 0:
+        warmup_steps = cfg.policy.offline_warmup_steps
         logging.info(f"[LEARNER] Warmup: pre-training on offline demo for {warmup_steps} steps...")
         offline_warmup_iter = offline_replay_buffer.get_iterator(
             batch_size=batch_size * 2, async_prefetch=async_prefetch, queue_size=2
@@ -384,6 +384,9 @@ def add_actor_information_and_train(
                 "done": batch["done"],
                 "observation_feature": observation_features,
                 "next_observation_feature": next_observation_features,
+                # Keep warmup consistent with the main loop so discrete_penalty
+                # (gripper-toggle penalty) is actually applied during warmup.
+                "complementary_info": batch.get("complementary_info"),
             }
 
             # Critic
@@ -592,6 +595,11 @@ def add_actor_information_and_train(
             "done": done,
             "observation_feature": observation_features,
             "next_observation_feature": next_observation_features,
+            # Must match the UTD-loop forward_batch above — discrete_critic reads
+            # this to apply gripper-toggle penalties. Without it the final update
+            # each step computes a discrete-critic loss that's inconsistent with
+            # the utd_ratio-1 preceding updates.
+            "complementary_info": batch.get("complementary_info"),
         }
 
         critic_output = policy.forward(forward_batch, model="critic")

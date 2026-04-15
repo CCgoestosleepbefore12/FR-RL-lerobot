@@ -409,7 +409,10 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 
 ## 九、实验检查点（Checkpoints）
 
-| 实验 | 路径 | 最佳ckpt |
+> ⚠️ 下表的 `outputs/` 路径是本地训练输出目录，**不入 git**，仅对 checkpoint
+> 原主有效。其他人要复现需要从训练配置 + seed 重跑，或联系 checkpoint 所有者。
+
+| 实验 | 路径（本地） | 最佳ckpt |
 |------|------|---------|
 | 无偏差baseline | outputs/train/2026-03-23/02-26-18_frrl_hil_sac_pick_cube/ | last |
 | 固定偏差0.2rad | outputs/train/2026-03-24/21-45-16_frrl_hil_sac_pick_cube_bias/ | last |

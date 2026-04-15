@@ -32,6 +32,7 @@ class SpaceMouseExpert:
         self.process = multiprocessing.Process(target=self._read_spacemouse)
         self.process.daemon = True
         self.process.start()
+        self._closed = False
 
     def _read_spacemouse(self):
         while True:
@@ -66,4 +67,37 @@ class SpaceMouseExpert:
         return np.array(action), buttons
 
     def close(self):
-        self.process.terminate()
+        """Release the reader process, manager, and HID handle.
+
+        Idempotent — calling twice is safe. Call from teleop scripts'
+        `finally:` so repeated sessions don't leak Manager subprocesses
+        or keep the SpaceMouse HID device locked.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
+        # 1. Tear down the background reader.
+        if self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=1.0)
+
+        # 2. Shut down the multiprocessing.Manager server (it spawns its own
+        #    process that otherwise sticks around).
+        try:
+            self.manager.shutdown()
+        except Exception:
+            pass
+
+        # 3. Release the HID device held by the bundled pyspacemouse module's
+        #    module-level _active_device so the next SpaceMouseExpert() can open it.
+        try:
+            pyspacemouse.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

@@ -1,5 +1,15 @@
 # FR-RL-lerobot Franka Panda 真机部署方案
 
+> **⚠️ 本文档是 2026-03 编写的实施规划**。大部分阶段（RT PC 基础栈、FrankaRealEnv、
+> 真机编码器偏差 B+D 注入、相机/teleop 基础）已经完成并落地。
+> 当前实施状态的权威来源是 [`project_progress.md §2.5`](project_progress.md)。
+>
+> 本文保留作为**设计决策与原始规划**的历史记录，里面的"从 ~/hil-serl/ 移植 ..."
+> 等描述反映的是**计划**，对应代码现在都已进入 `frrl/robot_servers/` /
+> `frrl/envs/franka_real_*.py` / `frrl/cameras/` / `frrl/teleoperators/` 等正式位置。
+> 真机启动/验证流程请看 [`rt_pc_runbook.md`](rt_pc_runbook.md) 和
+> [`fault_injection_realhw.md`](fault_injection_realhw.md)。
+
 ## Context
 
 FR-RL-lerobot 是基于 lerobot hil-serl 的 PyTorch 版 RL 框架，两个核心创新：

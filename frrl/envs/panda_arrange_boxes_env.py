@@ -130,6 +130,13 @@ class PandaArrangeBoxesGymEnv(FrankaGymEnv):
         )
 
     def _compute_reward(self) -> float:
+        # NOTE: Reward tracks block index 1 (the second block) specifically.
+        # This hardcoded choice is intentional for the current arrangement task;
+        # make sure no_blocks >= 2 so the index is valid.
+        assert self.no_blocks >= 2, (
+            f"panda_arrange_boxes_env requires no_blocks >= 2 "
+            f"because the reward indexes block[1]; got no_blocks={self.no_blocks}"
+        )
         block_sensors, target_sensors = self._get_sensors()
         distance = np.linalg.norm(block_sensors[1].data - target_sensors[1].data)
         if self.reward_type == "dense":
