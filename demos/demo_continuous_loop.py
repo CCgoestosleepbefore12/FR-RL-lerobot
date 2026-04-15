@@ -201,8 +201,6 @@ def main():
     env = PandaPickPlaceEnv(
         control_dt=0.1,
         physics_dt=0.002,
-        max_episode_steps=800,
-        delta_action_scale=0.015,
         render_mode="human" if not args.no_render else None,
         encoder_bias_config=bias_config,
     )
