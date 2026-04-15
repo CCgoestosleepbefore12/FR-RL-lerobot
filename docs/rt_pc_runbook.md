@@ -205,14 +205,22 @@ exec python franka_server.py \
 
 ```bash
 #!/bin/bash
-pkill -9 -f franka_server       || true
-pkill -9 -f roslaunch           || true
-pkill -9 -f rosmaster           || true
-pkill -9 -f franka_control_node || true
-pkill -9 -f franka_gripper_node || true
+# Clean shutdown of franka_server.py and any stray ROS processes.
+# Use when server hangs, crashes, or before a fresh restart.
+
+pkill -9 -f franka_server           || true
+pkill -9 -f roslaunch               || true
+pkill -9 -f roscore                 || true
+pkill -9 -f rosmaster               || true
+pkill -9 -f rosout                  || true
+pkill -9 -f franka_control_node     || true
+pkill -9 -f franka_gripper_node     || true
 pkill -9 -f franka_state_controller || true
-pkill -9 -f controller_spawner  || true
+pkill -9 -f controller_spawner      || true
+pkill -9 -f robot_state_publisher   || true
+pkill -9 -f joint_state_publisher   || true
+
 sleep 1
 echo "=== Surviving processes ==="
-ps aux | grep -E "franka_server|ros(master|launch)" | grep -v grep || echo "(clean)"
+ps aux | grep -E "franka_server|ros(master|launch|core|out)" | grep -v grep || echo "(clean)"
 ```
