@@ -217,3 +217,11 @@ franka_hw
 - hil-serl Flask Server：`~/hil-serl/serl_robot_infra/robot_servers/franka_server.py`
 - hil-serl C++ 控制器：`~/hil-serl/serl_robot_infra/egg_flip_controller/src/cartesian_wrench_controller.cpp`
 - 参考论文：*Case Study: ROS-based Fault Injection for Risk Analysis of Robotic Manipulator*
+
+## 6. 真机实现与验证
+
+本文档讨论的是**设计选型**。真机上的代码改动清单、编译启动流程、验证步骤、
+物理行为分析和训练/部署配置指南在姊妹文档
+[`fault_injection_realhw.md`](fault_injection_realhw.md) 中。
+
+2026-04-15 已在真实 Franka Panda 上完成 B+D 端到端验证。

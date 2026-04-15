@@ -68,6 +68,37 @@ frrl/
 - **Reward 修正**: sparse reward 使用 `_is_success()`（距离<5cm 且 举高>20cm）
 - **Buffer 保存**: 训练结束时保存 online/offline buffer（支持 resume）
 
+### 2.5 真机部署与故障注入（2026-04 新增）
+
+两机系统（RT PC + GPU Workstation）拓扑和分工见
+[`real_robot_deployment_plan.md`](real_robot_deployment_plan.md)。
+本阶段完成的关键模块：
+
+**RT PC 侧基础栈**
+- 装配 PREEMPT_RT 5.15-rt83 内核、libfranka 0.9.1、franka_ros 0.9.1（源码编译）
+- serl_franka_controllers 源码编译，阻抗控制器 1 kHz 运行稳定
+- 网络分离：`enp4s0 (172.16.0.1/24)` 直连 Franka，USB 网卡 `(192.168.100.1/24)`
+  连 GPU 工作站
+- `~/start_franka_server.sh` / `~/kill_franka_server.sh` 一键启停脚本
+- 完整启动流程文档 [`rt_pc_runbook.md`](rt_pc_runbook.md)
+
+**故障注入（B+D 双注入点，真机验证通过）**
+- 架构设计：[`fault_injection_architecture.md`](fault_injection_architecture.md)
+- 真机实现/使用：[`fault_injection_realhw.md`](fault_injection_realhw.md)
+- C++ 阻抗控制器加入 `RealtimeBuffer<std::array<double,7>>` + biased FK/Jacobian
+  计算，通过 `/encoder_bias` topic 接收 Python 侧写入的 bias，发布 `biased_state`
+  topic 回传给 franka_server
+- franka_server.py 新增 `/set_encoder_bias` / `/clear_encoder_bias` /
+  `/get_encoder_bias` 三个 HTTP 路由，`/getstate` 返回的 `q`/`pose` 是 biased 值
+- GPU 侧 `FrankaRealEnv._set_encoder_bias` hook 和路由名天然对齐，
+  无需额外改动
+- **2026-04-15 端到端验证通过**：`FrankaRealEnv.reset()` 驱动 `EncoderBiasInjector`
+  采样 bias → HTTP → C++ biased torque → 真实物理扫动 ~7cm（对 J1 0.1 rad） →
+  `/getstate` 返回 biased 观测
+
+**遥操作**
+- SpaceMouse 驱动与集成方案：[`spacemouse_teleop.md`](spacemouse_teleop.md)
+
 ---
 
 ## 三、实验结果
@@ -324,7 +355,19 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 
 ## 七、待办事项
 
-### 优先级高
+### 真机部署（当前焦点）
+- [x] RT PC 内核 + libfranka + franka_ros + serl_franka_controllers 部署
+- [x] 两机网络隔离（Franka 直连 + GPU 工作站旁路）
+- [x] franka_server.py 启动 + 基本 HTTP 路由可用
+- [x] B+D 编码器偏差注入（C++ 控制器 + franka_server + biased_state topic）
+- [x] GPU 侧 `FrankaRealEnv` 端到端触发注入链路验证
+- [ ] 标定 `abs_pose_limit`（工作空间边界）—— 需要手动引导采样
+- [ ] 相机标定 + T_cam_to_robot（用于 block_pos 检测）
+- [ ] SpaceMouse 遥操作 + demo 采集（用于 offline buffer）
+- [ ] 真机训练首跑（`random_uniform(0, 0.25)` J1 bias）
+- [ ] 真机版 `eval_bias_curve_realhw.py`
+
+### 优先级高（仿真侧）
 - [ ] 加 bias_signal 显式偏差信号 + UTD=4 重新训练
 - [ ] 补充消融实验：有/无 block_pos、有/无 real_tcp、不同噪声水平
 - [ ] 整理所有实验数据画正式图表
@@ -339,7 +382,6 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 - [ ] DINOv2 替换 ResNet10
 - [ ] 多关节偏差实验
 - [ ] 多故障类型扩展
-- [ ] 真机实验
 
 ---
 
