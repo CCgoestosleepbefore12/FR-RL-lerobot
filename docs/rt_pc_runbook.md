@@ -21,7 +21,7 @@
 | libfranka | 0.9.1 (本地源码编译, `/home/yuliang/libfranka/build`) |
 | franka_ros | 0.9.1 (源码编译, `~/serl_ws/src/franka_ros`) |
 | serl_franka_controllers | 源码编译, `~/serl_ws/src/serl_franka_controllers` |
-| franka_server.py | `~/hil-serl/serl_robot_infra/robot_servers/franka_server.py` |
+| franka_server.py | `~/FR-RL-lerobot/frrl/robot_servers/franka_server.py` |
 | Conda env | `frankaserver` (Python 3.8) |
 
 固件要求：Panda system version ≥ 4.2.1
@@ -72,8 +72,8 @@ ping -c 3 172.16.0.2            # 应通
 1. 激活 `frankaserver` conda env
 2. `source /opt/ros/noetic/setup.bash`
 3. `source ~/serl_ws/devel/setup.bash`
-4. `cd ~/hil-serl/serl_robot_infra/robot_servers`
-5. 启动 `python franka_server.py --robot_ip=172.16.0.2 --gripper_type=Franka --flask_url=0.0.0.0`
+4. `cd ~/FR-RL-lerobot`
+5. 启动 `python -m frrl.robot_servers.franka_server --robot_ip=172.16.0.2 --gripper_type=Franka --flask_url=0.0.0.0`
 
 **成功日志的关键行**：
 
@@ -177,7 +177,7 @@ ping -c 3 172.16.0.2
 | Server URL | `http://192.168.100.1:5000` |
 | 启动脚本 | `~/start_franka_server.sh` |
 | 清场脚本 | `~/kill_franka_server.sh` |
-| hil-serl 源码 | `~/hil-serl` |
+| franka_server 源码 | `~/FR-RL-lerobot/frrl/robot_servers/` |
 | catkin workspace | `~/serl_ws` |
 | Conda env | `frankaserver` (Python 3.8) |
 
@@ -194,8 +194,8 @@ source /home/yuliang/miniconda3/etc/profile.d/conda.sh
 conda activate frankaserver
 source /opt/ros/noetic/setup.bash
 source /home/yuliang/serl_ws/devel/setup.bash
-cd /home/yuliang/hil-serl/serl_robot_infra/robot_servers
-exec python franka_server.py \
+cd /home/yuliang/FR-RL-lerobot
+exec python -m frrl.robot_servers.franka_server \
     --robot_ip=172.16.0.2 \
     --gripper_type=Franka \
     --flask_url=0.0.0.0

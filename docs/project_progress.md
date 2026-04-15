@@ -87,9 +87,14 @@ frrl/
 - 真机实现/使用：[`fault_injection_realhw.md`](fault_injection_realhw.md)
 - C++ 阻抗控制器加入 `RealtimeBuffer<std::array<double,7>>` + biased FK/Jacobian
   计算，通过 `/encoder_bias` topic 接收 Python 侧写入的 bias，发布 `biased_state`
-  topic 回传给 franka_server
-- franka_server.py 新增 `/set_encoder_bias` / `/clear_encoder_bias` /
-  `/get_encoder_bias` 三个 HTTP 路由，`/getstate` 返回的 `q`/`pose` 是 biased 值
+  topic 回传给 franka_server。上游 `serl_franka_controllers` 仓库未 fork，修改
+  存成 [`patches/serl_franka_controllers_bias_injection.patch`](../patches/serl_franka_controllers_bias_injection.patch)
+  入库
+- `franka_server.py` + 依赖的 gripper server 从 `~/hil-serl/` 搬进
+  `frrl/robot_servers/`，彻底结束"代码分散在 hil-serl 和本仓库两边"的历史债；
+  启动方式从 `python franka_server.py` 改为 `python -m frrl.robot_servers.franka_server`
+- 新增 `/set_encoder_bias` / `/clear_encoder_bias` / `/get_encoder_bias` 三个 HTTP
+  路由，`/getstate` 返回的 `q`/`pose` 是 biased 值
 - GPU 侧 `FrankaRealEnv._set_encoder_bias` hook 和路由名天然对齐，
   无需额外改动
 - **2026-04-15 端到端验证通过**：`FrankaRealEnv.reset()` 驱动 `EncoderBiasInjector`

@@ -1,0 +1,192 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 98a5b26..d3bc4ab 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
+   franka_hw
+   franka_gripper
+   geometry_msgs
++  std_msgs
+   hardware_interface
+   tf
+   tf_conversions
+@@ -25,8 +26,8 @@ find_package(catkin REQUIRED COMPONENTS
+ find_package(Eigen3 REQUIRED)
+ find_package(Franka 0.7.0 REQUIRED)
+ 
+-add_message_files(FILES ZeroJacobian.msg)
+-generate_messages()
++add_message_files(FILES ZeroJacobian.msg BiasedState.msg)
++generate_messages(DEPENDENCIES std_msgs)
+ 
+ generate_dynamic_reconfigure_options(
+   cfg/compliance_param.cfg
+@@ -42,6 +43,7 @@ catkin_package(
+     franka_hw
+     franka_gripper
+     geometry_msgs
++    std_msgs
+     hardware_interface
+     tf
+     tf_conversions
+diff --git a/include/serl_franka_controllers/cartesian_impedance_controller.h b/include/serl_franka_controllers/cartesian_impedance_controller.h
+index 8fd149d..fa86164 100644
+--- a/include/serl_franka_controllers/cartesian_impedance_controller.h
++++ b/include/serl_franka_controllers/cartesian_impedance_controller.h
+@@ -10,6 +10,7 @@
+ #include <controller_interface/multi_interface_controller.h>
+ #include <dynamic_reconfigure/server.h>
+ #include <geometry_msgs/PoseStamped.h>
++#include <std_msgs/Float64MultiArray.h>
+ #include <hardware_interface/joint_command_interface.h>
+ #include <hardware_interface/robot_hw.h>
+ #include <ros/node_handle.h>
+@@ -19,8 +20,10 @@
+ #include <serl_franka_controllers/compliance_paramConfig.h>
+ #include <franka_hw/franka_model_interface.h>
+ #include <franka_hw/franka_state_interface.h>
++#include <realtime_tools/realtime_buffer.h>
+ #include <realtime_tools/realtime_publisher.h>
+ #include <serl_franka_controllers/ZeroJacobian.h>
++#include <serl_franka_controllers/BiasedState.h>
+ 
+ namespace serl_franka_controllers {
+ 
+@@ -82,6 +85,13 @@ class CartesianImpedanceController : public controller_interface::MultiInterface
+   // Equilibrium pose subscriber
+   ros::Subscriber sub_equilibrium_pose_;
+   void equilibriumPoseCallback(const geometry_msgs::PoseStampedConstPtr& msg);
++
++  // Encoder bias injection (fault injection point B)
++  ros::Subscriber sub_encoder_bias_;
++  realtime_tools::RealtimeBuffer<std::array<double, 7>> encoder_bias_buffer_;
++  realtime_tools::RealtimePublisher<serl_franka_controllers::BiasedState>
++      publisher_biased_state_;
++  void encoderBiasCallback(const std_msgs::Float64MultiArray::ConstPtr& msg);
+ };
+ 
+ }  // namespace serl_franka_controllers
+diff --git a/msg/BiasedState.msg b/msg/BiasedState.msg
+new file mode 100644
+index 0000000..9f1cfea
+--- /dev/null
++++ b/msg/BiasedState.msg
+@@ -0,0 +1,3 @@
++float64[7] q_biased
++float64[16] O_T_EE_biased
++float64[7] bias
+diff --git a/package.xml b/package.xml
+index 20f5379..4244c3f 100644
+--- a/package.xml
++++ b/package.xml
+@@ -23,6 +23,7 @@
+   <depend>franka_hw</depend>
+   <depend>franka_gripper</depend>
+   <depend>geometry_msgs</depend>
++  <depend>std_msgs</depend>
+   <depend>hardware_interface</depend>
+   <depend>tf</depend>
+   <depend>tf_conversions</depend>
+diff --git a/src/cartesian_impedance_controller.cpp b/src/cartesian_impedance_controller.cpp
+index c1d71b8..df72cc3 100644
+--- a/src/cartesian_impedance_controller.cpp
++++ b/src/cartesian_impedance_controller.cpp
+@@ -23,11 +23,21 @@ bool CartesianImpedanceController::init(hardware_interface::RobotHW* robot_hw,
+   std::vector<double> cartesian_stiffness_vector;
+   std::vector<double> cartesian_damping_vector;
+   publisher_franka_jacobian_.init(node_handle, "franka_jacobian", 1);
++  publisher_biased_state_.init(node_handle, "biased_state", 1);
++
++  // Initialize encoder bias buffer to zero (no fault injection by default)
++  std::array<double, 7> zero_bias{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
++  encoder_bias_buffer_.writeFromNonRT(zero_bias);
+ 
+   sub_equilibrium_pose_ = node_handle.subscribe(
+       "equilibrium_pose", 20, &CartesianImpedanceController::equilibriumPoseCallback, this,
+       ros::TransportHints().reliable().tcpNoDelay());
+ 
++  // Global /encoder_bias topic so multiple controllers can share one source of truth
++  sub_encoder_bias_ = node_handle.subscribe(
++      "/encoder_bias", 1, &CartesianImpedanceController::encoderBiasCallback, this,
++      ros::TransportHints().reliable().tcpNoDelay());
++
+   std::string arm_id;
+   if (!node_handle.getParam("arm_id", arm_id)) {
+     ROS_ERROR_STREAM("CartesianImpedanceController: Could not read parameter arm_id");
+@@ -136,19 +146,49 @@ void CartesianImpedanceController::update(const ros::Time& time,
+   // get state variables
+   franka::RobotState robot_state = state_handle_->getRobotState();
+   std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
+-  jacobian_array =
+-      model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
++
++  // === Fault injection point B: apply encoder bias ===
++  // Read current bias from RT-safe buffer (written by non-RT subscriber callback).
++  // q_biased = q_true + bias  → biased FK and Jacobian → biased torque.
++  const std::array<double, 7>& bias = *encoder_bias_buffer_.readFromRT();
++  std::array<double, 7> q_biased_array = robot_state.q;
++  for (size_t i = 0; i < 7; ++i) {
++    q_biased_array[i] += bias[i];
++  }
++  std::array<double, 16> pose_biased_array = model_handle_->getPose(
++      franka::Frame::kEndEffector,
++      q_biased_array,
++      robot_state.F_T_EE,
++      robot_state.EE_T_K);
++  jacobian_array = model_handle_->getZeroJacobian(
++      franka::Frame::kEndEffector,
++      q_biased_array,
++      robot_state.F_T_EE,
++      robot_state.EE_T_K);
+   publishZeroJacobian(time);
++
+   Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
+   Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+-  Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
++  Eigen::Map<Eigen::Matrix<double, 7, 1>> q(q_biased_array.data());
+   Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
+   Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
+       robot_state.tau_J_d.data());
+-  Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
++  Eigen::Affine3d transform(Eigen::Matrix4d::Map(pose_biased_array.data()));
+   Eigen::Vector3d position(transform.translation());
+   Eigen::Quaterniond orientation(transform.linear());
+ 
++  // Publish biased state so franka_server.py can forward it over HTTP.
++  if (publisher_biased_state_.trylock()) {
++    for (size_t i = 0; i < 7; ++i) {
++      publisher_biased_state_.msg_.q_biased[i] = q_biased_array[i];
++      publisher_biased_state_.msg_.bias[i] = bias[i];
++    }
++    for (size_t i = 0; i < 16; ++i) {
++      publisher_biased_state_.msg_.O_T_EE_biased[i] = pose_biased_array[i];
++    }
++    publisher_biased_state_.unlockAndPublish();
++  }
++
+   // compute error to desired pose
+   // Clip translational error
+   error_.head(3) << position - position_d_;
+@@ -284,6 +324,22 @@ void CartesianImpedanceController::equilibriumPoseCallback(
+   }
+ }
+ 
++void CartesianImpedanceController::encoderBiasCallback(
++    const std_msgs::Float64MultiArray::ConstPtr& msg) {
++  if (msg->data.size() != 7) {
++    ROS_WARN_STREAM(
++        "CartesianImpedanceController: /encoder_bias expects 7 values, got "
++        << msg->data.size() << " — ignoring.");
++    return;
++  }
++  std::array<double, 7> new_bias;
++  for (size_t i = 0; i < 7; ++i) {
++    new_bias[i] = msg->data[i];
++  }
++  encoder_bias_buffer_.writeFromNonRT(new_bias);
++  ROS_INFO_STREAM("CartesianImpedanceController: encoder bias updated");
++}
++
+ }  // namespace serl_franka_controllers
+ 
+ PLUGINLIB_EXPORT_CLASS(serl_franka_controllers::CartesianImpedanceController,

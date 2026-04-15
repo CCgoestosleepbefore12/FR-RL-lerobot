@@ -70,24 +70,31 @@
 
 ## 2. 代码改动清单
 
-所有改动分布在三个**非** FR-RL-lerobot 仓库里：
+改动分布在 FR-RL-lerobot（直接纳入 git）和 `serl_ws/` 上游 catkin 包（patch 文件）两处：
 
-| 仓库 | 文件 | 性质 |
-|---|---|---|
-| `~/serl_ws/src/serl_franka_controllers/` | `msg/BiasedState.msg` | **新增** |
-| `~/serl_ws/src/serl_franka_controllers/` | `CMakeLists.txt` | 修改（注册新 msg + `std_msgs` 依赖） |
-| `~/serl_ws/src/serl_franka_controllers/` | `package.xml` | 修改（加 `<depend>std_msgs</depend>`） |
-| `~/serl_ws/src/serl_franka_controllers/` | `include/.../cartesian_impedance_controller.h` | 修改 |
-| `~/serl_ws/src/serl_franka_controllers/` | `src/cartesian_impedance_controller.cpp` | 修改 |
-| `~/hil-serl/serl_robot_infra/robot_servers/` | `franka_server.py` | 修改 |
-| `~/FR-RL-lerobot/` | `frrl/envs/franka_real_env.py` | **无改动**（hook 已有） |
-| `~/FR-RL-lerobot/` | `frrl/envs/franka_real_config.py` | **无改动**（字段已有） |
-| `~/FR-RL-lerobot/` | `frrl/fault_injection.py` | **无改动**（injector 复用） |
+| 位置 | 文件 | 性质 | 版本控制 |
+|---|---|---|---|
+| `~/FR-RL-lerobot/frrl/robot_servers/` | `franka_server.py` | **新增（从 hil-serl 搬入）** + B+D 改动 | ✅ git |
+| `~/FR-RL-lerobot/frrl/robot_servers/` | `franka_gripper_server.py` / `robotiq_gripper_server.py` / `gripper_server.py` / `__init__.py` | **新增（从 hil-serl 搬入）** | ✅ git |
+| `~/FR-RL-lerobot/patches/` | `serl_franka_controllers_bias_injection.patch` | **新增 patch 文件** | ✅ git |
+| `~/FR-RL-lerobot/frrl/envs/` | `franka_real_env.py` / `franka_real_config.py` / `fault_injection.py` | 无改动（hook 已有） | ✅ git |
+| `~/serl_ws/src/serl_franka_controllers/` | `msg/BiasedState.msg` | **新增**（patch 内） | ⚠️ 本地 |
+| `~/serl_ws/src/serl_franka_controllers/` | `CMakeLists.txt` / `package.xml` | 修改（patch 内） | ⚠️ 本地 |
+| `~/serl_ws/src/serl_franka_controllers/` | `include/.../cartesian_impedance_controller.h` | 修改（patch 内） | ⚠️ 本地 |
+| `~/serl_ws/src/serl_franka_controllers/` | `src/cartesian_impedance_controller.cpp` | 修改（patch 内） | ⚠️ 本地 |
 
-⚠️ `serl_ws/` 和 `hil-serl/` 是上游源码直接 clone，**不是** fork。因此这些改动
-只在本地存在，**不纳入 git 版本控制**。真机部署的备份手段是：
-- 定期 `rsync` 这两个目录到备份盘
-- 或者把这两个目录 fork 到自己 GitHub 上再改（未做）
+### 为什么 franka_server.py 进 FR-RL-lerobot，controller 却用 patch
+
+`franka_server.py` 是纯 Python，只在 RT PC 上跑，逻辑上就是本项目的一部分；
+以前在 `hil-serl` 下纯粹是历史遗留（项目最早只移植了 `franka_env.py` 这一侧）。
+搬进 `frrl/robot_servers/` 之后 hil-serl 完全不再参与运行时，调用路径走
+`python -m frrl.robot_servers.franka_server`，相对导入正常工作。
+
+`serl_franka_controllers` 是 **catkin ROS 包**，必须住在 ROS workspace 里才能被
+`catkin_make` 构建和 `roslaunch` 加载，结构上没法直接塞进 Python package。
+所以它的改动做成 [`patches/serl_franka_controllers_bias_injection.patch`](../patches/serl_franka_controllers_bias_injection.patch)
+存进仓库，附一个 [`patches/README.md`](../patches/README.md) 记录上游 base commit
+和 `git apply` 流程 —— 任何人 clone 本仓库后都能从零复现 C++ 控制器的修改。
 
 ### 2.1 `BiasedState.msg`
 
@@ -173,6 +180,8 @@ void CartesianImpedanceController::encoderBiasCallback(
 
 ### 2.3 franka_server.py（注入点 D）
 
+`frrl/robot_servers/franka_server.py` 相比搬入前的 hil-serl 版本新增：
+
 - 新 import：`from serl_franka_controllers.msg import BiasedState`、
   `from std_msgs.msg import Float64MultiArray`
 - `FrankaServer.__init__` 新增字段：`current_bias`, `q_biased`, `pos_biased`,
@@ -189,6 +198,11 @@ void CartesianImpedanceController::encoderBiasCallback(
   - `POST /set_encoder_bias` → body `{"bias": [7 floats]}` → `publish_encoder_bias`
   - `POST /clear_encoder_bias` → `publish_encoder_bias(zeros)`
   - `POST /get_encoder_bias` → 返回 `{"bias": [...]}`
+
+搬入时同步把 lazy gripper server import 从原先的
+`from robot_servers.franka_gripper_server import FrankaGripperServer` 改成
+相对导入 `from .franka_gripper_server import FrankaGripperServer`，以配合新的
+`python -m frrl.robot_servers.franka_server` 启动方式。
 
 **为什么 `self.q` 仍保留真值**：`reset_joint()` 里的等待循环
 `np.allclose(target - self.q, 0)` 需要真实关节角作比较基准，如果写成 biased
@@ -207,19 +221,27 @@ void CartesianImpedanceController::encoderBiasCallback(
 
 ## 3. 编译与启动
 
-一次性编译：
+**首次配置**（新机部署或 workspace 被清理后）：
 ```bash
+# 1. 拿到上游 controller 源码并打 patch
+cd ~/serl_ws/src
+git clone https://github.com/rail-berkeley/serl_franka_controllers.git
+cd serl_franka_controllers
+git checkout 1f140ef0d8e3fc443569c193d3ede1856e50d521
+git apply ~/FR-RL-lerobot/patches/serl_franka_controllers_bias_injection.patch
+
+# 2. 编译
 cd ~/serl_ws
 source /opt/ros/noetic/setup.bash
 catkin_make --only-pkg-with-deps serl_franka_controllers
 ```
 
-之后每次启动都要**彻底重启**（否则旧的 controller .so 还在内存里）：
+**日常启动**（每次都要**彻底重启**，否则旧的 controller .so 还在内存里）：
 ```bash
 ~/kill_franka_server.sh             # 清掉所有 ros/franka 进程
 source ~/serl_ws/devel/setup.bash   # 关键：让 BiasedState 的 Python 绑定可用
 # Desk: Error Recovery → Unlock Joints → 激活 FCI
-~/start_franka_server.sh
+~/start_franka_server.sh             # cd ~/FR-RL-lerobot && python -m frrl.robot_servers.franka_server
 ```
 
 **启动健康检查**（另开终端）：
