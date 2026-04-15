@@ -275,6 +275,76 @@ register(
     },
 )
 
+# ------------------------------------------------------------
+# Exp 1 观测消融：31D / 28D / 25D，全部 BiasJ1Random
+# ------------------------------------------------------------
+_SAFE_BIAS_J1_RANDOM_KW = dict(
+    encoder_bias_config=EncoderBiasConfig(
+        enable=True,
+        error_probability=1.0,
+        target_joints=[0],
+        bias_mode="random_uniform",
+        bias_range=[-0.15, 0.15],
+    ),
+)
+
+# 31D Full：完整观测（含 real_tcp + block + plate + hand）
+register(
+    id="gym_frrl/PandaPickPlaceSafeObs31BiasJ1Random-v0",
+    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    max_episode_steps=200,
+    kwargs={**_SAFE_BIAS_J1_RANDOM_KW, "obs_mode": "obs31"},
+)
+register(
+    id="gym_frrl/PandaPickPlaceSafeObs31BiasJ1RandomKeyboard-v0",
+    entry_point="frrl.envs.wrappers.factory:make_env",
+    max_episode_steps=200,
+    kwargs={
+        "env_id": "gym_frrl/PandaPickPlaceSafeObs31BiasJ1Random-v0",
+        "use_viewer": True,
+        "gripper_penalty": -0.05,
+        "use_inputs_control": True,
+    },
+)
+
+# 28D：去 real_tcp，测试外部 TCP oracle 是否必要
+register(
+    id="gym_frrl/PandaPickPlaceSafeObs28BiasJ1Random-v0",
+    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    max_episode_steps=200,
+    kwargs={**_SAFE_BIAS_J1_RANDOM_KW, "obs_mode": "obs28"},
+)
+register(
+    id="gym_frrl/PandaPickPlaceSafeObs28BiasJ1RandomKeyboard-v0",
+    entry_point="frrl.envs.wrappers.factory:make_env",
+    max_episode_steps=200,
+    kwargs={
+        "env_id": "gym_frrl/PandaPickPlaceSafeObs28BiasJ1Random-v0",
+        "use_viewer": True,
+        "gripper_penalty": -0.05,
+        "use_inputs_control": True,
+    },
+)
+
+# 25D：去 block/plate，保留 real_tcp + hand，测试显式物体坐标是否必要
+register(
+    id="gym_frrl/PandaPickPlaceSafeObs25BiasJ1Random-v0",
+    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    max_episode_steps=200,
+    kwargs={**_SAFE_BIAS_J1_RANDOM_KW, "obs_mode": "obs25"},
+)
+register(
+    id="gym_frrl/PandaPickPlaceSafeObs25BiasJ1RandomKeyboard-v0",
+    entry_point="frrl.envs.wrappers.factory:make_env",
+    max_episode_steps=200,
+    kwargs={
+        "env_id": "gym_frrl/PandaPickPlaceSafeObs25BiasJ1Random-v0",
+        "use_viewer": True,
+        "gripper_penalty": -0.05,
+        "use_inputs_control": True,
+    },
+)
+
 # ============================================================
 # Backup Policy 训练环境
 # ============================================================
