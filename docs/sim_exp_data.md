@@ -12,9 +12,9 @@
 | Exp 5 | Backup Zero-shot Bias 迁移 | `PandaBackupPolicyS1BiasJ1-v0` | ✅ 已完成 | 99.0% → 98.5%，近乎无损 |
 | Exp 6 | DR 策略在 NoDR env 评估 | `PandaBackupPolicyS1NoDR-v0` | ✅ 已完成 | 反直觉：99.0% → **96.5%**（更干净环境反而更差）|
 | Exp 7 | Backup S2 多障碍 | `PandaBackupPolicyS2-v0` | ✅ 已完成 | 200k utd=4：**83-91%**（vs S1 99%），多障碍难度跃升 |
-| Exp 1-Obs31 | Safe 观测消融（完整 31D）| `PandaPickPlaceSafeObs31BiasJ1RandomKeyboard-v0` | 🟡 待做 | — |
-| Exp 1-Obs28 | Safe 观测消融（去 real_tcp，28D）| `PandaPickPlaceSafeObs28BiasJ1RandomKeyboard-v0` | 🟡 待做 | — |
-| Exp 1-Obs25 | Safe 观测消融（去 block/plate，25D）| `PandaPickPlaceSafeObs25BiasJ1RandomKeyboard-v0` | 🟡 待做 | — |
+| Exp 1-Obs27 | Task policy 观测消融（27D full）| `PandaPickPlaceBiasJ1RandomKeyboard-v0`（待建）| 🟡 待做（env 未建） | — |
+| Exp 1-Obs24 | Task policy 观测消融（24D 去 real_tcp）| `PandaPickPlaceObs24BiasJ1RandomKeyboard-v0`（待建）| 🟡 待做（env 未建） | — |
+| Exp 1-Obs21 | Task policy 观测消融（21D 去 block/plate）| `PandaPickPlaceObs21BiasJ1RandomKeyboard-v0`（待建）| 🟡 待做（env 未建） | — |
 
 ---
 
@@ -550,9 +550,70 @@ DR 训练时策略看到的观测长这样：
 
 ## 待完成实验（占位，后续补充）
 
-### Exp 1：Safe 观测消融（3 档 × 1 seed）
+### Exp 1：Task Policy 观测消融（3 档 × 1 seed）
 
-31D / 28D / 25D 三档，全部 BiasJ1Random，100k steps。配置见 `configs/train_hil_sac_safe_bias_obs{31,28,25}.json`。
+**目标**：Modular 架构下，研究纯 Task Policy（不管避障）对状态观测的敏感性。由 Runtime supervisor 在距离阈值触发时切换到 Backup Policy。
+
+**环境要求**：pick-place + 编码器 J1 随机偏差 + **无 hand obstacle + 无 safety layer**。观测不含 `hand_active/hand_pos`。
+
+**三档观测组合**（从完整 27D 各自去掉一部分）：
+
+| 档位 | 维度 | 组成 |
+|---|---|---|
+| 27D full | 27 | robot_state(18) + block(3) + plate(3) + real_tcp(3) |
+| 24D 去 real_tcp | 24 | robot_state(18) + block(3) + plate(3) |
+| 21D 去 block/plate | 21 | robot_state(18) + real_tcp(3) |
+
+**前置工作**（未完成）：
+1. 新建 env：`PandaPickPlaceBiasJ1Random-v0`（及 Keyboard 变体），从 `FRRLPandaPickPlace-v0` 派生，加 `EncoderBiasConfig(target_joints=[0])`
+2. env 加 `obs_mode` 参数支持 27D/24D/21D
+3. 新建 3 份 record/train config：`configs/train_hil_sac_task_bias_obs{27,24,21}.json`
+4. 录制 1 次 27D demo，用 `scripts/slice_safe_demo.py`（或派生脚本）切片到 24D/21D
+
+**历史遗留**：`configs/train_hil_sac_safe_bias_obs{31,28,25}.json` 和对应的 `PandaPickPlaceSafeObs*` env 注册是 **Joint Safe RL 方向**的残留（带 hand + safety layer + hand 观测），与当前 Modular 方向不符，暂不删除，如需 joint 消融可复用。
+
+---
+
+## Runtime Supervisor 设计（Task ↔ Backup 切换）
+
+**架构**：Modular shielded RL — Task Policy + Backup Policy 解耦，由 Supervisor 按 TCP-hand 距离切换。
+
+**方案 A：距离硬阈值 + 滞回**（已采纳）
+
+```
+d = min_dist(TCP, hand)
+
+if mode_last == task:
+    if d < D_TRIGGER:   # 进入 backup 工作域
+        mode = backup
+else:  # mode_last == backup
+    if d > D_RELEASE:   # 离开危险，回到 task
+        mode = task
+```
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| `D_TRIGGER` | 0.20 m | Backup 训练分布 (0.12-0.25m) 的中位数，切换时 backup 一定 in-distribution |
+| `D_RELEASE` | 0.30 m | > Backup 训练上限 25cm，确认"足够远"后才交回 task |
+| 滞回区 | 0.10 m | 避免阈值附近高频抖动 |
+
+**切换方式对比**（保留备忘）：
+
+| 方案 | 复杂度 | 信号需求 | 跟 Backup 训练分布对齐 |
+|---|---|---|---|
+| **A. 距离硬阈值 + 滞回** | ⭐ | hand 3D 位置 | **✓** |
+| B. TTC（时间到碰撞） | ⭐⭐ | hand 位置 + 速度 | 部分 |
+| C. CBF（QP 求解） | ⭐⭐⭐⭐ | 动力学模型 | 间接 |
+| D. Critic-gated | ⭐⭐⭐ | backup Q-value | ✓ |
+| E. Zone-based (A/B/C) | ⭐ | 固定 world frame | 部分 |
+
+**配套实验（待做）**：
+- 阈值扫描：`D_TRIGGER ∈ {0.15, 0.20, 0.25}`，测 task success vs collision rate 帕累托前沿
+- 对照组：Task-only（证明 backup 有用）、Always-backup（证明切换有必要）、Zone-based E（对比简化方案）
+
+**实现位置**：`frrl/rl/hierarchical_supervisor.py`（待建，独立模块，与 task/backup policy 解耦）
+
+真机版参考：`docs/real_robot_deployment_plan.md §5.4`。
 
 ---
 

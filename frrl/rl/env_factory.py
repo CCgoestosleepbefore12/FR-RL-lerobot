@@ -734,10 +734,10 @@ def control_loop(
     while episode_idx < cfg.dataset.num_episodes_to_record:
         step_start_time = time.perf_counter()
 
-        # Create a neutral action (no movement)
-        neutral_action = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
-        if use_gripper:
-            neutral_action = torch.cat([neutral_action, torch.tensor([1.0])])  # Gripper stay
+        # Create a neutral action (no movement) matching env action dim
+        # 兼容 4D [dx,dy,dz,gripper] 和 7D [dx,dy,dz,rx,ry,rz,gripper] 两种动作空间
+        action_dim = env.action_space.shape[0]
+        neutral_action = torch.zeros(action_dim, dtype=torch.float32)
 
         # Use the new step function
         transition = step_env_and_process_transition(

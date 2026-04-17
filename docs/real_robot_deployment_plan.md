@@ -764,37 +764,59 @@ obs = np.concatenate([robot_state_18d, obstacle_info])
 
 ### 5.4 真机运行架构
 
+**切换方案**：方案 A — 距离硬阈值 + 滞回（采纳于 `docs/sim_exp_data.md` §Runtime Supervisor）。
+
+**参数**（依据 Backup 训练分布 `HAND_SPAWN_DIST = (0.12, 0.25) m`）：
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| `D_TRIGGER` | 0.20 m | Backup 训练分布中位数，切换瞬间 backup 一定 in-distribution |
+| `D_RELEASE` | 0.30 m | > 训练上限 25cm，确认安全后再交回 task |
+| 滞回区 | 0.10 m | 避免阈值附近 mode 抖动（每步翻转） |
+
 ```
-FrankaRealEnv.step() 中的策略切换：
+FrankaRealEnv.step() 中的策略切换（滞回状态机）：
 
 每步循环：
   1. HandDetector 检测人手 → hand_pos, hand_active
-  2. 判断是否切换：
-     if hand_active and dist(hand_pos, tcp_pos) < SWITCH_THRESHOLD:
-         active_policy = backup_policy
-     else:
-         active_policy = task_policy
-  3. 构建观测（task: 24D, backup: 28D/38D）
-  4. action = active_policy.select_action(obs)
-  5. env.step(action)
+  2. d = min_dist(TCP, hand_pos)  (hand_active=False 时 d = +∞)
+  3. 判断 mode（带滞回）：
+     if mode_last == task:
+         if d < D_TRIGGER (0.20m):  mode = backup
+         else:                      mode = task
+     else:  # mode_last == backup
+         if d > D_RELEASE (0.30m):  mode = task
+         else:                      mode = backup
+  4. 构建观测（task: 27D/24D/21D, backup: 28D/38D）
+  5. action = active_policy.select_action(obs)
+  6. env.step(action)
 ```
 
 ```python
 # FrankaRealSafeEnv 伪代码
 class FrankaRealSafeEnv(FrankaRealEnv):
+    D_TRIGGER = 0.20  # 进入 backup 工作域
+    D_RELEASE = 0.30  # 离开 backup 工作域
+
     def __init__(self, ..., backup_policy_path):
         super().__init__(...)
         self.backup_policy = load_policy(backup_policy_path)
         self.hand_detector = HandDetector(T_cam_to_robot=self.T_cam_to_robot)
-        self.switch_threshold = 0.15  # 15cm 切换距离
+        self._mode = "task"   # 初始 task 模式
 
     def step(self, task_action):
         rgb, depth = self.front_camera.read()
         hand_pos, hand_active, _ = self.hand_detector.detect(rgb, depth)
-
         tcp_pos = self.currpos[:3]
 
-        if hand_active and np.linalg.norm(hand_pos - tcp_pos) < self.switch_threshold:
+        # 滞回切换：进入用 D_TRIGGER，退出用 D_RELEASE
+        d = np.linalg.norm(hand_pos - tcp_pos) if hand_active else np.inf
+        if self._mode == "task" and d < self.D_TRIGGER:
+            self._mode = "backup"
+        elif self._mode == "backup" and d > self.D_RELEASE:
+            self._mode = "task"
+
+        if self._mode == "backup":
             backup_obs = self._build_backup_obs(hand_pos, tcp_pos)
             action = self.backup_policy.select_action(backup_obs)
             full_action = np.concatenate([action, [0.0]])  # 6D + 夹爪锁定
@@ -803,6 +825,8 @@ class FrankaRealSafeEnv(FrankaRealEnv):
 
         return super().step(full_action)
 ```
+
+**对应仿真侧模块**：`frrl/rl/hierarchical_supervisor.py`（待建），真机直接复用该 supervisor。
 
 ### 5.5 新增文件
 
