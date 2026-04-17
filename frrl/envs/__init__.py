@@ -345,6 +345,44 @@ register(
     },
 )
 
+# ------------------------------------------------------------
+# Exp 1 观测消融（Task Policy 变体）: 27D / 24D / 21D
+#   - 与 Safe obs31/28/25 逐一对应，去掉 hand 4 维
+#   - 复用 Safe 场景 XML，但不激活人手、关闭安全层
+#   - 作为 Modular/Shielded 架构中的 Task Policy
+# ------------------------------------------------------------
+_TASK_BIAS_J1_RANDOM_KW = dict(
+    encoder_bias_config=EncoderBiasConfig(
+        enable=True,
+        error_probability=1.0,
+        target_joints=[0],
+        bias_mode="random_uniform",
+        bias_range=[-0.15, 0.15],
+    ),
+    hand_appear_prob=0.0,
+    safety_layer_enabled=False,
+)
+
+for _dim in (27, 24, 21):
+    _base_id = f"gym_frrl/PandaPickPlaceTaskObs{_dim}BiasJ1Random-v0"
+    register(
+        id=_base_id,
+        entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+        max_episode_steps=200,
+        kwargs={**_TASK_BIAS_J1_RANDOM_KW, "obs_mode": f"obs{_dim}"},
+    )
+    register(
+        id=f"gym_frrl/PandaPickPlaceTaskObs{_dim}BiasJ1RandomKeyboard-v0",
+        entry_point="frrl.envs.wrappers.factory:make_env",
+        max_episode_steps=200,
+        kwargs={
+            "env_id": _base_id,
+            "use_viewer": True,
+            "gripper_penalty": -0.05,
+            "use_inputs_control": True,
+        },
+    )
+
 # ============================================================
 # Backup Policy 训练环境
 # ============================================================

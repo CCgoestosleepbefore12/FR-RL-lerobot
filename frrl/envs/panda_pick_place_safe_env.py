@@ -68,7 +68,7 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
         hand_reappear_interval: Tuple[int, int] = (20, 50),
         safety_layer_enabled: bool = True,
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
-        obs_mode: Literal["obs31", "obs28", "obs25"] = "obs31",
+        obs_mode: Literal["obs31", "obs28", "obs25", "obs27", "obs24", "obs21"] = "obs31",
     ):
         self._hand_appear_prob = hand_appear_prob
         self._hand_duration_range = hand_duration_range
@@ -76,10 +76,15 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
         self._hand_reappear_interval = hand_reappear_interval
         self._safety_layer_enabled = safety_layer_enabled
         # 观测消融模式
-        #   obs31: 完整 = robot(18) + block(3) + plate(3) + real_tcp(3) + hand_active(1) + hand_pos(3)
-        #   obs28: 去 real_tcp = robot(18) + block(3) + plate(3) + hand_active(1) + hand_pos(3)
-        #   obs25: 去 block/plate = robot(18) + real_tcp(3) + hand_active(1) + hand_pos(3)
-        if obs_mode not in ("obs31", "obs28", "obs25"):
+        #   带 hand（Safe 策略）:
+        #     obs31: 完整 = robot(18) + block(3) + plate(3) + real_tcp(3) + hand_active(1) + hand_pos(3)
+        #     obs28: 去 real_tcp = robot(18) + block(3) + plate(3) + hand_active(1) + hand_pos(3)
+        #     obs25: 去 block/plate = robot(18) + real_tcp(3) + hand_active(1) + hand_pos(3)
+        #   不带 hand（Task 策略，与带 hand 的逐一对应，去掉 hand_active+hand_pos=4 维）:
+        #     obs27 = robot(18) + block(3) + plate(3) + real_tcp(3)
+        #     obs24 = robot(18) + block(3) + plate(3)
+        #     obs21 = robot(18) + real_tcp(3)
+        if obs_mode not in ("obs31", "obs28", "obs25", "obs27", "obs24", "obs21"):
             raise ValueError(f"Unknown obs_mode: {obs_mode}")
         self._obs_mode = obs_mode
 
@@ -126,7 +131,7 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
         self._min_hand_dist = float('inf')
 
         # 观测空间维度由 obs_mode 决定
-        _obs_dim_map = {"obs31": 31, "obs28": 28, "obs25": 25}
+        _obs_dim_map = {"obs31": 31, "obs28": 28, "obs25": 25, "obs27": 27, "obs24": 24, "obs21": 21}
         agent_dim = _obs_dim_map[self._obs_mode]
         agent_box = spaces.Box(-np.inf, np.inf, (agent_dim,), dtype=np.float32)
 
@@ -378,14 +383,23 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
 
         # 按 obs_mode 拼接观测
         if self._obs_mode == "obs31":
-            # 完整
+            # 完整 Safe
             agent_pos = np.concatenate([robot_state, block_pos, plate_pos, noisy_real_tcp, hand_active, hand_pos])
         elif self._obs_mode == "obs28":
-            # 去外部 TCP oracle
+            # Safe 去外部 TCP oracle
             agent_pos = np.concatenate([robot_state, block_pos, plate_pos, hand_active, hand_pos])
-        else:  # obs25
-            # 去物体显式坐标（block/plate），保留外部 TCP 和人手
+        elif self._obs_mode == "obs25":
+            # Safe 去 block/plate，保留外部 TCP 和人手
             agent_pos = np.concatenate([robot_state, noisy_real_tcp, hand_active, hand_pos])
+        elif self._obs_mode == "obs27":
+            # Task 完整（去 hand 4 维）
+            agent_pos = np.concatenate([robot_state, block_pos, plate_pos, noisy_real_tcp])
+        elif self._obs_mode == "obs24":
+            # Task 去外部 TCP oracle
+            agent_pos = np.concatenate([robot_state, block_pos, plate_pos])
+        else:  # obs21
+            # Task 去 block/plate
+            agent_pos = np.concatenate([robot_state, noisy_real_tcp])
 
         if self.image_obs:
             front_view, wrist_view = self.render()
