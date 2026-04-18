@@ -5,7 +5,6 @@
 import gymnasium as gym
 
 from frrl.envs.panda_pick_cube_env import PandaPickCubeGymEnv
-from frrl.envs.panda_arrange_boxes_env import PandaArrangeBoxesGymEnv
 from frrl.envs.panda_pick_place_env import PandaPickPlaceEnv
 from frrl.envs.panda_backup_policy_env import PandaBackupPolicyEnv
 from frrl.envs.panda_pick_place_safe_env import PandaPickPlaceSafeEnv
@@ -55,12 +54,12 @@ def wrap_env(
     return env
 
 
-# 环境类映射
+# 环境类映射（substring 匹配）
 _ENV_CLASSES = {
     "PandaPickCubeBase": PandaPickCubeGymEnv,
-    "PandaArrangeBoxesBase": PandaArrangeBoxesGymEnv,
     "FRRLPandaPickPlace": PandaPickPlaceEnv,
     "PandaPickPlaceSafe": PandaPickPlaceSafeEnv,
+    "PandaPickPlaceTask": PandaPickPlaceSafeEnv,  # Task = Safe class + hand_appear_prob=0（由 base kwargs 透传）
     "PandaBackupPolicy": PandaBackupPolicyEnv,
 }
 
@@ -83,7 +82,7 @@ def make_env(
     # 例如 "gym_frrl/PandaPickCubeBase-v0" → "PandaPickCubeBase"
     task_name = env_id.split("/")[-1].rsplit("-", 1)[0]
 
-    # 查找对应的环境类
+    # 查找对应的环境类（substring 匹配，Task 变体复用 Safe class）
     env_cls = None
     for key, cls in _ENV_CLASSES.items():
         if key in task_name:
@@ -93,7 +92,14 @@ def make_env(
     if env_cls is None:
         raise ValueError(f"Unknown environment: {env_id}. Known bases: {list(_ENV_CLASSES.keys())}")
 
-    env = env_cls(**kwargs)
+    # 从 base env 注册透传 kwargs（encoder_bias_config / obs_mode / hand_appear_prob 等）
+    # Keyboard 注册里显式传的 kwargs 优先覆盖 base
+    try:
+        base_kwargs = dict(gym.spec(env_id).kwargs or {})
+    except gym.error.NameNotFound:
+        base_kwargs = {}
+    merged_kwargs = {**base_kwargs, **kwargs}
+    env = env_cls(**merged_kwargs)
 
     return wrap_env(
         env,

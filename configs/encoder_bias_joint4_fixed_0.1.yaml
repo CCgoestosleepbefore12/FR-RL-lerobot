@@ -1,8 +1,0 @@
-# 编码器偏差配置 - Joint 4 固定 0.1 rad (5.7 deg)
-# 轻微校准偏差
-
-enable: true
-error_probability: 1.0
-target_joints: [3]  # Joint 4 (0-indexed)
-bias_mode: 'fixed'
-fixed_bias_value: 0.1

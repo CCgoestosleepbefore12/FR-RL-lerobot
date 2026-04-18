@@ -69,6 +69,7 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
         safety_layer_enabled: bool = True,
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
         obs_mode: Literal["obs31", "obs28", "obs25", "obs27", "obs24", "obs21"] = "obs31",
+        action_scale: float = 1.0,
     ):
         self._hand_appear_prob = hand_appear_prob
         self._hand_duration_range = hand_duration_range
@@ -99,6 +100,7 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
             image_obs=image_obs,
             home_position=_PANDA_HOME,
             cartesian_bounds=_CARTESIAN_BOUNDS,
+            action_scale=action_scale,
             encoder_bias_config=encoder_bias_config,
         )
 

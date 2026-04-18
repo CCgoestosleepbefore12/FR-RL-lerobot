@@ -2,13 +2,7 @@
 策略评估脚本 — 加载checkpoint，在指定环境中跑N个episode，统计成功率。
 
 用法:
-  # 无偏差评估
-  python scripts/eval_policy.py --checkpoint outputs/train/.../pretrained_model --env_task PandaPickCubeBase-v0 --n_episodes 50
-
-  # 有偏差评估
-  python scripts/eval_policy.py --checkpoint outputs/train/.../pretrained_model --env_task PandaPickCubeBiasJ4Fixed02-v0 --n_episodes 50
-
-  # 带可视化
+  python scripts/eval_policy.py --checkpoint outputs/train/.../pretrained_model --env_task PandaPickPlaceSafeObs31BiasJ1Random-v0 --n_episodes 50
   python scripts/eval_policy.py --checkpoint outputs/train/.../pretrained_model --env_task PandaPickCubeBase-v0 --n_episodes 10 --render
 """
 

@@ -1,5 +1,0 @@
-# 编码器偏差配置 - 无故障 Baseline
-# 用于收集baseline性能数据
-
-enable: false
-error_probability: 0.0

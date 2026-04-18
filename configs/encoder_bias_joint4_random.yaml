@@ -1,8 +1,0 @@
-# 编码器偏差配置 - Joint 4 随机 [0, 1] rad
-# 推荐用于鲁棒性训练：每个episode随机采样不同程度的偏差
-
-enable: true
-error_probability: 1.0
-target_joints: [3]  # Joint 4 (0-indexed)
-bias_mode: 'random_uniform'
-bias_range: [0.0, 1.0]  # 0 到 1 rad (0 到 57.3 deg)

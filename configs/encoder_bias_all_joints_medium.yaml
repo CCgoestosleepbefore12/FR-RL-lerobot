@@ -1,9 +1,0 @@
-# 编码器偏差配置 - 所有关节，中等偏差
-# 30% episode有故障，每关节70%概率被影响
-
-enable: true
-error_probability: 0.3
-target_joints: null  # 所有关节
-per_joint_probability: 0.7
-bias_mode: 'random_uniform'
-bias_range: [-0.05, 0.05]  # ±0.05 rad (±2.9 deg)

@@ -5,7 +5,7 @@ Franka Panda 机器人环境基类
 - MujocoGymEnv: 低层MuJoCo + Gym接口
 - FrankaGymEnv: Panda机器人控制（OSC）+ 编码器偏差注入
 
-所有任务环境（PickPlace、PickCube、ArrangeBoxes）都继承FrankaGymEnv，
+所有任务环境（PickPlace、PickCube、Safe、Backup）都继承FrankaGymEnv，
 只需实现 reset()、step()、_compute_observation()、_compute_reward()。
 """
 
