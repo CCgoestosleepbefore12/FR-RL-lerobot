@@ -459,6 +459,24 @@ def main(_):
     def get_encoder_bias():
         return jsonify({"bias": robot_server.current_bias.tolist()})
 
+    # Route for getting true (unbiased) state — same shape as /getstate but
+    # pose/q are the raw libfranka values, ignoring any active encoder bias.
+    @webapp.route("/getstate_true", methods=["POST"])
+    def get_state_true():
+        return jsonify(
+            {
+                "pose": np.array(robot_server.pos).tolist(),
+                "vel": np.array(robot_server.vel).tolist(),
+                "force": np.array(robot_server.force).tolist(),
+                "torque": np.array(robot_server.torque).tolist(),
+                "q": np.array(robot_server.q).tolist(),
+                "dq": np.array(robot_server.dq).tolist(),
+                "jacobian": np.array(robot_server.jacobian).tolist(),
+                "gripper_pos": gripper_server.gripper_pos,
+                "bias": np.array(robot_server.current_bias).tolist(),
+            }
+        )
+
     webapp.run(host=FLAGS.flask_url)
 
 
