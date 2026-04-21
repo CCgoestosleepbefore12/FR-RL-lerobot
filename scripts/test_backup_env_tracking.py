@@ -235,16 +235,26 @@ def test_v2_rotation_does_not_reduce_arm_distance():
 
 
 def test_v2_rotation_budget_termination():
-    """V2：累计旋转 > MAX_ROTATION 应触发 excessive_rotation 终止。"""
-    env = _make_env_v2(seed=7)
+    """V2 旋转预算**机制**测试：显式传小 max_rotation，验证硬终止链路仍可工作。
+
+    说明：S1V2 默认已改为 max_rotation=π 软惩罚模式（球心对旋转 rigid →
+    硬上限在 V2 下无防作弊意义，只会挡几何必要的换 IK 构型）。此测试
+    保留机制可用性，以便未来变体可按需开启。"""
+    env = PandaBackupPolicyEnv(
+        enable_dr=False, seed=7,
+        use_arm_sphere_collision=True,
+        max_displacement=0.30,
+        enforce_cartesian_bounds=False,
+        max_rotation=0.5,  # 显式开启硬上限供本测试使用
+    )
+    env.reset(seed=7)
     # 把手放远（避免撞停）
     hand_body_id = env.unwrapped._panda_hand_body_id
     arm_center = env.unwrapped._data.xpos[hand_body_id].copy()
     env.unwrapped._obstacle_pos[0] = arm_center + np.array([0.40, 0.0, 0.0])
     env.unwrapped._stall_remaining[0] = 999
 
-    # 每步最大旋转 ≈ 1.0 * ROT_ACTION_SCALE = 0.1 rad；MAX_ROTATION=0.5 rad
-    # 所以至少 5 步才超限；给 10 步足够
+    # 每步最大旋转 ≈ 1.0 * ROT_ACTION_SCALE = 0.1 rad；本测试 max_rotation=0.5
     rotation_seen = 0.0
     term_info = None
     for _ in range(10):
@@ -261,10 +271,10 @@ def test_v2_rotation_budget_termination():
     assert term_info is not None, f"应触发旋转预算终止，但未 terminate，rotation_seen={rotation_seen:.3f}"
     assert term_info.get("violation_type") == "excessive_rotation", \
         f"expected excessive_rotation, got {term_info.get('violation_type')}"
-    assert rotation_seen > MAX_ROTATION, \
-        f"终止时 rotation {rotation_seen:.3f} 应 > MAX {MAX_ROTATION}"
-    print(f"  [PASS] V2 rotation budget terminates at "
-          f"{rotation_seen:.3f}rad (max={MAX_ROTATION})")
+    assert rotation_seen > 0.5, \
+        f"终止时 rotation {rotation_seen:.3f} 应 > max_rotation 0.5"
+    print(f"  [PASS] V2 rotation budget mechanism wired "
+          f"(terminates at {rotation_seen:.3f}rad when max=0.5)")
     env.close()
 
 

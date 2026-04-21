@@ -79,11 +79,16 @@ TERMINATION_PENALTY = -10.0
 SURVIVAL_BONUS = 5.0
 MAX_DISPLACEMENT = 0.15
 
-# V2 防作弊：腕+手单球避障 + 旋转预算/惩罚
-ARM_SPHERE_RADIUS = 0.10              # m，包住 wrist+hand 的球半径（球心在 panda hand body = mocap weld 点）
+# V2 防作弊：腕+手单球避障 + 旋转软惩罚
+# arm_sphere 球心 = mocap weld 点，对绕该点旋转 rigid → 转腕无法改变球位置 →
+# 旋转不可能用于"躲避作弊"，硬上限只会挡住几何必要的换 IK 构型（如手从上方来、
+# 机械臂限位无法下退时必须转腕切解）。因此旋转预算改为纯软惩罚：
+# - MAX_ROTATION=π 等效关闭硬终止
+# - ROTATION_COEFF 从 0.5 降到 0.2，仍保留 "能不转就不转" 的偏置
+ARM_SPHERE_RADIUS = 0.10              # m，包住 wrist+hand 的球半径
 ARM_COLLISION_DIST = ARM_SPHERE_RADIUS + 0.035   # + obstacle 球半径 = 0.135m
-ROTATION_COEFF = 0.5                  # 旋转惩罚系数（对称 DISPLACEMENT_COEFF）
-MAX_ROTATION = 0.5                    # rad ≈ 28.6°，旋转预算硬上限
+ROTATION_COEFF = 0.2                  # 旋转软惩罚系数
+MAX_ROTATION = np.pi                  # ≈180°，等效关闭硬上限
 
 # DR 噪声参数
 DR_OBS_POS_STD = 0.03

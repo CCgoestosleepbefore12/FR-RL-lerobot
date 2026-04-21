@@ -23,15 +23,28 @@ Backup Policy 评估脚本
 """
 
 import argparse
+import time
 from collections import defaultdict
 
 import numpy as np
 import torch
 import gymnasium as gym
+import mujoco.viewer
 
 import frrl.envs  # noqa: F401 — 触发 gym 注册
 import frrl.policies.sac.configuration_sac  # noqa: F401 — 触发策略注册
 from frrl.configs.policies import PreTrainedConfig
+from frrl.policies.sac.modeling_sac import SACPolicy
+from frrl.processor import (
+    Numpy2TorchActionProcessorStep,
+    VanillaObservationProcessorStep,
+    AddBatchDimensionProcessorStep,
+    DeviceProcessorStep,
+    DataProcessorPipeline,
+    create_transition,
+)
+from frrl.processor.converters import identity_transition
+from frrl.processor.core import TransitionKey
 
 
 def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
@@ -43,7 +56,6 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.device = device
 
-    from frrl.policies.sac.modeling_sac import SACPolicy
     policy = SACPolicy.from_pretrained(checkpoint_path, config=cfg)
     policy.eval()
     policy.to(device)
@@ -56,20 +68,7 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
     # ── 可视化 ──
     viewer = None
     if render:
-        import mujoco.viewer
         viewer = mujoco.viewer.launch_passive(env.unwrapped._model, env.unwrapped._data)
-
-    # ── 观测 processor ──
-    from frrl.processor import (
-        Numpy2TorchActionProcessorStep,
-        VanillaObservationProcessorStep,
-        AddBatchDimensionProcessorStep,
-        DeviceProcessorStep,
-        DataProcessorPipeline,
-        create_transition,
-    )
-    from frrl.processor.converters import identity_transition
-    from frrl.processor.core import TransitionKey
 
     env_processor = DataProcessorPipeline(
         steps=[
@@ -117,7 +116,6 @@ def evaluate(checkpoint_path: str, n_episodes: int, render: bool,
 
             if render and viewer is not None:
                 viewer.sync()
-                import time
                 time.sleep(0.05)
 
             if not done:
@@ -211,10 +209,10 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", required=True, help="模型 checkpoint 路径")
     parser.add_argument("--n_episodes", type=int, default=50, help="评估 episode 数")
     parser.add_argument("--render", action="store_true", help="MuJoCo 可视化")
-    parser.add_argument("--survival_threshold", type=int, default=10,
-                        help="存活判定阈值（步数，默认 10 = 完整 episode）")
-    parser.add_argument("--max_steps", type=int, default=10,
-                        help="每 episode 最大步数")
+    parser.add_argument("--survival_threshold", type=int, default=20,
+                        help="存活判定阈值（步数，默认 20 = 完整 episode，与训练 max_episode_steps 对齐）")
+    parser.add_argument("--max_steps", type=int, default=20,
+                        help="每 episode 最大步数（默认 20，与训练对齐）")
     parser.add_argument("--env_task", default="PandaBackupPolicyS1-v0",
                         choices=[
                             "PandaBackupPolicyS1-v0",
