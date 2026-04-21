@@ -836,6 +836,49 @@ V2 10k steps 眼检可视化发现奇异行为：满存活率仅 20%、60% episo
 - `frrl/envs/__init__.py`：`PandaBackupPolicyS1V2-v0` kwargs 改 `max_displacement=0.30` + `enforce_cartesian_bounds=False`
 - `scripts/test_backup_env_tracking.py`：`_make_env_v2` 与 S1V2 注册对齐；`test_tracking_moves_toward_tcp` 改 -X 方向 12cm 避免 workspace clip 干扰；12/12 pass
 
+### 旋转预算改软惩罚 + 145k ckpt 落库（2026-04-22）
+
+23:06:55 run 持续跑到 actor ~235k（78%），学习曲线在 **190-195k / 215-220k** 出现两个 98.4% 峰值后进入 94-98% 震荡，收敛。
+
+**离线 Eval（50 ep × 20 steps）相邻 ckpt 对比：**
+
+| Learner ckpt | 存活率 | 奖励 ±σ | 备注 |
+|---|---|---|---|
+| 110k | 98% | +10.70 ±2.21 | 前期冠军（actor ~150k 段） |
+| 140k | 98% | +10.12 ±2.21 | |
+| **145k** ⭐ | **100%** | **+10.62 ±0.77** | 新冠军（对应 actor 190-195k 峰） |
+| 150k | 100% | +10.59 ±0.95 | |
+| 155k | 98% | +9.89 ±2.40 | |
+
+**Actor↔Learner 步数比例 ≈ 1.36 : 1**（utd=8 但 learner 受 I/O 同步拖慢）——训练曲线的 step 是 actor 环境交互步，ckpt 目录名是 learner 梯度步。
+
+**旋转预算改软惩罚（env 常量变更，对下一次训练生效）**：
+
+| 参数 | 旧值 | 新值 | 理由 |
+|---|---|---|---|
+| `MAX_ROTATION` | 0.5 rad | π（≈180°） | V2 球心对绕 weld 点旋转 rigid → 硬上限无防作弊意义，反而挡了"手从上方来、机械臂限位必须转腕换 IK"的几何必要构型 |
+| `ROTATION_COEFF` | 0.5 | 0.2 | 仍保留"能不转就不转"的软偏置，但不再与位移 penalty 等权 |
+
+> 145k ckpt 本身是**旧预算（0.5rad / 0.5 coeff）下训练**的；新常量对后续训练/评估生效。
+
+**Homing 集成验证**（`scripts/test_homing_integration.py`，145k + HomingController）：
+- 20/20 episode 收敛 100%
+- backup 阶段平均推离 0.132 m + 0.603 rad；homing 平均 5.8 步拉回
+- 末态 pos_err 0.013m（tol 0.02）、rot_err 0.004rad（tol 0.05）——真机允许的 homing 预算内
+
+**Eval 脚本对齐训练**：`scripts/eval_backup_policy.py` 默认 `max_steps/survival_threshold` 10 → 20（与 env 注册的 `max_episode_steps=20` 一致），避免 10 步下假性 100%。
+
+**Ckpt 落库**：
+- `checkpoints/backup_policy_s1_v2_newgeom_145k/`（**真机部署首选**，100% / ±0.77）
+- `checkpoints/backup_policy_s1_v2_newgeom_35k/`（旧版首选，94% / 保留对照）
+- `.gitignore` 白名单 + README 说明训练几何/旋转预算/eval 基准
+
+**代码改动（commits `2093a9b`, `181fd1a`）**：
+- `panda_backup_policy_env.py`：`ROTATION_COEFF 0.5→0.2`, `MAX_ROTATION 0.5→π`，注释说明改动理由
+- `scripts/eval_backup_policy.py`：默认 max_steps 10→20；inline imports 上移到模块级
+- `scripts/test_backup_env_tracking.py`：rotation budget 机制测试显式传 `max_rotation=0.5`（硬终止链路仍可用）
+- `scripts/test_homing_integration.py`：新增 backup + homing 集成测试脚本
+
 ---
 
 ## 附录：可复现命令
