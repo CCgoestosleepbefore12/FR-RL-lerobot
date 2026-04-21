@@ -243,6 +243,15 @@ register(
     kwargs={"num_obstacles": 1, "max_displacement": 0.20, "survival_bonus": 10.0},
 )
 
+# S1 V2 防作弊：腕+手单球避障 (r=10cm) + 旋转预算 (≤0.5rad) + 旋转惩罚
+# 解决 V1 中 policy 学会"转手腕躲开 TCP/指尖检测点但腕部真实碰撞"的作弊路径
+register(
+    id="gym_frrl/PandaBackupPolicyS1V2-v0",
+    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=20,
+    kwargs={"num_obstacles": 1, "use_arm_sphere_collision": True},
+)
+
 # S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS2-v0",

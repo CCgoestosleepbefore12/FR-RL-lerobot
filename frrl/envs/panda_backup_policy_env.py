@@ -78,6 +78,12 @@ TERMINATION_PENALTY = -10.0
 SURVIVAL_BONUS = 5.0
 MAX_DISPLACEMENT = 0.15
 
+# V2 防作弊：腕+手单球避障 + 旋转预算/惩罚
+ARM_SPHERE_RADIUS = 0.10              # m，包住 wrist+hand 的球半径（球心在 panda hand body = mocap weld 点）
+ARM_COLLISION_DIST = ARM_SPHERE_RADIUS + 0.035   # + obstacle 球半径 = 0.135m
+ROTATION_COEFF = 0.5                  # 旋转惩罚系数（对称 DISPLACEMENT_COEFF）
+MAX_ROTATION = 0.5                    # rad ≈ 28.6°，旋转预算硬上限
+
 # DR 噪声参数
 DR_OBS_POS_STD = 0.03
 DR_OBS_VEL_STD = 0.01
@@ -101,6 +107,12 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         max_displacement: TCP 相对 episode 起点位移硬上限 (m)，超过即 terminate。
             0.15（默认）为严格版本；0.20 为放宽版本（给 policy 更大退让预算）。
         survival_bonus: 存活完整 episode（truncated）时追加的终局 bonus。
+        use_arm_sphere_collision: True → 用腕+手单球（半径 10cm，球心在 mocap weld 点）
+            做唯一避障碰撞体；False（默认）→ 保留 TCP+左右指尖三检测点。V2 防作弊开关。
+        max_rotation: 姿态旋转预算硬上限 (rad)，当 use_arm_sphere_collision=True 时生效。
+            超过即 terminate（防"转手腕躲避"作弊）。
+        rotation_coeff: 旋转幅度负奖励系数（与 DISPLACEMENT_COEFF 对称），仅在
+            use_arm_sphere_collision=True 时启用。
     """
 
     def __init__(
@@ -117,12 +129,18 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
         max_displacement: float = MAX_DISPLACEMENT,
         survival_bonus: float = SURVIVAL_BONUS,
+        use_arm_sphere_collision: bool = False,
+        max_rotation: float = MAX_ROTATION,
+        rotation_coeff: float = ROTATION_COEFF,
     ):
         self._num_obstacles = min(num_obstacles, 2)
         self._enable_dr = enable_dr
         self._obs_stack = max(obs_stack, 1)
         self._max_displacement = float(max_displacement)
         self._survival_bonus = float(survival_bonus)
+        self._use_arm_sphere_collision = bool(use_arm_sphere_collision)
+        self._max_rotation = float(max_rotation)
+        self._rotation_coeff = float(rotation_coeff)
 
         super().__init__(
             seed=seed,
@@ -142,6 +160,8 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         # MuJoCo body/geom ID
         self._obstacle_body_ids = [self._model.body(n).id for n in HAND_BODY_NAMES]
         self._obstacle_geom_ids = [self._model.geom(n).id for n in HAND_GEOM_NAMES]
+        # V2 腕+手避障的球心：mocap weld 点 (panda hand body)
+        self._panda_hand_body_id = self._model.body("hand").id
 
         # 障碍物状态
         self._obstacle_pos = [HIDDEN_POS.copy() for _ in range(self._num_obstacles)]
@@ -159,6 +179,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
 
         # 奖励辅助状态
         self._tcp_start = np.zeros(3)
+        self._tcp_start_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)  # shape: (4,) [w,x,y,z]
         self._action_prev = np.zeros(6, dtype=np.float32)
 
         # 帧堆叠
@@ -193,6 +214,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             self._pos_histories[i].clear()
             self._pos_histories[i].append(HIDDEN_POS.copy())
         self._tcp_start = np.zeros(3)
+        self._tcp_start_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self._action_prev = np.zeros(6, dtype=np.float32)
         self._obs_history.clear()
 
@@ -203,6 +225,8 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
 
         tcp = self._data.site_xpos[self._pinch_site_id].copy()
         self._tcp_start = tcp.copy()
+        # 记录 episode 起点末端姿态（V2 旋转预算基准）
+        self._tcp_start_quat = np.asarray(self._data.mocap_quat[0], dtype=np.float64).copy()
 
         # 追踪速度 per-episode 随机
         self._obstacle_speed = self._random.uniform(*HAND_SPEED_RANGE)
@@ -261,6 +285,16 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             terminated = True
             safety_info = {"safety_violation": True, "violation_type": "excessive_displacement"}
 
+        # V2 旋转预算检测（仅启用时）
+        rotation = self._compute_rotation_angle() if self._use_arm_sphere_collision else 0.0
+        if (
+            not terminated
+            and self._use_arm_sphere_collision
+            and rotation > self._max_rotation
+        ):
+            terminated = True
+            safety_info = {"safety_violation": True, "violation_type": "excessive_rotation"}
+
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
         if terminated:
@@ -275,6 +309,8 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
                 - ACTION_NORM_COEFF * action_norm
                 - ACTION_SMOOTH_COEFF * action_diff
             )
+            if self._use_arm_sphere_collision:
+                reward -= self._rotation_coeff * rotation
             if truncated:
                 reward += self._survival_bonus
 
@@ -286,6 +322,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             "hand_collisions": self._hand_collisions,
             "min_hand_dist": self._min_hand_dist,
             "displacement": displacement,
+            "rotation": rotation,
             "num_obstacles": self._num_obstacles,
             "motion_mode": self._motion_mode.name,
             **safety_info,
@@ -364,9 +401,13 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         return pos
 
     def _check_multi_safety(self) -> Tuple[bool, Dict[str, Any]]:
-        """碰撞检测：所有障碍物 × 三检测点（TCP + 左右指尖）。"""
+        """碰撞检测：
+
+        V1（默认）：TCP + 左右指尖三检测点，阈值 HAND_COLLISION_DIST。
+        V2（use_arm_sphere_collision=True）：腕+手单球，球心在 panda hand body
+            （= mocap weld 点，对旋转 rigid），阈值 ARM_COLLISION_DIST。
+        """
         tcp = self._data.site_xpos[self._pinch_site_id].copy()
-        check_points = [tcp, self._data.xpos[self._left_pad_body_id], self._data.xpos[self._right_pad_body_id]]
 
         terminated = False
         safety_info = {"safety_violation": False, "violation_type": None}
@@ -378,14 +419,27 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             safety_info = {"safety_violation": True, "violation_type": "zone_c_intrusion"}
             return terminated, safety_info
 
-        # 障碍物碰撞（用真实位置，不用 DR 噪声位置）
-        for i in range(self._num_obstacles):
-            min_d = min(float(np.linalg.norm(pt - self._obstacle_pos[i])) for pt in check_points)
-            self._min_hand_dist = min(self._min_hand_dist, min_d)
-            if not terminated and min_d < HAND_COLLISION_DIST:
-                self._hand_collisions += 1
-                terminated = True
-                safety_info = {"safety_violation": True, "violation_type": "hand_collision"}
+        if self._use_arm_sphere_collision:
+            # V2：单球避障，球心 = panda hand body xpos（rotation invariant）
+            arm_sphere_center = self._data.xpos[self._panda_hand_body_id].copy()
+            collision_dist = ARM_COLLISION_DIST
+            for i in range(self._num_obstacles):
+                d = float(np.linalg.norm(arm_sphere_center - self._obstacle_pos[i]))
+                self._min_hand_dist = min(self._min_hand_dist, d)
+                if not terminated and d < collision_dist:
+                    self._hand_collisions += 1
+                    terminated = True
+                    safety_info = {"safety_violation": True, "violation_type": "hand_collision"}
+        else:
+            # V1：TCP + 左右指尖三检测点
+            check_points = [tcp, self._data.xpos[self._left_pad_body_id], self._data.xpos[self._right_pad_body_id]]
+            for i in range(self._num_obstacles):
+                min_d = min(float(np.linalg.norm(pt - self._obstacle_pos[i])) for pt in check_points)
+                self._min_hand_dist = min(self._min_hand_dist, min_d)
+                if not terminated and min_d < HAND_COLLISION_DIST:
+                    self._hand_collisions += 1
+                    terminated = True
+                    safety_info = {"safety_violation": True, "violation_type": "hand_collision"}
 
         return terminated, safety_info
 
@@ -438,6 +492,21 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
             w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
         ], dtype=np.float64)
+
+    @staticmethod
+    def _quat_conjugate(q: np.ndarray) -> np.ndarray:
+        """单位四元数的共轭 = 其逆。shape: (4,) → (4,)，[w,x,y,z]。"""
+        return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+
+    def _compute_rotation_angle(self) -> float:
+        """当前末端姿态相对 episode 起点姿态的旋转角 (rad)。
+
+        q_err = q_start⁻¹ · q_cur；rotation = 2·arccos(|q_err.w|)，
+        取 |w| 消除双覆盖歧义。"""
+        q_cur = np.asarray(self._data.mocap_quat[0], dtype=np.float64)       # shape: (4,)
+        q_err = self._quat_multiply(self._quat_conjugate(self._tcp_start_quat), q_cur)
+        w_clamped = float(np.clip(abs(q_err[0]), 0.0, 1.0))
+        return 2.0 * float(np.arccos(w_clamped))
 
     # ================================================================
     # 观测

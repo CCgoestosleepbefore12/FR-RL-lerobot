@@ -220,6 +220,7 @@ if __name__ == "__main__":
                             "PandaBackupPolicyS1-v0",
                             "PandaBackupPolicyS1Relaxed-v0",
                             "PandaBackupPolicyS1Combo-v0",
+                            "PandaBackupPolicyS1V2-v0",
                             "PandaBackupPolicyS2-v0",
                             "PandaBackupPolicyS1NoDR-v0",
                             "PandaBackupPolicyS1BiasJ1-v0",

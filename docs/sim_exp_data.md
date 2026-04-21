@@ -715,6 +715,59 @@ bash scripts/train_hil_sac.sh backup_tracking_combo actor
 
 ---
 
+## Backup S1 V2 防作弊：arm-sphere + rotation budget（2026-04-21）
+
+**动机**：观察 Base/Relaxed 训练早期行为发现 V1 奖励结构存在作弊路径——TCP + 左右指尖三检测点对"绕 mocap weld 点快速旋转"不敏感，policy 可以通过剧烈转手腕让**末端位置避开**障碍物、但**腕部/手掌实际仍在 5–10cm 范围内**继续被手推。位移预算 15–20cm 同时限制了腕部离开的物理空间，于是出现"原地转腕"的退化解。这不是 reward hacking 的艺术性问题，是 sim2real 不可接受的 policy 失败——真机手掌撞人不算成功存活。
+
+### 改造：双管齐下
+
+1. **单球避障**：`use_arm_sphere_collision=True` 时，把 TCP + 两指尖三检测点替换为**包住 wrist+hand 的单球**（`ARM_SPHERE_RADIUS=0.10m`，球心 = panda hand body xpos = mocap weld 点）。球心对绕 weld 点的旋转 rigid（单测 `test_v2_rotation_does_not_reduce_arm_distance` 验证 delta < 5mm），所以转腕不再能"缩进"球心与障碍物的距离。碰撞阈值 `ARM_COLLISION_DIST = 0.10 + 0.035 = 0.135m`（+obstacle 球半径）。
+
+2. **旋转预算 + 旋转惩罚**：姿态相对 episode 起点的累计角 `rotation = 2·arccos(|q_err_local.w|)`，其中 `q_err_local = q_start⁻¹ · q_cur`（与 env 局部系右乘约定一致）。`rotation > MAX_ROTATION=0.5 rad (≈28.6°)` 即 terminate 为 `excessive_rotation`；存活每步 reward 追加 `-ROTATION_COEFF * rotation`（`ROTATION_COEFF=0.5`，对称 `DISPLACEMENT_COEFF`）。位移和旋转的成本曲率对齐，不给"转腕替代位移"留激励缝隙。
+
+两个机制独立：球心 rigid 让作弊动作**不再有效**，预算/惩罚让作弊动作**不再划算**。
+
+### 环境 & 配置
+
+| 变体 | env id | use_arm_sphere | max_rotation | rotation_coeff | learner port | seed |
+|---|---|---|---|---|---|---|
+| V2 | `PandaBackupPolicyS1V2-v0` | ✓ | 0.5 rad | 0.5 | 50054 | 1003 |
+
+`PandaBackupPolicyEnv.__init__` 新增 `use_arm_sphere_collision`/`max_rotation`/`rotation_coeff`；默认 `use_arm_sphere_collision=False` 保留向后兼容（Base/Relaxed/Combo/S2/NoDR/BiasJ1 都不受影响）。`_check_multi_safety` 按开关分支；`step()` 在位移检测后追加旋转预算检查与 reward 扣除；`info["rotation"]` 新增供监控。
+
+### 验证
+
+`scripts/test_backup_env_tracking.py` 新增 4 个 V2 测试（总 11/11 pass）：
+- `test_v2_arm_sphere_collision_threshold`：手距球心 0.10m < 0.135m 应 terminate（hand_collision）
+- `test_v2_rotation_does_not_reduce_arm_distance`：纯旋转动作 arm_center 位移 <5mm（rigid 验证）
+- `test_v2_rotation_budget_termination`：连续最大旋转 6 步后 rotation 0.600rad > 0.5 触发 excessive_rotation
+- `test_v2_rotation_penalty_applied`：单步 0.5 * ROT_ACTION_SCALE → rotation 0.05 rad 进入 info，链路打通
+
+### 可复现命令
+
+```bash
+# V2 防作弊训练（300k, 端口 50054, 独立 seed 1003）
+bash scripts/train_hil_sac.sh backup_v2 learner      # 终端 1
+bash scripts/train_hil_sac.sh backup_v2 actor        # 终端 2
+
+# V2 eval（与 Base/Relaxed/Combo 对照）
+python scripts/eval_backup_policy.py \
+  --checkpoint outputs/.../pretrained_model \
+  --env_task PandaBackupPolicyS1V2-v0 \
+  --n_episodes 200
+```
+
+### 关联改动
+
+- `frrl/envs/panda_backup_policy_env.py`：`__init__` 新增 V2 三个参数；`_check_multi_safety` 按 `use_arm_sphere_collision` 分支；`step()` 追加旋转预算 + 旋转惩罚；新增 `_compute_rotation_angle` / `_quat_conjugate`；`info["rotation"]` 导出
+- `frrl/envs/__init__.py`：新增 `PandaBackupPolicyS1V2-v0`
+- `configs/train_hil_sac_backup_s1_v2.json`：新建（端口 50054, seed 1003, 300k）
+- `scripts/train_hil_sac.sh`：新增 `backup_v2` 变体
+- `scripts/eval_backup_policy.py`：choices 加入 V2
+- `scripts/test_backup_env_tracking.py`：+4 V2 测试（总 11 个）
+
+---
+
 ## 附录：可复现命令
 
 ### Exp 5 eval 复现

@@ -114,6 +114,12 @@ case "$VARIANT" in
         TASK_ID="PandaBackupPolicyS1Combo-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_tracking_combo"
         ;;
+    backup_v2)
+        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1_v2.json"
+        echo "=== Backup Policy S1-V2 防作弊: arm-sphere(r=10cm) + rotation budget/penalty（6D, 300k, 20step, 端口 50054）==="
+        TASK_ID="PandaBackupPolicyS1V2-v0"
+        EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v2"
+        ;;
     custom)
         TASK_ID="${3:?请指定环境ID，例如: FRRLPandaPickPlaceKeyboard-v0}"
         echo "=== 自定义任务: $TASK_ID ==="
@@ -121,7 +127,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "未知任务: $VARIANT"
-        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, custom"
+        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, custom"
         exit 1
         ;;
 esac
