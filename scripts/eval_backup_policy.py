@@ -218,6 +218,8 @@ if __name__ == "__main__":
     parser.add_argument("--env_task", default="PandaBackupPolicyS1-v0",
                         choices=[
                             "PandaBackupPolicyS1-v0",
+                            "PandaBackupPolicyS1Relaxed-v0",
+                            "PandaBackupPolicyS1Combo-v0",
                             "PandaBackupPolicyS2-v0",
                             "PandaBackupPolicyS1NoDR-v0",
                             "PandaBackupPolicyS1BiasJ1-v0",

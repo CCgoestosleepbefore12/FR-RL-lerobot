@@ -175,6 +175,8 @@ if truncated: r += 5.0
 | P4 | 动作平滑 | 幅度 + 变化量惩罚 | 真机力矩/加速度有限 |
 
 > 详细的奖励设计演进历史见 `docs/rl_reward.md`
+>
+> **参数化（2026-04-21 起）**：`MAX_DISPLACEMENT` 与 `SURVIVAL_BONUS` 已改为 `PandaBackupPolicyEnv` 构造参数（默认 0.15 / 5.0）。消融变体 `PandaBackupPolicyS1Relaxed-v0`（0.20 / 5.0）与 `PandaBackupPolicyS1Combo-v0`（0.20 / 10.0）用于探测"退远再停"策略的激励边界，详见 `docs/sim_exp_data.md`。
 
 ---
 

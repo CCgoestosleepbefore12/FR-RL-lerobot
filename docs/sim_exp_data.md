@@ -643,6 +643,78 @@ DR 训练时策略看到的观测长这样：
 
 ---
 
+## Backup S1-TRACKING 重训 + 位移/幸存奖励消融（2026-04-21）
+
+**动机**：Supervisor 切换方案 A 定稿后启动的 Backup S1-TRACKING 基线 (Base) 在 75k/300k 左右幸存率停留在 30–33%，需要诊断瓶颈并设计对照实验。
+
+### 核心诊断：`MAX_DISPLACEMENT = 0.15` 形成 reward 断崖
+
+复盘 reward 结构发现 `displacement > 0.15` 直接触发 `-10` 终止惩罚。TRACKING 模式下手持续追 ~20 步，**"沿手反向退远→停住观察"** 这个物理上最自然的避障策略，在 0.15m 预算下几乎必然撞顶。断崖非连续惩罚，梯度信号对 policy 极不友好 → 被迫学"贴身微调"，学习难度远高于"退远再停"。
+
+### Part G: Homing 旋转坐标系 bug 修复
+
+复核 supervisor ↔ env 姿态约定时定位到一个长期潜藏 bug：
+
+- `HomingController._rot_error_axis_angle` 原计算 **world 系** 增量：`q_err = q_target · q_cur⁻¹`
+- 但 env (`_apply_rotation_to_mocap`) 执行 `q_new = q_cur · dq_local`——增量是**末端局部系**
+- 当 `q_cur ≠ I` 且目标与当前异轴时，world/local 两个 `dq` 不同，homing 会收敛到错误姿态
+
+修复：`q_err_local = q_cur⁻¹ · q_target`（`frrl/rl/homing_controller.py`）。新增 `scripts/test_homing_controller.py::test_rot_convergence_nonidentity_start` 覆盖唯一能暴露该 bug 的场景（当前/目标皆非单位四元数且异轴）。现有的 identity-start 单测不触发此差异，曾让 bug 长期通过。
+
+### 设计：三组并行消融（Base / Relaxed / Combo）
+
+把 `max_displacement` 和 `survival_bonus` 改为 `PandaBackupPolicyEnv` 构造参数，三组同架构、同训练预算 300k，仅隔离两个变量：
+
+| 变体 | env id | `max_displacement` | `survival_bonus` | learner port | seed |
+|---|---|---|---|---|---|
+| Base | `PandaBackupPolicyS1-v0` | 0.15 | 5.0 | 50051 | 1000 |
+| Relaxed | `PandaBackupPolicyS1Relaxed-v0` | **0.20** | 5.0 | 50052 | 1001 |
+| Combo | `PandaBackupPolicyS1Combo-v0` | **0.20** | **10.0** | 50053 | 1002 |
+
+配置：`configs/train_hil_sac_backup_s1_tracking{,_relaxed,_combo}.json`；启动脚本变体 `backup_tracking{,_relaxed,_combo}`。
+
+**为什么动的是 `SURVIVAL_BONUS`（终局 +5→+10）而不是 `SURVIVAL_REWARD`（每步 +0.5）**：
+per-step 奖励会整体放大 reward scale，污染和 Base 的直接对比；终局 bonus 只在 `truncated` 触发，信号集中在"存活完整 episode"这个事件上，正是我们想放大的 credit assignment 目标。
+
+**为什么保留 Base**：20k–75k 看似停滞，但 85k bucket 重新观察到 breakthrough（幸存率 31.5% → 35.1%，avg reward 1.26 → 1.81），学习仍活跃，不提前 kill。
+
+### 训练状态（记录时点 2026-04-21）
+
+| 变体 | 进度 | 观察 |
+|---|---|---|
+| Base | 89.6k / 300k | 85k bucket 突破 35% 幸存率，学习活跃 |
+| Relaxed | 启动早期 | - |
+| Combo | 暂缓 | CPU 负载 75.94 / 20 线程（≈3.7× oversubscribed），双训练已近上限 |
+
+CPU 饱和情况下 Combo 延后；Base + Relaxed 先并行训满 300k，再决定是否启动 Combo 或根据前两组结论简化。
+
+### 可复现命令
+
+```bash
+# Base（位移 0.15 + bonus 5；continue）
+bash scripts/train_hil_sac.sh backup_tracking learner      # 终端 1
+bash scripts/train_hil_sac.sh backup_tracking actor        # 终端 2
+
+# Relaxed（位移 0.20 + bonus 5）
+bash scripts/train_hil_sac.sh backup_tracking_relaxed learner
+bash scripts/train_hil_sac.sh backup_tracking_relaxed actor
+
+# Combo（位移 0.20 + bonus 10）
+bash scripts/train_hil_sac.sh backup_tracking_combo learner
+bash scripts/train_hil_sac.sh backup_tracking_combo actor
+```
+
+### 关联改动
+
+- `frrl/envs/panda_backup_policy_env.py`：`__init__` 新增 `max_displacement` / `survival_bonus` 参数，`step()` 使用实例变量而非模块常量
+- `frrl/envs/__init__.py`：新增 `PandaBackupPolicyS1Relaxed-v0` / `S1Combo-v0`
+- `configs/train_hil_sac_backup_s1_tracking_relaxed.json` / `..._combo.json`：新建
+- `scripts/train_hil_sac.sh`：新增两个变体分支
+- `frrl/rl/homing_controller.py`：Part G 坐标系 bug 修复
+- `scripts/test_homing_controller.py`：新增 non-identity start 测试；`test_rot_convergence_simulation` 改用局部系右乘
+
+---
+
 ## 附录：可复现命令
 
 ### Exp 5 eval 复现

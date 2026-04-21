@@ -227,6 +227,22 @@ register(
     kwargs={"num_obstacles": 1, "enable_dr": False},
 )
 
+# S1 位移预算放宽：MAX_DISPLACEMENT 0.15→0.20，让"沿手反向退"成为可行解
+register(
+    id="gym_frrl/PandaBackupPolicyS1Relaxed-v0",
+    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=20,
+    kwargs={"num_obstacles": 1, "max_displacement": 0.20},
+)
+
+# S1 位移放宽 + 幸存奖金翻倍：0.20m + bonus 5→10，最激进的训练方案
+register(
+    id="gym_frrl/PandaBackupPolicyS1Combo-v0",
+    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=20,
+    kwargs={"num_obstacles": 1, "max_displacement": 0.20, "survival_bonus": 10.0},
+)
+
 # S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS2-v0",

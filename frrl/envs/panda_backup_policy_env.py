@@ -98,6 +98,9 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
     Args:
         num_obstacles: 障碍物数量（1=S1, 2=S2），所有障碍均为 TRACKING 模式
         enable_dr: 是否启用 Domain Randomization
+        max_displacement: TCP 相对 episode 起点位移硬上限 (m)，超过即 terminate。
+            0.15（默认）为严格版本；0.20 为放宽版本（给 policy 更大退让预算）。
+        survival_bonus: 存活完整 episode（truncated）时追加的终局 bonus。
     """
 
     def __init__(
@@ -112,10 +115,14 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         enable_dr: bool = True,
         obs_stack: int = OBS_STACK_SIZE,
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
+        max_displacement: float = MAX_DISPLACEMENT,
+        survival_bonus: float = SURVIVAL_BONUS,
     ):
         self._num_obstacles = min(num_obstacles, 2)
         self._enable_dr = enable_dr
         self._obs_stack = max(obs_stack, 1)
+        self._max_displacement = float(max_displacement)
+        self._survival_bonus = float(survival_bonus)
 
         super().__init__(
             seed=seed,
@@ -250,7 +257,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         # 位移硬上限检测
         tcp = self._data.site_xpos[self._pinch_site_id].copy()
         displacement = float(np.linalg.norm(tcp - self._tcp_start))
-        if not terminated and displacement > MAX_DISPLACEMENT:
+        if not terminated and displacement > self._max_displacement:
             terminated = True
             safety_info = {"safety_violation": True, "violation_type": "excessive_displacement"}
 
@@ -269,7 +276,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
                 - ACTION_SMOOTH_COEFF * action_diff
             )
             if truncated:
-                reward += SURVIVAL_BONUS
+                reward += self._survival_bonus
 
         self._action_prev = action_6d.copy()
 
