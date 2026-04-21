@@ -8,5 +8,6 @@ wandb/
 outputs/
 checkpoints/
 !checkpoints/backup_policy_s1/
+!checkpoints/backup_policy_s1_v2_50k/
 *.pt
 *.pth
