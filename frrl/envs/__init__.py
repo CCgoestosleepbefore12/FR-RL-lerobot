@@ -245,11 +245,16 @@ register(
 
 # S1 V2 防作弊：腕+手单球避障 (r=10cm) + 旋转预算 (≤0.5rad) + 旋转惩罚
 # 解决 V1 中 policy 学会"转手腕躲开 TCP/指尖检测点但腕部真实碰撞"的作弊路径
+# max_displacement=0.20：V2 球心比 TCP 高 10cm，阈值 13.5cm 更严，退让空间必须匹配
 register(
     id="gym_frrl/PandaBackupPolicyS1V2-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
-    kwargs={"num_obstacles": 1, "use_arm_sphere_collision": True},
+    kwargs={
+        "num_obstacles": 1,
+        "use_arm_sphere_collision": True,
+        "max_displacement": 0.20,
+    },
 )
 
 # S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode

@@ -53,7 +53,8 @@ ACTION_SCALE = 0.03              # 位置增量缩放 m/step
 ROT_ACTION_SCALE = 0.1           # 姿态增量缩放 rad/step（≈5.7°/step）
 
 # 障碍物生成
-HAND_SPAWN_DIST = (0.15, 0.30)   # 原 (0.12, 0.25)；Supervisor d_safe=0.10m 之外 spawn
+HAND_SPAWN_DIST = (0.15, 0.30)   # V1 相对 TCP；V2 使用 ARM_SPAWN_DIST
+ARM_SPAWN_DIST = (0.21, 0.30)    # V2 相对 arm_center；下限 >1.5×ARM_COLLISION_DIST (0.2025m) 防 1-step death
 HAND_SPEED_RANGE = (0.005, 0.015)
 HIDDEN_POS = np.array([0.4, 0.5, 0.05])
 
@@ -64,10 +65,11 @@ STALL_STEPS_RANGE = (3, 8)       # 每次贴近后停顿的步数范围
 HAND_BODY_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
 HAND_GEOM_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
 
-# 机械臂初始随机位置范围
-TCP_INIT_X = (0.20, 0.55)
-TCP_INIT_Y = (-0.30, 0.15)
-TCP_INIT_Z = (0.05, 0.30)
+# 机械臂初始随机位置范围（全局收紧，保证各方向到工作空间边界 ≥15cm 退让余量）
+# 工作空间 X=[0.15,0.65] Y=[-0.40,0.17] Z=[0.00,0.50]
+TCP_INIT_X = (0.30, 0.45)        # X 两侧各 ≥15cm / ≥20cm 退让
+TCP_INIT_Y = (-0.22, 0.00)       # Y 两侧各 ≥18cm / ≥17cm
+TCP_INIT_Z = (0.15, 0.30)        # Z 下 15cm / 上 20cm
 
 # 奖励参数
 SURVIVAL_REWARD = 0.5
@@ -231,9 +233,19 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         # 追踪速度 per-episode 随机
         self._obstacle_speed = self._random.uniform(*HAND_SPEED_RANGE)
 
-        # 所有障碍都采用 TRACKING 模式，在 TCP 周围 12-30cm 球面随机 spawn
+        # 所有障碍都采用 TRACKING 模式；spawn 基点 + 距离范围按碰撞体分支
+        if self._use_arm_sphere_collision:
+            spawn_center = self._data.xpos[self._panda_hand_body_id].copy()
+            spawn_range = ARM_SPAWN_DIST
+            spawn_collision_dist = ARM_COLLISION_DIST
+        else:
+            spawn_center = tcp
+            spawn_range = HAND_SPAWN_DIST
+            spawn_collision_dist = HAND_COLLISION_DIST
         for i in range(self._num_obstacles):
-            self._obstacle_pos[i] = self._spawn_obstacle_pos(tcp)
+            self._obstacle_pos[i] = self._spawn_obstacle_pos(
+                spawn_center, spawn_range, spawn_collision_dist,
+            )
             self._obstacle_prev_pos[i] = self._obstacle_pos[i].copy()
 
         # 重置 DR 位置历史
@@ -388,15 +400,26 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         for _ in range(10):
             self.apply_action(zero_action)
 
-    def _spawn_obstacle_pos(self, tcp: np.ndarray) -> np.ndarray:
-        """在 TCP 附近球面随机方向生成障碍物位置（保证不在碰撞距离内）。"""
+    def _spawn_obstacle_pos(
+        self,
+        center: np.ndarray,
+        dist_range: Tuple[float, float],
+        collision_dist: float,
+    ) -> np.ndarray:
+        """在指定中心附近球面随机方向生成障碍物位置。
+
+        Args:
+            center: 采样基点（V1=TCP，V2=arm_sphere_center）
+            dist_range: 采样距离范围 (m)
+            collision_dist: 碰撞阈值（retry 判断用 1.5× 该值）
+        """
         for _ in range(20):
             raw_dir = self._random.normal(size=3)
             raw_dir /= np.linalg.norm(raw_dir) + 1e-8
-            dist = self._random.uniform(*HAND_SPAWN_DIST)
-            pos = tcp + raw_dir * dist
+            dist = self._random.uniform(*dist_range)
+            pos = center + raw_dir * dist
             pos = np.clip(pos, *_CARTESIAN_BOUNDS)
-            if np.linalg.norm(pos - tcp) > HAND_COLLISION_DIST * 1.5:
+            if np.linalg.norm(pos - center) > collision_dist * 1.5:
                 break
         return pos
 

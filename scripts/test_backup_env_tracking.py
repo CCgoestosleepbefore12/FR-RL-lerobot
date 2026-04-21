@@ -172,6 +172,23 @@ def test_episode_truncates_at_max_steps():
           f"(terminated={terminated}, truncated={truncated}, max={MAX_EPISODE_STEPS})")
 
 
+def test_v2_spawn_above_collision_threshold():
+    """V2：spawn 时 arm_center 到手距离 ≥ ARM_COLLISION_DIST（消除 1-step death）。"""
+    below = []
+    for seed in range(30):
+        env = _make_env_v2(seed=seed)
+        u = env.unwrapped
+        arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+        hand = u._obstacle_pos[0]
+        d = float(np.linalg.norm(hand - arm_center))
+        if d < ARM_COLLISION_DIST:
+            below.append((seed, d))
+        env.close()
+    assert not below, \
+        f"V2 spawn 距离应全部 >= {ARM_COLLISION_DIST:.3f}m，但 {len(below)}/30 低于阈值: {below[:3]}"
+    print(f"  [PASS] V2 spawn arm_center→hand 全部 >= {ARM_COLLISION_DIST:.3f}m (30 seed)")
+
+
 def test_v2_arm_sphere_collision_threshold():
     """V2：手贴到 arm sphere 表面 (< ARM_COLLISION_DIST) 应终止为 hand_collision。"""
     env = _make_env_v2(seed=0)
@@ -282,6 +299,7 @@ def main():
         test_hand_spawn_distance_in_range,
         test_rotation_action_changes_mocap_quat,
         test_episode_truncates_at_max_steps,
+        test_v2_spawn_above_collision_threshold,
         test_v2_arm_sphere_collision_threshold,
         test_v2_rotation_does_not_reduce_arm_distance,
         test_v2_rotation_budget_termination,
