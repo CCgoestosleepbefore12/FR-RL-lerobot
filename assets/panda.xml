@@ -17,19 +17,24 @@
         <default class="panda_hand/collision">
           <geom type="mesh" group="3"/>
           <default class="fingertip_pad_collision_1">
-            <geom type="box" size="0.0085 0.004 0.0085" pos="0 0.0055 0.0445"/>
+            <geom type="box" mass="0" size="0.0085 0.004 0.0085" pos="0 0.0055 0.0445"
+              friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1"/>
           </default>
           <default class="fingertip_pad_collision_2">
-            <geom type="box" size="0.003 0.002 0.003" pos="0.0055 0.002 0.05"/>
+            <geom type="box" mass="0" size="0.003 0.002 0.003" pos="0.0055 0.002 0.05"
+              friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1"/>
           </default>
           <default class="fingertip_pad_collision_3">
-            <geom type="box" size="0.003 0.002 0.003" pos="-0.0055 0.002 0.05"/>
+            <geom type="box" mass="0" size="0.003 0.002 0.003" pos="-0.0055 0.002 0.05"
+              friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1"/>
           </default>
           <default class="fingertip_pad_collision_4">
-            <geom type="box" size="0.003 0.002 0.0035" pos="0.0055 0.002 0.0395"/>
+            <geom type="box" mass="0" size="0.003 0.002 0.0035" pos="0.0055 0.002 0.0395"
+              friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1"/>
           </default>
           <default class="fingertip_pad_collision_5">
-            <geom type="box" size="0.003 0.002 0.0035" pos="-0.0055 0.002 0.0395"/>
+            <geom type="box" mass="0" size="0.003 0.002 0.0035" pos="-0.0055 0.002 0.0395"
+              friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1"/>
           </default>
         </default>
       </default>
@@ -293,7 +298,7 @@
       <motor class="panda" name="actuator6" joint="joint6" ctrlrange="-12 12"/>
       <motor class="panda" name="actuator7" joint="joint7" ctrlrange="-12 12"/>
       <general class="panda" name="fingers_actuator" tendon="split" forcerange="-100 100" ctrlrange="0 255"
-        gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>
+        biastype="affine" gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>
     </actuator>
 
     <sensor>
