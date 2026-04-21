@@ -10,5 +10,6 @@ checkpoints/
 !checkpoints/backup_policy_s1/
 !checkpoints/backup_policy_s1_v2_50k/
 !checkpoints/backup_policy_s1_v2_newgeom_35k/
+!checkpoints/backup_policy_s1_v2_newgeom_145k/
 *.pt
 *.pth
