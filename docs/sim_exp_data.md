@@ -574,46 +574,72 @@ DR 训练时策略看到的观测长这样：
 
 ---
 
-## Runtime Supervisor 设计（Task ↔ Backup 切换）
+## Runtime Supervisor 设计（Task ↔ Backup ↔ Homing 三态切换）
 
-**架构**：Modular shielded RL — Task Policy + Backup Policy 解耦，由 Supervisor 按 TCP-hand 距离切换。
+**架构**：Modular shielded RL — Task Policy + Backup Policy + Homing 确定性控制器三者解耦，由 Supervisor 按 TCP-hand 距离和位置偏差路由。
 
-**方案 A：距离硬阈值 + 滞回**（已采纳）
+**方案 A 升级：三态 FSM（已采纳）**
+
+早期方案 A 是两态（task↔backup）。实际部署发现两个问题：
+1. Task policy 在被打断的位置直接续跑时观测分布外 → 任务表现抖动
+2. Backup 训练场景（手朝 TCP 直冲→ episode terminate）不匹配真实 eval 场景（人拿手逼近 TCP 持续观察反应）
+
+升级方案：
+- **Backup env 改 TRACKING-only**：手每步重算方向追当前 TCP，贴到 D_TIGHT=8cm 停顿 3-8 步模拟"怼脸"，然后继续追。Episode 10→20 步。
+- **引入 HOMING 阶段**：手清场后用确定性 P 控制器把 TCP 拉回 task 被打断时记录的 `tcp_start`，然后再交还 task policy。
 
 ```
-d = min_dist(TCP, hand)
-
-if mode_last == task:
-    if d < D_TRIGGER:   # 进入 backup 工作域
-        mode = backup
-else:  # mode_last == backup
-    if d > D_RELEASE:   # 离开危险，回到 task
-        mode = task
+状态转移：
+  TASK   ─(d<d_safe)──────────> BACKUP   (记录 tcp_start = 当前 TCP)
+  BACKUP ─(d>d_clear N 步)────> HOMING
+  HOMING ─(d<d_safe)──────────> BACKUP   (tcp_start 保持不变)
+  HOMING ─(|tcp−tcp_start|<tol)─> TASK   (清空 tcp_start)
 ```
+
+**关键：`tcp_start` 只在 TASK→BACKUP 时记录一次**，BACKUP↔HOMING 来回切的整个过程中不更新；
+意义是 homing 目标永远是 task 被打断时的原位置，保证 task 续跑时观测连续性。
+
+### 参数（SI 单位：m）
 
 | 参数 | 值 | 依据 |
 |---|---|---|
-| `D_TRIGGER` | 0.20 m | Backup 训练分布 (0.12-0.25m) 的中位数，切换时 backup 一定 in-distribution |
-| `D_RELEASE` | 0.30 m | > Backup 训练上限 25cm，确认"足够远"后才交回 task |
-| 滞回区 | 0.10 m | 避免阈值附近高频抖动 |
+| `d_safe` | 0.10 | 进入 BACKUP 阈值；TRACKING 下手会怼到 ~8cm，0.20 切得太早 backup 没可躲的 |
+| `d_clear` | 0.20 | 离开 BACKUP 阈值；> d_safe 10cm 形成滞回避免抖动 |
+| `clear_n_steps` | 3 | BACKUP→HOMING 需连续 3 步 d>d_clear，防短暂离开误触发 |
+| `homing_pos_tol` | 0.02 | HOMING→TASK 的位置容差 |
+| `homing_kp` | 1.0 | Clipped-deadbeat P 增益（kp=1 不超调；>1 会在 tol 附近震荡） |
+| `HAND_SPAWN_DIST` | (0.15, 0.30) | 必须在 d_safe=0.10 之外 spawn，否则 episode 开始就触发 BACKUP |
 
-**切换方式对比**（保留备忘）：
+### 关于姿态：为什么 Homing 只做 3D 位置
+
+仔细读 `frrl/envs/base.py::apply_action` 后发现，仿真 env 只用动作前 3 维 (dx, dy, dz)，`rx/ry/rz` 被完全忽略：mocap_quat 仅在 reset 时设一次，整个 episode 不变。因此 backup policy 不会扰动姿态，homing 无需恢复姿态，只做 3D 位置 P 控制即可。
+
+真机部署时若末端姿态会变（controller 接受完整 6D 增量），需要把 HomingController 升级为 6D（位置+姿态）。当前实现留了扩展空间（参考 `frrl/rl/homing_controller.py` docstring）。
+
+### 实现
+
+- `frrl/rl/hierarchical_supervisor.py` — 三态 FSM
+- `frrl/rl/homing_controller.py` — 3D 位置 P 控制
+- `scripts/test_hierarchical_supervisor.py` / `test_homing_controller.py` — 单测
+- `frrl/envs/panda_backup_policy_env.py` — TRACKING-only 改造
+- `scripts/test_backup_env_tracking.py` — Backup env 单测
+
+真机版参考：`docs/real_robot_deployment_plan.md §5.4`。
+
+### 切换方式对比（保留备忘）
 
 | 方案 | 复杂度 | 信号需求 | 跟 Backup 训练分布对齐 |
 |---|---|---|---|
-| **A. 距离硬阈值 + 滞回** | ⭐ | hand 3D 位置 | **✓** |
+| **A. 距离硬阈值 + 滞回 + Homing** | ⭐⭐ | hand 3D 位置 | **✓** |
 | B. TTC（时间到碰撞） | ⭐⭐ | hand 位置 + 速度 | 部分 |
 | C. CBF（QP 求解） | ⭐⭐⭐⭐ | 动力学模型 | 间接 |
 | D. Critic-gated | ⭐⭐⭐ | backup Q-value | ✓ |
 | E. Zone-based (A/B/C) | ⭐ | 固定 world frame | 部分 |
 
 **配套实验（待做）**：
-- 阈值扫描：`D_TRIGGER ∈ {0.15, 0.20, 0.25}`，测 task success vs collision rate 帕累托前沿
-- 对照组：Task-only（证明 backup 有用）、Always-backup（证明切换有必要）、Zone-based E（对比简化方案）
-
-**实现位置**：`frrl/rl/hierarchical_supervisor.py`（待建，独立模块，与 task/backup policy 解耦）
-
-真机版参考：`docs/real_robot_deployment_plan.md §5.4`。
+- Backup S1-TRACKING 重训（300k steps）
+- Supervisor 阈值扫描 `d_safe ∈ {0.08, 0.10, 0.12}`，测 task success vs collision rate
+- 对照组：Task-only、Always-backup、无 Homing 两态版本
 
 ---
 

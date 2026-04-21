@@ -1,33 +1,30 @@
 """
-Backup Policy 训练环境
+Backup Policy 训练环境（TRACKING-only）。
 
-场景：人手进入共享工作空间 → Backup Policy 激活 → 小幅闪避 → 人手离开后交还 Task Policy。
+场景：人手进入共享工作空间 → Backup Policy 激活 → 小幅闪避持续退让；
+手不会主动撤走（"人拿手逼近末端观察反应"的对抗场景）。
+"手撤走"由外部 Supervisor 按时间或实际检测触发，属于真机部署/集成阶段的事情。
+
+运动模式：TRACKING（单一）
+  - 每步方向重算为 normalize(current_TCP - obstacle_pos)，手会追当前末端而不是 spawn 时末端
+  - 贴到 D_TIGHT(8cm) 内后停顿 3-8 步模拟"怼脸"，然后继续追
+  - TCP 退让时手立刻跟进，policy 必须学会在持续压迫下保持安全距离
 
 场景变体：
-  S1: 1 个移动障碍物，4 种运动模式随机
-  S2: 1 个移动障碍物 + 1 个静止障碍物
+  S1: 1 个移动障碍物（主用）
+  S2: 2 个移动障碍物（保留用于多手对抗实验）
 
 观测：(robot_state(18) + num_obstacles × obstacle_info(10)) × 3帧堆叠
   S1: 84D (28×3), S2: 114D (38×3)
-
-运动模式：
-  LINEAR   — 匀速直线朝 TCP
-  ARC      — 带曲率弧线绕向 TCP
-  STOP_GO  — 朝 TCP 但随机停顿
-  PASSING  — 横穿工作空间，不朝 TCP
 
 奖励（参考 Kiemel et al. 2024，每步奖励非负）：
   终止: collision / block_drop / zone_c / displacement>15cm → -10.0
   存活每步: +0.5 - 0.5*位移 - 0.01*动作幅度 - 0.01*动作变化
   存活完整 episode: +5.0 bonus
-  discount = 1.0
 
-Domain Randomization（仅观测层，不影响碰撞检测）：
-  障碍物位置噪声 N(0, 0.03)   ← MediaPipe + D455 精度
-  障碍物速度噪声 N(0, 0.01)   ← 帧间差分抖动
-  观测延迟 U(0, 2) 步          ← 检测延迟
-  障碍物速度 U(0.005, 0.015)  ← 不同手速
-  TCP 位置噪声 N(0, 0.005)    ← 已有
+Domain Randomization（仅观测层）：
+  障碍物位置噪声 N(0, 0.03) / 速度噪声 N(0, 0.01) / 观测延迟 U(0, 2) 步
+  障碍物速度 U(0.005, 0.015) m/step / TCP 位置噪声 N(0, 0.005)
 
 参考: Kiemel et al. "Safe RL of Robot Trajectories in the Presence of Moving Obstacles", IEEE RAL 2024
 """
@@ -51,13 +48,18 @@ from frrl.fault_injection import EncoderBiasConfig
 
 # ── 常量 ──────────────────────────────────────────────────
 BLOCK_DROP_Z = -0.01
-MAX_EPISODE_STEPS = 10
-ACTION_SCALE = 0.03
+MAX_EPISODE_STEPS = 20           # TRACKING 持续压迫场景，episode 延长（原 10）
+ACTION_SCALE = 0.03              # 位置增量缩放 m/step
+ROT_ACTION_SCALE = 0.1           # 姿态增量缩放 rad/step（≈5.7°/step）
 
 # 障碍物生成
-HAND_SPAWN_DIST = (0.12, 0.25)       # 距 TCP 生成距离
-HAND_SPEED_RANGE = (0.005, 0.015)     # 速度范围 m/step（降速给策略更多反应时间）
+HAND_SPAWN_DIST = (0.15, 0.30)   # 原 (0.12, 0.25)；Supervisor d_safe=0.10m 之外 spawn
+HAND_SPEED_RANGE = (0.005, 0.015)
 HIDDEN_POS = np.array([0.4, 0.5, 0.05])
+
+# TRACKING 参数
+D_TIGHT = 0.08                   # 贴近 TCP 的停顿距离（"怼脸"）
+STALL_STEPS_RANGE = (3, 8)       # 每次贴近后停顿的步数范围
 
 HAND_BODY_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
 HAND_GEOM_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
@@ -67,40 +69,34 @@ TCP_INIT_X = (0.20, 0.55)
 TCP_INIT_Y = (-0.30, 0.15)
 TCP_INIT_Z = (0.05, 0.30)
 
-# 奖励参数（参考 Kiemel et al. 2024: 每步奖励非负，碰撞大惩罚）
-SURVIVAL_REWARD = 0.5            # 每步存活基础正奖励
-DISPLACEMENT_COEFF = 0.5         # 位移软惩罚系数
-ACTION_NORM_COEFF = 0.01         # 动作幅度惩罚
-ACTION_SMOOTH_COEFF = 0.01       # 动作平滑惩罚
-TERMINATION_PENALTY = -10.0      # 碰撞/掉块/越界/跑远 终止惩罚
-SURVIVAL_BONUS = 5.0             # 存活完整 episode 的 bonus
-MAX_DISPLACEMENT = 0.15          # 位移硬上限 15cm，超过视为任务失败
-
-# 路过模式速度倍率（路过比朝TCP运动快，模拟人手快速经过）
-PASSING_SPEED_MULT = 1.3
+# 奖励参数
+SURVIVAL_REWARD = 0.5
+DISPLACEMENT_COEFF = 0.5
+ACTION_NORM_COEFF = 0.01
+ACTION_SMOOTH_COEFF = 0.01
+TERMINATION_PENALTY = -10.0
+SURVIVAL_BONUS = 5.0
+MAX_DISPLACEMENT = 0.15
 
 # DR 噪声参数
-DR_OBS_POS_STD = 0.03       # 障碍物位置噪声 σ=3cm
-DR_OBS_VEL_STD = 0.01       # 障碍物速度噪声 σ=1cm/s
-DR_TCP_POS_STD = 0.005      # TCP 位置噪声 σ=5mm
-DR_DELAY_MAX = 2            # 最大观测延迟步数
-DR_POS_HISTORY_LEN = 5      # 位置历史缓冲区长度
-OBS_STACK_SIZE = 3           # 帧堆叠数量（1=无堆叠）
+DR_OBS_POS_STD = 0.03
+DR_OBS_VEL_STD = 0.01
+DR_TCP_POS_STD = 0.005
+DR_DELAY_MAX = 2
+DR_POS_HISTORY_LEN = 5
+OBS_STACK_SIZE = 3
 
 
 class MotionMode(Enum):
-    """障碍物运动模式。"""
-    LINEAR = auto()     # 匀速直线朝 TCP
-    ARC = auto()        # 带曲率弧线接近 TCP
-    STOP_GO = auto()    # 朝 TCP 但随机停顿
-    PASSING = auto()    # 横穿工作空间
+    """障碍物运动模式。当前仅实现 TRACKING（追踪当前 TCP）。"""
+    TRACKING = auto()
 
 
 class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
-    """Backup Policy 训练环境。
+    """Backup Policy 训练环境（TRACKING-only）。
 
     Args:
-        num_obstacles: 障碍物数量（1=S1, 2=S2: 1移动+1静止）
+        num_obstacles: 障碍物数量（1=S1, 2=S2），所有障碍均为 TRACKING 模式
         enable_dr: 是否启用 Domain Randomization
     """
 
@@ -143,12 +139,11 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         # 障碍物状态
         self._obstacle_pos = [HIDDEN_POS.copy() for _ in range(self._num_obstacles)]
         self._obstacle_prev_pos = [HIDDEN_POS.copy() for _ in range(self._num_obstacles)]
-        self._obstacle_dir = [np.zeros(3) for _ in range(self._num_obstacles)]
-        self._obstacle_speed = 0.015  # 当前 episode 的移动速度
+        self._obstacle_speed = 0.015  # 当前 episode 的追踪速度
+        self._stall_remaining = [0] * self._num_obstacles  # 每个障碍剩余停顿步数
 
-        # 运动模式
-        self._motion_mode = MotionMode.LINEAR
-        self._stop_go_prob = 0.3  # 停走式每步停顿概率
+        # 运动模式（当前仅 TRACKING，保留枚举以便未来扩展）
+        self._motion_mode = MotionMode.TRACKING
 
         # DR: 位置历史缓冲区（用于模拟观测延迟）
         self._pos_histories: list[deque] = [
@@ -159,11 +154,11 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._tcp_start = np.zeros(3)
         self._action_prev = np.zeros(6, dtype=np.float32)
 
-        # 帧堆叠：维护最近 N 帧单帧观测
+        # 帧堆叠
         self._single_obs_dim = 18 + self._num_obstacles * 10
         self._obs_history: deque = deque(maxlen=self._obs_stack)
 
-        # 观测空间: single_obs_dim × obs_stack
+        # 观测空间
         agent_dim = self._single_obs_dim * self._obs_stack
         agent_box = spaces.Box(-np.inf, np.inf, (agent_dim,), dtype=np.float32)
         self.observation_space = spaces.Dict(
@@ -174,7 +169,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             else {"agent_pos": agent_box}
         )
 
-        # 动作 6D
+        # 动作 6D（夹爪在 step 内强制为 0）
         self.action_space = spaces.Box(-np.ones(6, dtype=np.float32), np.ones(6, dtype=np.float32))
 
     # ================================================================
@@ -183,12 +178,11 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
 
     def reset(self, seed=None, **kwargs) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         # 先初始化障碍物状态（父类 reset 会调用 _compute_observation）
-        self._motion_mode = MotionMode.LINEAR
         self._obstacle_speed = 0.015
         for i in range(self._num_obstacles):
             self._obstacle_pos[i] = HIDDEN_POS.copy()
             self._obstacle_prev_pos[i] = HIDDEN_POS.copy()
-            self._obstacle_dir[i] = np.zeros(3)
+            self._stall_remaining[i] = 0
             self._pos_histories[i].clear()
             self._pos_histories[i].append(HIDDEN_POS.copy())
         self._tcp_start = np.zeros(3)
@@ -203,29 +197,19 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         tcp = self._data.site_xpos[self._pinch_site_id].copy()
         self._tcp_start = tcp.copy()
 
-        # 随机运动模式和速度
-        self._motion_mode = self._random.choice(list(MotionMode))
+        # 追踪速度 per-episode 随机
         self._obstacle_speed = self._random.uniform(*HAND_SPEED_RANGE)
 
-        # 障碍物 0: 移动障碍物
-        pos_0 = self._spawn_obstacle_pos(tcp)
-        self._obstacle_pos[0] = pos_0
-        self._obstacle_prev_pos[0] = pos_0.copy()
-        self._obstacle_dir[0] = self._compute_moving_direction(pos_0, tcp)
+        # 所有障碍都采用 TRACKING 模式，在 TCP 周围 12-30cm 球面随机 spawn
+        for i in range(self._num_obstacles):
+            self._obstacle_pos[i] = self._spawn_obstacle_pos(tcp)
+            self._obstacle_prev_pos[i] = self._obstacle_pos[i].copy()
 
-        # 障碍物 1（S2）: 静止障碍物
-        if self._num_obstacles >= 2:
-            pos_1 = self._spawn_obstacle_pos(tcp)
-            self._obstacle_pos[1] = pos_1
-            self._obstacle_prev_pos[1] = pos_1.copy()
-            self._obstacle_dir[1] = np.zeros(3)  # 静止
-
-        # 重置 DR 位置历史（用真实初始位置）
+        # 重置 DR 位置历史
         for i in range(self._num_obstacles):
             self._pos_histories[i].clear()
             self._pos_histories[i].append(self._obstacle_pos[i].copy())
 
-        # 隐藏未使用的障碍物
         self._hand_active = True
         self._sync_all_visuals()
 
@@ -235,13 +219,10 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._step_count += 1
         action_6d = np.asarray(action, dtype=np.float32).flat[:6]
 
-        # 移动障碍物 0（根据运动模式）
-        self._obstacle_prev_pos[0] = self._obstacle_pos[0].copy()
-        self._move_obstacle(0)
-
-        # 静止障碍物 1 不动（仅更新 prev）
-        if self._num_obstacles >= 2:
-            self._obstacle_prev_pos[1] = self._obstacle_pos[1].copy()
+        # 每个障碍都追踪当前 TCP
+        for i in range(self._num_obstacles):
+            self._obstacle_prev_pos[i] = self._obstacle_pos[i].copy()
+            self._move_obstacle(i)
 
         # 更新 DR 位置历史
         for i in range(self._num_obstacles):
@@ -249,9 +230,13 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
 
         self._sync_all_visuals()
 
-        # 执行动作（6D 缩放 + 夹爪锁定）
+        # 执行动作：位置增量由父类 apply_action 处理；
+        # 姿态增量父类忽略，这里先手动应用到 mocap_quat 再调父类。
         full_action = np.zeros(7, dtype=np.float32)
-        full_action[:6] = action_6d * ACTION_SCALE
+        full_action[:3] = action_6d[:3] * ACTION_SCALE
+        rot_delta = action_6d[3:6] * ROT_ACTION_SCALE                # shape: (3,) axis-angle, rad
+        self._apply_rotation_to_mocap(rot_delta)
+        # rx/ry/rz 父类本不处理，显式清零保险；gripper 保持 0（锁定）
         self.apply_action(full_action)
 
         # 安全检测
@@ -271,7 +256,6 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
 
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
-        # 奖励（参考 Kiemel et al. 2024: 每步奖励非负，终止大惩罚）
         if terminated:
             reward = TERMINATION_PENALTY
         else:
@@ -302,40 +286,32 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         return obs, reward, terminated, truncated, info
 
     # ================================================================
-    # 障碍物运动
+    # 障碍物运动（TRACKING）
     # ================================================================
 
     def _move_obstacle(self, idx: int):
-        """根据当前运动模式移动障碍物。
+        """TRACKING：追踪当前 TCP，贴近后停顿。
 
-        运动模式区别：
-          ARC     — 每步旋转方向向量（弧线轨迹）
-          STOP_GO — 每步有概率跳过移动（停顿）
-          PASSING — 速度 × PASSING_SPEED_MULT（横穿更快）
-          LINEAR  — 默认直线匀速
+        逻辑：
+          1. 若仍在停顿计数内，本步不动
+          2. 每步重算方向 = normalize(current_TCP - obstacle_pos)
+          3. 若距离 < D_TIGHT，触发新一轮停顿（3-8 步），本步不动
+          4. 否则沿方向前进 obstacle_speed（受工作空间 clip）
         """
-        # ARC: 旋转方向向量
-        if self._motion_mode == MotionMode.ARC:
-            omega = self._random.uniform(-0.1, 0.1)
-            cos_w, sin_w = np.cos(omega), np.sin(omega)
-            d = self._obstacle_dir[idx].copy()
-            self._obstacle_dir[idx][0] = cos_w * d[0] - sin_w * d[1]
-            self._obstacle_dir[idx][1] = sin_w * d[0] + cos_w * d[1]
-            self._obstacle_dir[idx][2] += self._random.uniform(-0.02, 0.02)
-            norm = np.linalg.norm(self._obstacle_dir[idx])
-            if norm > 1e-8:
-                self._obstacle_dir[idx] /= norm
-
-        # STOP_GO: 概率跳过
-        if self._motion_mode == MotionMode.STOP_GO and self._random.random() < self._stop_go_prob:
+        if self._stall_remaining[idx] > 0:
+            self._stall_remaining[idx] -= 1
             return
 
-        # 计算速度
-        speed = self._obstacle_speed
-        if self._motion_mode == MotionMode.PASSING:
-            speed *= PASSING_SPEED_MULT
+        tcp = self._data.site_xpos[self._pinch_site_id].copy()  # shape: (3,)
+        to_tcp = tcp - self._obstacle_pos[idx]                  # shape: (3,)
+        dist = float(np.linalg.norm(to_tcp))
 
-        self._obstacle_pos[idx] += self._obstacle_dir[idx] * speed
+        if dist < D_TIGHT:
+            self._stall_remaining[idx] = int(self._random.randint(*STALL_STEPS_RANGE))
+            return
+
+        direction = to_tcp / (dist + 1e-8)                       # shape: (3,)
+        self._obstacle_pos[idx] += direction * self._obstacle_speed
         self._obstacle_pos[idx] = np.clip(self._obstacle_pos[idx], *_CARTESIAN_BOUNDS)
 
     # ================================================================
@@ -355,7 +331,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         for _ in range(5):
             self.apply_action(zero_action)
 
-        self._data.ctrl[self._gripper_ctrl_id] = 0  # Franka Hand: 0=关闭, MAX=全开
+        self._data.ctrl[self._gripper_ctrl_id] = 0  # Franka Hand: 0=关闭
         for _ in range(5):
             self.apply_action(zero_action)
 
@@ -369,7 +345,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             self.apply_action(zero_action)
 
     def _spawn_obstacle_pos(self, tcp: np.ndarray) -> np.ndarray:
-        """在 TCP 附近生成障碍物位置（保证不在碰撞距离内）。"""
+        """在 TCP 附近球面随机方向生成障碍物位置（保证不在碰撞距离内）。"""
         for _ in range(20):
             raw_dir = self._random.normal(size=3)
             raw_dir /= np.linalg.norm(raw_dir) + 1e-8
@@ -379,29 +355,6 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             if np.linalg.norm(pos - tcp) > HAND_COLLISION_DIST * 1.5:
                 break
         return pos
-
-    def _compute_moving_direction(self, pos: np.ndarray, tcp: np.ndarray) -> np.ndarray:
-        """根据运动模式计算移动方向。"""
-        toward_tcp = tcp - pos
-        toward_tcp /= np.linalg.norm(toward_tcp) + 1e-8
-
-        if self._motion_mode == MotionMode.PASSING:
-            # 垂直于 toward_tcp 的方向（横穿）
-            up = np.array([0.0, 0.0, 1.0])
-            cross = np.cross(toward_tcp, up)
-            cross_norm = np.linalg.norm(cross)
-            if cross_norm > 1e-8:
-                cross /= cross_norm
-            else:
-                cross = np.array([1.0, 0.0, 0.0])
-            direction = cross + self._random.normal(0, 0.2, size=3)
-            if self._random.random() < 0.5:
-                direction = -direction
-        else:
-            direction = toward_tcp + self._random.normal(0, 0.2, size=3)
-
-        direction /= np.linalg.norm(direction) + 1e-8
-        return direction
 
     def _check_multi_safety(self) -> Tuple[bool, Dict[str, Any]]:
         """碰撞检测：所有障碍物 × 三检测点（TCP + 左右指尖）。"""
@@ -443,27 +396,60 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         pass
 
     # ================================================================
+    # 姿态增量（父类 apply_action 忽略 rx/ry/rz，这里补齐）
+    # ================================================================
+
+    def _apply_rotation_to_mocap(self, axis_angle: np.ndarray) -> None:
+        """把 axis-angle 增量（已乘过 ROT_ACTION_SCALE）叠加到 mocap_quat。
+
+        Args:
+            axis_angle: shape (3,)，单位 rad。向量方向 = 旋转轴，模长 = 旋转角。
+        """
+        angle = float(np.linalg.norm(axis_angle))
+        if angle < 1e-8:
+            return
+        axis = axis_angle / angle                                     # shape: (3,) 单位向量
+        half = 0.5 * angle
+        sin_h = float(np.sin(half))
+        dquat = np.array(
+            [np.cos(half), axis[0] * sin_h, axis[1] * sin_h, axis[2] * sin_h],
+            dtype=np.float64,
+        )                                                              # shape: (4,) [w,x,y,z]
+        q = np.asarray(self._data.mocap_quat[0], dtype=np.float64)    # shape: (4,)
+        new_q = self._quat_multiply(q, dquat)
+        new_q /= np.linalg.norm(new_q) + 1e-12
+        self._data.mocap_quat[0] = new_q
+
+    @staticmethod
+    def _quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+        """Hamilton 四元数乘法（输入/输出均 [w, x, y, z]）。shape: (4,) × (4,) → (4,)。"""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        return np.array([
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ], dtype=np.float64)
+
+    # ================================================================
     # 观测
     # ================================================================
 
     def _compute_observation(self) -> Dict[str, Any]:
         # 使用基类方法获取 robot_state，确保编码器偏差正确注入
         robot_state = self.get_robot_state()                                     # shape: (18,)
-        # TCP 位置取 robot_state 的最后 3 维（已含编码器偏差），加 DR 噪声模拟外部定位误差
+        # TCP 位置取 robot_state 的最后 3 维（已含编码器偏差），加 DR 噪声
         noisy_tcp = robot_state[15:18] + self._random.normal(0, DR_TCP_POS_STD, 3).astype(np.float32)
-        robot_state[15:18] = noisy_tcp  # robot_state 中的 TCP 也使用带噪声版本
+        robot_state[15:18] = noisy_tcp
 
         obstacle_obs = []
         for i in range(self._num_obstacles):
             if self._enable_dr:
-                # DR: 观测延迟 — 使用历史位置
                 delay = self._random.randint(0, min(DR_DELAY_MAX, len(self._pos_histories[i]) - 1) + 1)
                 delayed_pos = self._pos_histories[i][-(1 + delay)]
-
-                # DR: 位置噪声
                 obs_pos = (delayed_pos + self._random.normal(0, DR_OBS_POS_STD, 3)).astype(np.float32)
 
-                # DR: 速度噪声（基于延迟位置计算速度）
                 if len(self._pos_histories[i]) >= 2 + delay:
                     prev_delayed = self._pos_histories[i][-(2 + delay)]
                 else:
@@ -471,16 +457,15 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
                 obs_vel = ((delayed_pos - prev_delayed) / self._control_dt).astype(np.float32)
                 obs_vel += self._random.normal(0, DR_OBS_VEL_STD, 3).astype(np.float32)
             else:
-                # 无 DR: 精确观测
                 obs_pos = self._obstacle_pos[i].astype(np.float32)
                 obs_vel = ((self._obstacle_pos[i] - self._obstacle_prev_pos[i]) / self._control_dt).astype(np.float32)
 
             obs_i = np.concatenate([
-                [1.0],                                         # active
-                obs_pos,                                       # pos (3,)
-                obs_vel,                                       # vel (3,)
-                (obs_pos - noisy_tcp).astype(np.float32),      # rel_pos (3,)
-            ]).astype(np.float32)                               # shape: (10,)
+                [1.0],                                          # active
+                obs_pos,                                        # pos (3,)
+                obs_vel,                                        # vel (3,)
+                (obs_pos - noisy_tcp).astype(np.float32),       # rel_pos (3,)
+            ]).astype(np.float32)                                # shape: (10,)
             obstacle_obs.append(obs_i)
 
         single_obs = np.concatenate([robot_state, *obstacle_obs])  # shape: (28,) or (38,)
@@ -488,7 +473,6 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         # 帧堆叠
         self._obs_history.append(single_obs)
         if len(self._obs_history) < self._obs_stack:
-            # 前几步不够 N 帧，用当前帧零填充
             padding = [np.zeros_like(single_obs)] * (self._obs_stack - len(self._obs_history))
             agent_pos = np.concatenate([*padding, *self._obs_history])
         else:

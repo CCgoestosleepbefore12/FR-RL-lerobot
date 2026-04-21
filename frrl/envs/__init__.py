@@ -211,11 +211,11 @@ for _dim in (27, 24, 21):
 # Backup Policy 训练环境
 # ============================================================
 
-# S1: 单个移动障碍物（28D 观测）
+# S1: 单个移动障碍物（28D 观测），TRACKING 模式，20 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS1-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
+    max_episode_steps=20,
     kwargs={"num_obstacles": 1},
 )
 
@@ -223,11 +223,11 @@ register(
 register(
     id="gym_frrl/PandaBackupPolicyS1NoDR-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
+    max_episode_steps=20,
     kwargs={"num_obstacles": 1, "enable_dr": False},
 )
 
-# S2: 1 移动 + 1 静止障碍物（38D 观测）
+# S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS2-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
@@ -243,11 +243,11 @@ _BIAS_J1_CONFIG = EncoderBiasConfig(
     bias_range=[-0.15, 0.15],
 )
 
-# S1 + 编码器偏差
+# S1 + 编码器偏差（TRACKING 模式，20 步 episode）
 register(
     id="gym_frrl/PandaBackupPolicyS1BiasJ1-v0",
     entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=10,
+    max_episode_steps=20,
     kwargs={"num_obstacles": 1, "encoder_bias_config": _BIAS_J1_CONFIG},
 )
 
