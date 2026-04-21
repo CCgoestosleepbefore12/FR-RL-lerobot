@@ -737,7 +737,7 @@ bash scripts/train_hil_sac.sh backup_tracking_combo actor
 
 ### 验证
 
-`scripts/test_backup_env_tracking.py` 新增 4 个 V2 测试（总 11/11 pass）：
+`scripts/test_backup_env_tracking.py` 新增 4 个 V2 测试（7→11/11 pass）：
 - `test_v2_arm_sphere_collision_threshold`：手距球心 0.10m < 0.135m 应 terminate（hand_collision）
 - `test_v2_rotation_does_not_reduce_arm_distance`：纯旋转动作 arm_center 位移 <5mm（rigid 验证）
 - `test_v2_rotation_budget_termination`：连续最大旋转 6 步后 rotation 0.600rad > 0.5 触发 excessive_rotation
@@ -765,6 +765,55 @@ python scripts/eval_backup_policy.py \
 - `scripts/train_hil_sac.sh`：新增 `backup_v2` 变体
 - `scripts/eval_backup_policy.py`：choices 加入 V2
 - `scripts/test_backup_env_tracking.py`：+4 V2 测试（总 11 个）
+
+### 几何修复（2026-04-21 下午）：TCP_INIT 全局收紧 + V2 几何重配
+
+V2 10k steps 眼检可视化发现奇异行为：满存活率仅 20%、60% episode 因
+`excessive_displacement` 终止、7% 的 episode 在 spawn 的第 1 步就
+`hand_collision`。复盘发现是**几何不自洽**而不是 policy 学习问题：
+
+**几何诊断（均以 cm 计）**：
+
+| 约束 | V1 Base | V2（修复前）| V2（修复后）|
+|---|---|---|---|
+| 碰撞阈值 | 9（HAND_COLLISION_DIST）| 13.5（ARM_COLLISION_DIST）| 13.5 |
+| `max_displacement` | 15 | **15**（bug：默认继承）| **20** |
+| spawn 基点 | TCP | TCP（bug）| **arm_center** |
+| spawn 距离 | (15, 30)→TCP | (15, 30)→TCP | (21, 30)→arm_center |
+| 最坏工作空间可退 | 7.3 | 7.3 | **≥15 per 方向** |
+| spawn 最坏余量 | 6 | ~1.5 | **6.93** |
+
+三个连锁问题：
+
+1. **V2 注册默认继承 `max_displacement=0.15`**，但 V2 碰撞阈值 13.5cm 比 V1 严
+   50%，必须匹配放宽到 0.20 才有退让空间
+2. **V2 spawn 基点仍是 TCP**，但 arm_sphere 球心比 TCP 高 10.3cm —— 手 spawn
+   在 TCP 附近 15cm 时，球心到手可能只有 ~5cm，7% episode 直接 1-step death
+3. **TCP_INIT 几乎吃满工作空间**——原 `TCP_INIT_X=(0.20,0.55)` vs 工作空间
+   `X=[0.15,0.65]`，最坏方向只能退 5cm；类似 Y 只能退 2cm、Z 只能退 5cm。
+   欧氏最坏可退 √(5²+2²+5²) ≈ 7.3cm，远低于纸面 15–20cm 预算。**这是所有
+   Backup env 共享的长期 bug，不仅是 V2 问题**
+
+**修复（commit `d2622d9`）**：
+
+- `TCP_INIT_X/Y/Z` 全局收紧到 (0.30,0.45)/(-0.22,0.00)/(0.15,0.30)，
+  各方向到工作空间边界 ≥15cm —— Base/Relaxed/Combo/S2/NoDR/BiasJ1 全部受益
+- V2 注册 kwargs 加 `max_displacement=0.20`（对齐 Relaxed 结论 + 补偿碰撞体）
+- `_spawn_obstacle_pos` 签名扩展为 `(center, dist_range, collision_dist)`；
+  reset 按 `use_arm_sphere_collision` 分支选 V1(TCP, HAND_*) 或 V2(arm_center, ARM_*)
+- 新常量 `ARM_SPAWN_DIST = (0.21, 0.30)`，下限 >1.5×ARM_COLLISION_DIST (0.2025m)
+- 新单测 `test_v2_spawn_above_collision_threshold`：30 seed 全部 ≥ 13.5cm（7→12 个测试）
+
+**修复后几何核查（30 seed）**：
+- V2 spawn arm_center→hand: min=20.43 / mean=24.15 / max=29.62 cm（阈值 13.5）
+- 重算预算：退让 20cm / 20 步 = 1.0 cm/step = 手均速打平；spawn 10cm 缓冲补齐
+  last-hit
+- 向后兼容：Base/Relaxed/Combo/S2 spawn 仍基于 TCP，距离分布与修复前无实质差异
+  （仅 TCP_INIT 略偏工作空间中心）
+
+**训练重启**：
+- 清空 17:32 / 18:31 两个旧几何 run；新 run 用 commit `d2622d9` 之后的代码从零启
+- V2 继续 port 50054 / seed 1003 / 300k steps
 
 ---
 
