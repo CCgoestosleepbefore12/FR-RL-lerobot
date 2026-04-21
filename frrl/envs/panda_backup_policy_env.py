@@ -41,7 +41,6 @@ from frrl.envs.panda_pick_place_safe_env import (
     PandaPickPlaceSafeEnv,
     HAND_COLLISION_DIST,
     ZONE_C_MIN_Y,
-    _CARTESIAN_BOUNDS,
 )
 from frrl.envs.base import GymRenderingSpec
 from frrl.fault_injection import EncoderBiasConfig
@@ -65,11 +64,11 @@ STALL_STEPS_RANGE = (3, 8)       # 每次贴近后停顿的步数范围
 HAND_BODY_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
 HAND_GEOM_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
 
-# 机械臂初始随机位置范围（全局收紧，保证各方向到工作空间边界 ≥15cm 退让余量）
-# 工作空间 X=[0.15,0.65] Y=[-0.40,0.17] Z=[0.00,0.50]
-TCP_INIT_X = (0.30, 0.45)        # X 两侧各 ≥15cm / ≥20cm 退让
-TCP_INIT_Y = (-0.22, 0.00)       # Y 两侧各 ≥18cm / ≥17cm
-TCP_INIT_Z = (0.15, 0.30)        # Z 下 15cm / 上 20cm
+# 机械臂初始随机位置范围（自然操作区，不绑定工作空间边距）
+# V2 训练时通常配合 enforce_cartesian_bounds=False，允许 policy 沿 -hand_dir 直线退让
+TCP_INIT_X = (0.30, 0.55)
+TCP_INIT_Y = (-0.30, 0.10)
+TCP_INIT_Z = (0.15, 0.40)
 
 # 奖励参数
 SURVIVAL_REWARD = 0.5
@@ -115,6 +114,9 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             超过即 terminate（防"转手腕躲避"作弊）。
         rotation_coeff: 旋转幅度负奖励系数（与 DISPLACEMENT_COEFF 对称），仅在
             use_arm_sphere_collision=True 时启用。
+        enforce_cartesian_bounds: 是否启用工作空间硬 clamp（默认 True，与真机一致）。
+            V2 sim 训练可设 False，移除工作空间束缚让 policy 学沿 -hand_dir 直线退让；
+            真机部署时由 Homing/Supervisor 层另行提供 clamp。
     """
 
     def __init__(
@@ -134,6 +136,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         use_arm_sphere_collision: bool = False,
         max_rotation: float = MAX_ROTATION,
         rotation_coeff: float = ROTATION_COEFF,
+        enforce_cartesian_bounds: bool = True,
     ):
         self._num_obstacles = min(num_obstacles, 2)
         self._enable_dr = enable_dr
@@ -143,6 +146,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._use_arm_sphere_collision = bool(use_arm_sphere_collision)
         self._max_rotation = float(max_rotation)
         self._rotation_coeff = float(rotation_coeff)
+        self._enforce_cartesian_bounds = bool(enforce_cartesian_bounds)
 
         super().__init__(
             seed=seed,
@@ -158,6 +162,13 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             safety_layer_enabled=False,
             encoder_bias_config=encoder_bias_config,
         )
+
+        # sim 训练时可关闭工作空间硬 clamp，让 policy 学习沿 -hand_dir 直线退让
+        # （真机部署层另行提供 clamp，训练 env 无此负担）
+        if not self._enforce_cartesian_bounds:
+            self._cartesian_bounds = np.asarray(
+                [[-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]]
+            )
 
         # MuJoCo body/geom ID
         self._obstacle_body_ids = [self._model.body(n).id for n in HAND_BODY_NAMES]
@@ -368,7 +379,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
 
         direction = to_tcp / (dist + 1e-8)                       # shape: (3,)
         self._obstacle_pos[idx] += direction * self._obstacle_speed
-        self._obstacle_pos[idx] = np.clip(self._obstacle_pos[idx], *_CARTESIAN_BOUNDS)
+        self._obstacle_pos[idx] = np.clip(self._obstacle_pos[idx], *self._cartesian_bounds)
 
     # ================================================================
     # 内部方法
@@ -381,7 +392,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             self._random.uniform(*TCP_INIT_Y),
             self._random.uniform(*TCP_INIT_Z),
         ])
-        self._data.mocap_pos[0] = np.clip(random_tcp, *_CARTESIAN_BOUNDS)
+        self._data.mocap_pos[0] = np.clip(random_tcp, *self._cartesian_bounds)
 
         zero_action = np.zeros(7, dtype=np.float32)
         for _ in range(5):
@@ -418,7 +429,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             raw_dir /= np.linalg.norm(raw_dir) + 1e-8
             dist = self._random.uniform(*dist_range)
             pos = center + raw_dir * dist
-            pos = np.clip(pos, *_CARTESIAN_BOUNDS)
+            pos = np.clip(pos, *self._cartesian_bounds)
             if np.linalg.norm(pos - center) > collision_dist * 1.5:
                 break
         return pos

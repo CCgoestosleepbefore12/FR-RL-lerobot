@@ -30,12 +30,14 @@ def _make_env(num_obstacles=1, seed=0):
 
 
 def _make_env_v2(num_obstacles=1, seed=0):
-    """V2：腕+手单球避障 + 旋转预算。"""
+    """V2：腕+手单球避障 + 旋转预算。kwargs 与 PandaBackupPolicyS1V2-v0 注册对齐。"""
     env = PandaBackupPolicyEnv(
         num_obstacles=num_obstacles,
         enable_dr=False,
         seed=seed,
         use_arm_sphere_collision=True,
+        max_displacement=0.30,
+        enforce_cartesian_bounds=False,
     )
     env.reset(seed=seed)
     return env
@@ -68,9 +70,9 @@ def test_motion_mode_is_tracking_only():
 def test_tracking_moves_toward_tcp():
     """手远于 D_TIGHT 时，一步后距离应缩小（沿 TCP 方向前进）。"""
     env = _make_env()
-    # 把手放到 TCP 前方已知距离 25cm
+    # 把手放到 TCP 后方已知距离 12cm（-X 朝向机器人基座，确保落在工作空间内无 clip 干扰）
     tcp = env.unwrapped._data.site_xpos[env.unwrapped._pinch_site_id].copy()  # shape: (3,)
-    env.unwrapped._obstacle_pos[0] = tcp + np.array([0.25, 0.0, 0.0])  # shape: (3,)
+    env.unwrapped._obstacle_pos[0] = tcp + np.array([-0.12, 0.0, 0.0])  # shape: (3,)
     env.unwrapped._stall_remaining[0] = 0
     env.unwrapped._obstacle_speed = 0.02  # 已知速度
 

@@ -815,6 +815,27 @@ V2 10k steps 眼检可视化发现奇异行为：满存活率仅 20%、60% episo
 - 清空 17:32 / 18:31 两个旧几何 run；新 run 用 commit `d2622d9` 之后的代码从零启
 - V2 继续 port 50054 / seed 1003 / 300k steps
 
+### 直线退让几何定稿（2026-04-21 晚间）：30cm 预算 + 关工作空间
+
+18:51 重启的 V2 run 跑到 35k，ckpt viz（30 ep）显示：
+- 满存活 83%，无 `hand_collision`，但 4 例 `excessive_displacement` 踩 0.20 预算上限
+- **行为问题**：策略学出"贴墙/角落扭捏"的歪行为，不是沿 -hand_dir 的直线退让
+
+**诊断**：位移 penalty 的梯度本来天然偏好最短路径（= 沿 -hand_dir 直线退让），但被**工作空间硬 clamp**夹弯了——TCP 在工作空间边缘时，最短退让方向被 clip 到边界，policy 只能学"绕"。
+
+**定稿改动**：
+- `max_displacement: 0.20 → 0.30`，匹配 `ARM_SPAWN_DIST` 上限 30cm（手追距上限）
+- 新增 `enforce_cartesian_bounds=True|False` kwarg；S1V2 设 False，sim 训练关 workspace clamp
+- `TCP_INIT` 放宽到自然操作区：`X=(0.30,0.55)` / `Y=(-0.30,0.10)` / `Z=(0.15,0.40)`，不再为预算让边距
+- 奖励不动——信任位移 penalty 的梯度方向
+
+**原则**：工作空间是真机硬约束（训练关、部署开），位移预算是软惩罚设计参数；两者正交。
+
+**代码改动**：
+- `panda_backup_policy_env.py`：新增 `enforce_cartesian_bounds` kwarg（默认 True 向后兼容），False 时在 `super().__init__()` 后将 `self._cartesian_bounds` 覆盖为 ±10m；3 处 `_CARTESIAN_BOUNDS` 替换为 `self._cartesian_bounds` 以继承覆盖；TCP_INIT 三常量放宽
+- `frrl/envs/__init__.py`：`PandaBackupPolicyS1V2-v0` kwargs 改 `max_displacement=0.30` + `enforce_cartesian_bounds=False`
+- `scripts/test_backup_env_tracking.py`：`_make_env_v2` 与 S1V2 注册对齐；`test_tracking_moves_toward_tcp` 改 -X 方向 12cm 避免 workspace clip 干扰；12/12 pass
+
 ---
 
 ## 附录：可复现命令

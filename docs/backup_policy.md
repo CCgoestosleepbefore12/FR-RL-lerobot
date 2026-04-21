@@ -178,9 +178,14 @@ if truncated: r += 5.0
 >
 > **参数化（2026-04-21 起）**：`MAX_DISPLACEMENT` 与 `SURVIVAL_BONUS` 已改为 `PandaBackupPolicyEnv` 构造参数（默认 0.15 / 5.0）。消融变体 `PandaBackupPolicyS1Relaxed-v0`（0.20 / 5.0）与 `PandaBackupPolicyS1Combo-v0`（0.20 / 10.0）用于探测"退远再停"策略的激励边界，详见 `docs/sim_exp_data.md`。
 >
-> **V2 防作弊（2026-04-21 起）**：`PandaBackupPolicyS1V2-v0` 用 wrist+hand 单球（半径 10cm，球心 = mocap weld 点，对旋转 rigid）替代 TCP+指尖三检测点，配合旋转预算（≤0.5rad）和旋转惩罚（对称 DISPLACEMENT_COEFF），堵住 V1 下"剧烈转腕让末端躲开但腕部仍碰撞"的作弊路径。V2 默认 `max_displacement=0.20` 匹配更严的碰撞阈值（13.5cm）。开关：`use_arm_sphere_collision`/`max_rotation`/`rotation_coeff`，默认关闭向后兼容。
+> **V2 防作弊（2026-04-21 起）**：`PandaBackupPolicyS1V2-v0` 用 wrist+hand 单球（半径 10cm，球心 = mocap weld 点，对旋转 rigid）替代 TCP+指尖三检测点，配合旋转预算（≤0.5rad）和旋转惩罚（对称 DISPLACEMENT_COEFF），堵住 V1 下"剧烈转腕让末端躲开但腕部仍碰撞"的作弊路径。开关：`use_arm_sphere_collision`/`max_rotation`/`rotation_coeff`，默认关闭向后兼容。
 >
-> **TCP_INIT 全局收紧（2026-04-21 起）**：旧 `TCP_INIT_X/Y/Z` 几乎吃满工作空间，最坏方向欧氏可退 ≈7.3cm 远低于 15–20cm 预算。收紧为 X=(0.30,0.45) / Y=(-0.22,0.00) / Z=(0.15,0.30)，保证各方向到工作空间边界 ≥15cm 退让余量——**全部 Backup env 共享受益**。
+> **V2 直线退让几何（2026-04-21 晚间定稿）**：早先 V2 用 0.20m 预算 + 收紧 TCP_INIT + 工作空间 clamp，但 30 ep eval 观察策略出现"贴边绕角""捉迷藏"的歪行为——因为工作空间把最短退让方向夹弯了。定稿方案：
+> - `max_displacement=0.30`：匹配 `ARM_SPAWN_DIST` 上限 30cm（手追距上限），沿 -hand_dir 直线退让足够
+> - `enforce_cartesian_bounds=False`：sim 训练关闭工作空间硬 clamp，让位移 penalty 的梯度天然偏好最短路径 = 沿 -hand_dir 直线退让（真机部署层另行提供 workspace clamp）
+> - `TCP_INIT` 放宽到自然操作区：X=(0.30,0.55) / Y=(-0.30,0.10) / Z=(0.15,0.40)，不再为预算让边距
+>
+> 原则：**工作空间是真机硬约束**（训练关、部署开），**位移预算是软惩罚设计参数**（匹配手追距）；两者正交。
 
 ---
 
