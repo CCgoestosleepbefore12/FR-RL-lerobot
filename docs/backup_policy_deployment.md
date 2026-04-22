@@ -116,12 +116,22 @@ python scripts/calibrate_cam_to_robot.py --marker-id 55 --marker-size 0.15
 - `handeye_pairs.json` — 原始数据（可 `--load` 重算）
 - `T_cam_to_robot.npy` — 4×4 矩阵，**后续所有步骤共用**
 
-### 1.5 精度判断
+### 1.5 求解方法
 
-脚本会打印 reprojection error：
+脚本用 **SVD 点对齐作为主求解**（只用平移信息），hand-eye（`cv2.calibrateRobotWorldHandEye`）
+作为诊断对比。
+
+SVD 的优势：在小样本（<15 组）或旋转多样性不足时更鲁棒。多次实验显示 SVD 的 mean error
+稳定在 ~15-20mm，而 hand-eye 在某些数据上会给出 >300mm 的错误解。
+
+脚本自动两种方法都跑，只有 hand-eye 明显更好（<0.5× SVD）时才覆盖 SVD 结果。
+
+### 1.6 精度判断
+
+reprojection error 参考：
 - `mean < 10mm` → 优秀
 - `mean < 30mm` → 可用（backup policy 训练 DR 是 σ=30mm 所以 OK）
-- `mean > 50mm` → 重采集
+- `mean > 50mm` → 重采集（注意分散位置 + **多变旋转**）
 
 ---
 
@@ -176,23 +186,60 @@ hand_pos（机器人基座系）
 python scripts/deploy_backup_policy.py
 ```
 
-### 3.2 状态机
+### 3.2 状态机（HierarchicalSupervisor 三态 FSM）
+
+由 `frrl/rl/hierarchical_supervisor.py` 驱动，**三态**：
 
 ```
-task 模式（SpaceMouse 控制）     ←─┐
-         │                          │
-  hand surface-dist < 0.15m          │
-         ↓                          │
-backup 模式（policy 控制）        ─┤
-         │                          │
-  hand surface-dist > 0.20m (滞环)   │
-  OR backup_steps >= 10              │
-         └──────────────────────────┘
+  ┌─────────────────────────────────────────┐
+  │                                         │
+  │   hand returns: dist < d_safe           │
+  │   (tcp_start retained)                  │
+  │                                         │
+  ▼                                         │
+┌────────┐  dist < d_safe   ┌──────────┐    │
+│  TASK  │ ───────────────→ │  BACKUP  │    │
+│(green) │  (record tcp_    │  (red)   │    │
+│        │   start pos+quat)│          │    │
+└────────┘                  └──────────┘    │
+    ▲                           │           │
+    │                           │ dist > d_clear  │
+    │ pos_err<2cm AND           │ for 3 steps     │
+    │ rot_err<2.9°              ▼           │
+    │                     ┌──────────┐      │
+    │                     │  HOMING  │──────┘
+    └─────────────────────│ (orange) │
+                          │          │
+                          │ P 控制回到
+                          │ tcp_start 6D 位姿
+                          └──────────┘
 ```
 
-- `TRIGGER_DIST = 0.15m` 表面对表面距离（非中心距离）
-- `RELEASE_DIST = 0.20m` 滞环防震荡
-- `MAX_BACKUP_STEPS = 10` 超时强制交还 task
+**关键参数**（scripts/deploy_backup_policy.py 顶部）：
+- `D_SAFE = 0.15m` — surface-to-surface 距离，触发 BACKUP
+- `D_CLEAR = 0.20m` — 允许 BACKUP → HOMING 的阈值（滞回）
+- `CLEAR_N_STEPS = 3` — 连续 3 帧 `dist > d_clear` 才切 HOMING（防抖动）
+- `HOMING_POS_TOL = 0.02m` / `HOMING_ROT_TOL = 0.05rad` — HOMING → TASK 收敛阈值
+
+**关键设计点**：
+- `tcp_start_pos/quat` 在 **TASK → BACKUP** 那一瞬间记录**一次**
+- BACKUP ↔ HOMING 之间来回切换**不更新** tcp_start（手反复进出时 homing 目标不变）
+- HOMING → TASK 完成后 tcp_start 清空
+
+### 3.2.1 HomingController（6D 位姿回归）
+
+`frrl/rl/homing_controller.py` 的 6D clipped-P 控制器：
+
+```
+position error = tcp_start_pos - tcp_current_pos
+rotation error = axis_angle(q_cur⁻¹ · q_start)  ← 局部系右乘约定
+
+action_pos = clip(kp_pos * error / action_scale, ±1)
+action_rot = clip(kp_rot * error / rot_action_scale, ±1)
+is_done: ||pos_err|| < pos_tol AND ||rot_err|| < rot_tol
+```
+
+`kp=1` 是 clipped-deadbeat（无超调）。配合 deployer 的 rate-limit（0.30m/s），典型 5-10 步收敛。
 
 ### 3.3 观测构造（关键）
 
@@ -211,17 +258,27 @@ backup 模式（policy 控制）        ─┤
 
 ### 3.4 Minkowski 球变换（框对框避障）
 
-Backup policy 训练是**点对点**距离，部署要做**框对框**避障。技巧：
+Backup policy 训练时 obstacle 是一个点，部署要做**两个球之间的避障**。技巧：
 
 ```
 膨胀人手球（r_hand + r_gripper）
 收缩夹爪到 TCP 点
-→ 两点距离 = 两框表面间距
+→ 两点距离 = 两球表面间距
 ```
 
-实现：`compute_virtual_hand_pos()` 函数。`r_gripper = 0.06m`（Franka Hand 包围球）。
+实现：`compute_virtual_hand_pos()` 函数。
 
-效果：policy 的 8cm 碰撞阈值语义从"点距离"变成"表面间距"。不用重训。
+**`R_GRIPPER = 0.10m`**（2026-04-22 起）——**匹配 V2 训练的 `ARM_SPHERE_RADIUS`**，
+覆盖 wrist + hand 整个区域的单球，球心 = mocap weld 点（= TCP）。
+
+人手球半径 = `0.5 × bbox_对角线` （从 WiLoR bbox 动态推断，一般 6-14cm）。
+
+效果：policy 的"点对点"距离语义映射到"表面对表面"距离。Policy 不用重训，但观测分布相比
+训练有一定偏移（训练用 center-to-center，部署用 surface-to-surface），属于**保守安全**
+的有意选择——真人手比仿真 obstacle（3.5cm）大很多，保留 Minkowski 让 policy 感知"更早"。
+
+> 替代方案：严格匹配训练分布用 `r_hand = 0.035`（固定）+ 不做投影。当前为安全优先保留
+> 当前实现。详见 commit 中 "方案 B" 讨论。
 
 ### 3.5 动作执行（关键）
 
@@ -288,16 +345,31 @@ WORKSPACE_MAX = [0.70,  0.30, 0.60]
 
 Target 发送前 clip。根据你的桌面布局调整。
 
+**设计理念**：训练侧关闭 workspace clamp（`enforce_cartesian_bounds=False`），让位移
+penalty 的梯度天然偏好沿 `-hand_dir` 直线退让；部署侧再加 clamp 作为真机硬约束。两者正交。
+
+**`--no-workspace-clamp` 标志**：临时关闭 clip 用于调试/测量可达空间。**使用时手放急停**：
+```bash
+python scripts/deploy_backup_policy.py --no-workspace-clamp ...
+```
+启动时会打印 `!! WORKSPACE CLAMP DISABLED` 提醒。
+
 ### 3.7 关键默认参数
 
-| 参数 | 值 | 可调范围 |
+| 参数 | 值 | 说明 / 可调范围 |
 |---|---|---|
 | `BACKUP_ACTION_SCALE` | 0.025 m/step | 0.015-0.030 |
 | `BACKUP_ROTATION_SCALE` | 0.020 rad/step | 0-0.03（为 0 则锁姿态）|
 | `TASK_ACTION_SCALE` | 0.025 m/step | SpaceMouse 手感 |
-| `LOOKAHEAD` | 2.0 | 1.5-3.0 |
-| `TRIGGER_DIST` | 0.15m | 根据安全余量调 |
-| `R_GRIPPER` | 0.06m | Franka Hand 包围球 |
+| `TASK_ROTATION_SCALE` | 0.040 rad/step | SpaceMouse 手腕灵敏度 |
+| `LOOKAHEAD` | 2.0 | 1.5-3.0；补阻抗跟踪滞后 |
+| `MAX_CART_SPEED` | 0.30 m/s | 单步 delta 速度硬上限 |
+| `D_SAFE` | 0.15m | 触发 BACKUP 的 surface-to-surface 距离 |
+| `D_CLEAR` | 0.20m | 允许 BACKUP→HOMING 的滞回阈值 |
+| `CLEAR_N_STEPS` | 3 | 连续清除帧数（防抖动）|
+| `HOMING_POS_TOL` | 0.02m | HOMING → TASK 位置容差 |
+| `HOMING_ROT_TOL` | 0.05rad | HOMING → TASK 姿态容差 (≈2.9°) |
+| `R_GRIPPER` | **0.10m** | V2 `ARM_SPHERE_RADIUS` 对齐 |
 
 ### 3.8 启动流程
 
@@ -357,15 +429,21 @@ C++ 阻抗控制器内部加 bias：
 ### 4.3 注入测试
 
 ```bash
-# 无 bias 基线
+# 无 bias 基线（启动时强制清零）
 python scripts/deploy_backup_policy.py --clear-bias
 
 # Joint 1 注入 0.1 rad（≈5.7°）
 python scripts/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"
 
-# 清除
+# Joint 4 注入 0.2 rad（末端偏移 ~13cm，大幅偏差）
+python scripts/deploy_backup_policy.py --bias "0,0,0,0.2,0,0,0"
+
+# 手动清除（脚本正常退出或 Ctrl-C 会自动清，这条只在崩溃遗留 bias 时需要）
 curl -X POST http://192.168.100.1:5000/clear_encoder_bias
 ```
+
+**Deployer 退出时自动清零**：finally 块里会调 `/clear_encoder_bias`，防止 bias 在多次
+run 之间残留。崩溃退出（如 libfranka reflex 中断）可能来不及清，需手动 curl。
 
 ### 4.4 预期行为
 
