@@ -14,9 +14,12 @@
         └→ FK(q_measured) 得到错误的 EE 位姿（观测受影响）
 """
 
-import numpy as np
-from typing import Dict, Optional, List, Tuple
+import time
+from collections import deque
 from dataclasses import dataclass, field, asdict
+from typing import Dict, Optional, List, Tuple
+
+import numpy as np
 import yaml
 
 
@@ -213,6 +216,175 @@ class EncoderBiasInjector:
             print(f"  平均偏差幅度: {stats['avg_magnitude']:.4f} rad ({np.rad2deg(stats['avg_magnitude']):.2f} deg)")
             print(f"  最大偏差幅度: {stats['max_magnitude']:.4f} rad ({np.rad2deg(stats['max_magnitude']):.2f} deg)")
         print("=" * 60)
+
+
+class BiasMonitor:
+    """Real-time plot of true vs biased joint values during deployment.
+
+    Designed as a **low-impact diagnostic overlay** for the main control loop:
+      - Appends (q_true, q_biased, bias) each step (cheap)
+      - Redraws only every `update_period` seconds (default 0.5s = 2 Hz)
+      - Auto-detects which joints have nonzero bias; only plots those
+      - Optional npz save on close for offline analysis / paper figures
+
+    Usage:
+        monitor = BiasMonitor(update_hz=2.0, save_path="bias_log.npz")
+        # per main-loop step:
+        monitor.update(q_true, q_biased, bias)
+        # on shutdown:
+        monitor.close()
+
+    Args:
+        history_seconds: Sliding window of samples to keep (default 30s).
+        sample_hz:       Expected rate of update() calls (default 10Hz, for
+                         buffer sizing only).
+        update_hz:       Redraw rate of the matplotlib window (default 2Hz).
+        bias_eps:        Threshold for "this joint has bias" (default 1e-4 rad).
+        save_path:       If set, save buffered data as npz on close().
+    """
+
+    def __init__(
+        self,
+        history_seconds: float = 30.0,
+        sample_hz: float = 10.0,
+        update_hz: float = 2.0,
+        bias_eps: float = 1e-4,
+        save_path: Optional[str] = None,
+        render: bool = True,
+    ):
+        self._update_period = 1.0 / float(update_hz) if update_hz > 0 else float("inf")
+        self._bias_eps = float(bias_eps)
+        self._save_path = save_path
+        self._render = bool(render)
+
+        # Ring buffers — sized for worst case at `sample_hz`
+        max_samples = max(16, int(history_seconds * sample_hz))
+        self._times = deque(maxlen=max_samples)
+        self._q_true = deque(maxlen=max_samples)
+        self._q_biased = deque(maxlen=max_samples)
+        self._biases = deque(maxlen=max_samples)
+
+        self._t0 = time.time()
+        self._last_draw_time = 0.0
+
+        # Matplotlib figure state — populated lazily on first nonzero bias
+        self._fig = None
+        self._axes = None
+        self._lines_true = []
+        self._lines_biased = []
+        self._active_joints: Optional[List[int]] = None
+        self._initialized = False
+        self._disabled = False  # set True if plot init fails (e.g., no display)
+
+    def _try_init_plot(self, bias: np.ndarray) -> None:
+        """Lazy plot setup on first nonzero bias. Idempotent."""
+        if self._initialized or self._disabled or not self._render:
+            return
+        active = [i for i, b in enumerate(bias) if abs(float(b)) > self._bias_eps]
+        if not active:
+            return  # wait for nonzero bias
+
+        try:
+            import matplotlib.pyplot as plt
+            plt.ion()
+            n = len(active)
+            fig, axes = plt.subplots(n, 1, figsize=(9, 2.3 * n), sharex=True)
+            if n == 1:
+                axes = [axes]
+            self._fig = fig
+            self._axes = axes
+            for i, j in enumerate(active):
+                ax = axes[i]
+                (lt,) = ax.plot([], [], color="tab:blue", lw=1.5,
+                                label=f"q_true[J{j+1}]")
+                (lb,) = ax.plot([], [], color="tab:red", lw=1.5,
+                                label=f"q_biased[J{j+1}]")
+                self._lines_true.append(lt)
+                self._lines_biased.append(lb)
+                ax.set_title(f"Joint {j+1}   bias = {float(bias[j]):+.4f} rad "
+                             f"({np.rad2deg(float(bias[j])):+.2f}°)",
+                             fontsize=10)
+                ax.set_ylabel("rad")
+                ax.legend(loc="upper right", fontsize=8)
+                ax.grid(True, alpha=0.3)
+            axes[-1].set_xlabel("time (s)")
+            fig.suptitle("BiasMonitor — real-time joint bias (q_true vs q_biased)",
+                         fontsize=11)
+            fig.tight_layout(rect=[0, 0, 1, 0.97])
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            self._active_joints = active
+            self._initialized = True
+        except Exception as e:
+            print(f"[BiasMonitor] plot init failed (will only save data): {e}")
+            self._disabled = True
+
+    def update(
+        self,
+        q_true: np.ndarray,
+        q_biased: np.ndarray,
+        bias: np.ndarray,
+    ) -> None:
+        """Buffer one sample; redraw plot at the throttled rate."""
+        t = time.time() - self._t0
+        self._times.append(t)
+        self._q_true.append(np.asarray(q_true, dtype=np.float32).copy())
+        self._q_biased.append(np.asarray(q_biased, dtype=np.float32).copy())
+        self._biases.append(np.asarray(bias, dtype=np.float32).copy())
+
+        # Skip drawing if disabled (either by user request or after a prior
+        # draw failure) — data still accumulates for save-on-close.
+        if self._disabled:
+            return
+
+        if not self._initialized:
+            self._try_init_plot(np.asarray(bias, dtype=np.float32))
+            if not self._initialized:
+                return  # still waiting for bias to be active
+
+        now = time.time()
+        if now - self._last_draw_time < self._update_period:
+            return
+        self._last_draw_time = now
+
+        t_arr = np.fromiter(self._times, dtype=np.float32)
+        qt_arr = np.stack(list(self._q_true))
+        qb_arr = np.stack(list(self._q_biased))
+
+        for i, j in enumerate(self._active_joints):
+            self._lines_true[i].set_data(t_arr, qt_arr[:, j])
+            self._lines_biased[i].set_data(t_arr, qb_arr[:, j])
+            ax = self._axes[i]
+            ax.relim()
+            ax.autoscale_view()
+
+        try:
+            self._fig.canvas.draw_idle()
+            self._fig.canvas.flush_events()
+        except Exception as e:
+            print(f"[BiasMonitor] draw failed (disabling): {e}")
+            self._disabled = True
+
+    def close(self) -> None:
+        """Save buffered data to npz (if configured) and close the figure."""
+        if self._save_path is not None and len(self._times) > 0:
+            try:
+                np.savez(
+                    self._save_path,
+                    t=np.array(self._times, dtype=np.float32),
+                    q_true=np.stack(list(self._q_true)),
+                    q_biased=np.stack(list(self._q_biased)),
+                    bias=np.stack(list(self._biases)),
+                )
+                print(f"[BiasMonitor] saved {len(self._times)} samples to {self._save_path}")
+            except Exception as e:
+                print(f"[BiasMonitor] save failed: {e}")
+        if self._fig is not None:
+            try:
+                import matplotlib.pyplot as plt
+                plt.close(self._fig)
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':
