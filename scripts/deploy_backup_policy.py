@@ -37,6 +37,7 @@ from scipy.spatial.transform import Rotation as R
 import frrl.envs  # noqa: F401
 import frrl.policies.sac.configuration_sac  # noqa: F401
 from frrl.configs.policies import PreTrainedConfig
+from frrl.fault_injection import BiasMonitor
 from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.rl.hierarchical_supervisor import HierarchicalSupervisor, Mode
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
@@ -176,10 +177,17 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="don't send /pose, just test obs/policy")
     ap.add_argument("--calibration", default="calibration_data/T_cam_to_robot.npy")
     ap.add_argument("--bias", type=str, default=None,
-                    help="inject bias at startup, 7 comma-separated rad values e.g. '0,0,0,0.2,0,0,0'")
+                    help="inject bias at startup, 7 comma-separated rad values e.g. '0,0,0,0.2,0,0,0'. "
+                         "For NEGATIVE values use --bias=-0.2,0,0,0,0,0,0 (equals sign, no space, "
+                         "otherwise argparse treats leading '-' as a flag)")
     ap.add_argument("--clear-bias", action="store_true", help="clear bias at startup")
     ap.add_argument("--no-workspace-clamp", action="store_true",
                     help="disable cartesian workspace clip on target pose (E-STOP READY!)")
+    ap.add_argument("--plot-joints", action="store_true",
+                    help="open a matplotlib window plotting q_true vs q_biased over time "
+                         "(only joints with nonzero bias are shown)")
+    ap.add_argument("--save-plot-data", type=str, default=None,
+                    help="save the joint bias time series to this npz path on exit")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -292,11 +300,30 @@ def main():
     last_hand_pos = None
     last_hand_time = None
 
+    # SpaceMouse gripper edge-detection (TASK mode only)
+    prev_buttons = [0, 0, 0, 0]
+    gripper_state = "open"  # track commanded state to avoid redundant HTTP calls
+
+    # Bias monitor (lazy: only draws once a nonzero bias is observed)
+    bias_monitor = None
+    if args.plot_joints or args.save_plot_data:
+        bias_monitor = BiasMonitor(
+            history_seconds=30.0,
+            sample_hz=CTRL_HZ,
+            update_hz=2.0,
+            save_path=args.save_plot_data,
+            render=args.plot_joints,
+        )
+        if args.plot_joints:
+            print("[OK] BiasMonitor active (draws at 2 Hz; only joints with bias shown)")
+        if args.save_plot_data:
+            print(f"[OK] BiasMonitor will save timeseries to {args.save_plot_data} on exit")
+
     # For visualization
     rng = np.random.default_rng(0)
 
     print("\n=== Deployment Active ===")
-    print("  TASK    (green)  — SpaceMouse controls the arm")
+    print("  TASK    (green)  — SpaceMouse controls arm + gripper (btn0=close, btn1=open)")
     print("  BACKUP  (red)    — hand < 15cm surface-dist triggers policy avoidance")
     print("  HOMING  (orange) — after 3 consecutive clear frames, return to tcp_start")
     if args.no_workspace_clamp:
@@ -354,6 +381,15 @@ def main():
                 hand_vel = np.zeros(3)
                 hand_dist = None
 
+            # --- BiasMonitor: record per-joint true vs biased values ---
+            if bias_monitor is not None:
+                # /getstate already includes the current bias vector; fall back
+                # to (q_biased - q_true) if for some reason it's missing.
+                active_bias = state_biased.get("bias")
+                if active_bias is None:
+                    active_bias = (np.array(state_biased["q"]) - np.array(state["q"])).tolist()
+                bias_monitor.update(state["q"], state_biased["q"], active_bias)
+
             # --- TCP in controller frame (biased) — input to supervisor ---
             # Supervisor/HomingController use [w, x, y, z] quaternion convention.
             actual_xyz_biased = np.array(state_biased["pose"][:3], dtype=np.float64)
@@ -379,10 +415,30 @@ def main():
                     # Fresh backup episode: reset obs buffer
                     obs_buf.clear()
 
+            # --- SpaceMouse gripper control (TASK mode only, edge-triggered) ---
+            # Reading is cheap; doing it here ensures we always have fresh button state.
+            sm_latest, sm_buttons = spacemouse.get_action()
+            if new_mode == Mode.TASK and len(sm_buttons) >= 2:
+                # buttons[0] = close, buttons[1] = open (frrl convention)
+                if sm_buttons[0] and not prev_buttons[0] and gripper_state != "closed":
+                    try:
+                        requests.post(URL + "close_gripper", timeout=1.0)
+                        gripper_state = "closed"
+                        print("[gripper] close")
+                    except Exception as e:
+                        print(f"[gripper] close failed: {e}")
+                elif sm_buttons[1] and not prev_buttons[1] and gripper_state != "open":
+                    try:
+                        requests.post(URL + "open_gripper", timeout=1.0)
+                        gripper_state = "open"
+                        print("[gripper] open")
+                    except Exception as e:
+                        print(f"[gripper] open failed: {e}")
+            prev_buttons = list(sm_buttons) if sm_buttons else [0, 0, 0, 0]
+
             # --- Action via supervisor.select_action (lazy callbacks) ---
             def task_action_fn():
-                sm, _ = spacemouse.get_action()
-                sm = [0.0 if abs(v) < 0.05 else v for v in sm]
+                sm = [0.0 if abs(v) < 0.05 else v for v in sm_latest]
                 return np.array([*sm[:6], 0.0], dtype=np.float32)  # 7D [dx,dy,dz,drx,dry,drz,grip]
 
             def backup_action_fn():
@@ -494,6 +550,8 @@ def main():
         except Exception as e:
             print(f"[cleanup] WARNING: failed to clear bias: {e}")
             print("          run  curl -X POST http://192.168.100.1:5000/clear_encoder_bias  manually")
+        if bias_monitor is not None:
+            bias_monitor.close()
         cv2.destroyAllWindows()
         hand_detector.stop()
         spacemouse.close()
