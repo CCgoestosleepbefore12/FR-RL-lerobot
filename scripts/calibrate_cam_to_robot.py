@@ -146,6 +146,34 @@ def rvec_tvec_to_RT(rvec, tvec):
     return rmat, tvec.reshape(3, 1)
 
 
+def solve_svd_point_pair(data_pairs):
+    """Simple SVD rigid alignment using translation only.
+
+    Robust against small/ill-conditioned datasets where cv2.calibrateRobotWorldHandEye
+    can fail. Absorbs the constant gripper-to-marker offset into translation — accurate
+    enough for hand-detection use cases (mean ~10-20 mm).
+    """
+    tvecs = np.array([p["tvec"] for p in data_pairs])
+    tcps = np.array([p["pose7"][:3] for p in data_pairs])
+
+    c_cam = tvecs.mean(axis=0)
+    c_rob = tcps.mean(axis=0)
+    H = (tvecs - c_cam).T @ (tcps - c_rob)
+    U, S, Vt = np.linalg.svd(H)
+    Rot = Vt.T @ U.T
+    if np.linalg.det(Rot) < 0:
+        Vt[-1, :] *= -1
+        Rot = Vt.T @ U.T
+    t = c_rob - Rot @ c_cam
+
+    T = np.eye(4)
+    T[:3, :3] = Rot
+    T[:3, 3] = t
+
+    errors = [float(np.linalg.norm(Rot @ tvecs[i] + t - tcps[i])) for i in range(len(tvecs))]
+    return T, errors
+
+
 def solve_hand_eye(data_pairs):
     R_base2gripper_list = []
     t_base2gripper_list = []
@@ -252,12 +280,7 @@ def main():
     if args.load:
         data = json.loads(pairs_file.read_text())
         print(f"Loaded {len(data['pairs'])} poses from {pairs_file}")
-        T_cam2base, T_g2m = solve_hand_eye(data["pairs"])
-        errors = compute_reprojection_errors(data["pairs"], T_cam2base, T_g2m)
-        print_result(T_cam2base, T_g2m, errors)
-        np.save(SAVE_DIR / "T_cam_to_robot.npy", T_cam2base)
-        np.save(SAVE_DIR / "T_gripper_to_marker.npy", T_g2m)
-        print(f"\nSaved to {SAVE_DIR}/")
+        T_cam2base = solve_and_save(data["pairs"])
         return
 
     # Init hardware
@@ -367,14 +390,38 @@ def main():
     pairs_file.write_text(json.dumps(save_data, indent=2))
     print(f"\nSaved {len(data_pairs)} poses to {pairs_file}")
 
-    # Solve
-    T_cam2base, T_g2m = solve_hand_eye(data_pairs)
-    errors = compute_reprojection_errors(data_pairs, T_cam2base, T_g2m)
-    print_result(T_cam2base, T_g2m, errors)
+    solve_and_save(data_pairs)
 
-    np.save(SAVE_DIR / "T_cam_to_robot.npy", T_cam2base)
-    np.save(SAVE_DIR / "T_gripper_to_marker.npy", T_g2m)
-    print(f"\nSaved to {SAVE_DIR}/")
+
+def solve_and_save(data_pairs):
+    """Try SVD point-pair first (robust), fall back to hand-eye for reference."""
+    print("\n=== SVD point-pair alignment (primary) ===")
+    T_svd, errors_svd = solve_svd_point_pair(data_pairs)
+    for i, e in enumerate(errors_svd):
+        status = "OK" if e < 0.03 else "WARN" if e < 0.06 else "BAD"
+        print(f"  pose {i+1}: {e*1000:.1f} mm  [{status}]")
+    mean_svd = float(np.mean(errors_svd))
+    print(f"  mean: {mean_svd*1000:.1f} mm    max: {max(errors_svd)*1000:.1f} mm")
+
+    # Also try hand-eye (for comparison / diagnosis); don't save unless much better
+    try:
+        print("\n=== Hand-eye (diagnostic, cv2.calibrateRobotWorldHandEye) ===")
+        T_he, T_g2m = solve_hand_eye(data_pairs)
+        errors_he = compute_reprojection_errors(data_pairs, T_he, T_g2m)
+        mean_he = float(np.mean(errors_he))
+        print(f"  mean: {mean_he*1000:.1f} mm    max: {max(errors_he)*1000:.1f} mm")
+        if mean_he < 0.5 * mean_svd:
+            print("  hand-eye looks significantly better — saving this one instead")
+            np.save(SAVE_DIR / "T_cam_to_robot.npy", T_he)
+            np.save(SAVE_DIR / "T_gripper_to_marker.npy", T_g2m)
+            print(f"\n  Saved T_cam_to_robot.npy (hand-eye) to {SAVE_DIR}/")
+            return T_he
+    except Exception as e:
+        print(f"  hand-eye failed: {e}")
+
+    np.save(SAVE_DIR / "T_cam_to_robot.npy", T_svd)
+    print(f"\n  Saved T_cam_to_robot.npy (SVD) to {SAVE_DIR}/")
+    return T_svd
 
 
 if __name__ == "__main__":
