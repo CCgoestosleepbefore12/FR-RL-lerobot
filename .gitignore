@@ -13,3 +13,11 @@ checkpoints/
 !checkpoints/backup_policy_s1_v2_newgeom_145k/
 *.pt
 *.pth
+
+# Per-robot calibration artifacts and downloaded model files
+calibration_data/
+
+# Debug/smoke-test outputs
+d455_color.png
+d455_depth.png
+debug_aruco_frame.png
