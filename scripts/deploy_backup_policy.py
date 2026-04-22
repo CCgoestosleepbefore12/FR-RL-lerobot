@@ -1,21 +1,27 @@
-"""Real-robot backup policy deployment.
+"""Real-robot backup policy deployment via HierarchicalSupervisor.
 
-State machine:
-  task (SpaceMouse control) <--trigger: hand_dist < 0.15m--> backup (policy control)
-                           <--release: hand_dist > 0.20m OR backup_steps >= 10--
+Three-state FSM (driven by frrl.rl.hierarchical_supervisor):
+  TASK     — SpaceMouse controls the arm (task policy placeholder)
+  BACKUP   — Backup policy actively dodges a detected hand
+  HOMING   — Returns TCP to the 6D pose recorded when TASK was interrupted,
+             then hands control back to TASK (seamless resume).
 
-Observation (per frame, 28D):
-  robot_state (18D): q(7) + dq(7) + gripper(1) + noisy_tcp(3)
-    - From /getstate_true (unaffected by encoder bias injection)
-    - TCP gets 5mm Gaussian noise added to match training DR
-  obstacle (10D): active(1) + hand_pos(3) + hand_vel(3) + hand_rel_pos(3)
+Transitions:
+  TASK → BACKUP      : min_hand_dist < d_safe (0.15m surface-to-surface)
+  BACKUP → HOMING    : min_hand_dist > d_clear (0.20m) for clear_n_steps (3) steps
+  HOMING → BACKUP    : hand returns (dist < d_safe); tcp_start retained
+  HOMING → TASK      : pos_err < 2cm AND rot_err < 2.9° (6D converged)
 
-Frame stacked x3 -> 84D policy input.
+Observation for BACKUP policy (per frame, 28D × 3 stack = 84D):
+  robot_state (18D): q(7) + dq(7) + gripper(1) + noisy_tcp(3) — from /getstate_true
+  obstacle (10D)  : active(1) + hand_pos(3) + hand_vel(3) + hand_rel_pos(3)
+                    hand_pos is Minkowski-inflated for box-vs-box avoidance.
 
 Usage:
     python scripts/deploy_backup_policy.py
-    python scripts/deploy_backup_policy.py --checkpoint checkpoints/backup_policy_s1
+    python scripts/deploy_backup_policy.py --checkpoint checkpoints/backup_policy_s1_v2_newgeom_145k
     python scripts/deploy_backup_policy.py --dry-run   # no /pose commands, test obs/inference only
+    python scripts/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"  # inject J1 bias
 """
 import argparse
 import time
@@ -32,18 +38,21 @@ import frrl.envs  # noqa: F401
 import frrl.policies.sac.configuration_sac  # noqa: F401
 from frrl.configs.policies import PreTrainedConfig
 from frrl.policies.sac.modeling_sac import SACPolicy
+from frrl.rl.hierarchical_supervisor import HierarchicalSupervisor, Mode
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
 from frrl.vision.hand_detector import HandDetector
 
 URL = "http://192.168.100.1:5000/"
 
-# Hand-TCP trigger/release (hysteresis avoids oscillation)
-TRIGGER_DIST = 0.15
-RELEASE_DIST = 0.20
-MAX_BACKUP_STEPS = 10
+# HierarchicalSupervisor thresholds
+D_SAFE = 0.15          # m — hand distance < d_safe → enter BACKUP
+D_CLEAR = 0.20         # m — hand distance > d_clear → allow BACKUP → HOMING
+CLEAR_N_STEPS = 3      # consecutive clear steps before BACKUP → HOMING
+HOMING_POS_TOL = 0.02  # m
+HOMING_ROT_TOL = 0.05  # rad (~2.9°)
 
-# Action scales — apply LOOKAHEAD multiplier to both backup and task modes
-# to compensate for impedance controller lag under "target = actual + delta" scheme.
+# Action scales — apply LOOKAHEAD multiplier to all modes to compensate for
+# impedance controller lag under "target = actual + delta" scheme.
 BACKUP_ACTION_SCALE = 0.025    # m/step at full deflection
 BACKUP_ROTATION_SCALE = 0.020
 TASK_ACTION_SCALE = 0.025      # same scale as backup (SpaceMouse feels responsive)
@@ -56,10 +65,12 @@ LOOKAHEAD = 2.0
 # Rate limit: max Cartesian speed (m/s). Clips single-step delta.
 MAX_CART_SPEED = 0.30          # m/s — Franka nominal max is ~2 m/s
 
-# Franka Hand bounding sphere radius (meters).
-# Standard Franka Hand is ~85x90x120mm; bounding sphere ~70mm centered slightly
-# behind TCP (pinch point). 0.06m is a conservative approximation.
-R_GRIPPER = 0.06
+# Arm bounding sphere radius (meters).
+# V2 training (PandaBackupPolicyS1V2-v0) uses ARM_SPHERE_RADIUS = 0.10m covering
+# wrist + hand, centered at the mocap weld point (= TCP). Match that value so the
+# policy's learned "avoid at X distance" semantics apply to the correct volume.
+# See docs/backup_policy.md "V2 防作弊" for rationale.
+R_GRIPPER = 0.10
 
 OBS_STACK = 3
 CTRL_HZ = 10.0
@@ -98,6 +109,11 @@ def send_pose(target_xyz, target_quat_xyzw):
         requests.post(URL + "pose", json={"arr": pose7}, timeout=0.5)
     except requests.exceptions.Timeout:
         pass
+
+
+def quat_xyzw_to_wxyz(q_xyzw):
+    """Franka server (scipy) → HomingController (sim env) convention."""
+    return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float64)
 
 
 def compute_virtual_hand_pos(bbox_center, bbox_size_3d, tcp_pos, r_gripper=R_GRIPPER):
@@ -162,6 +178,8 @@ def main():
     ap.add_argument("--bias", type=str, default=None,
                     help="inject bias at startup, 7 comma-separated rad values e.g. '0,0,0,0.2,0,0,0'")
     ap.add_argument("--clear-bias", action="store_true", help="clear bias at startup")
+    ap.add_argument("--no-workspace-clamp", action="store_true",
+                    help="disable cartesian workspace clip on target pose (E-STOP READY!)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -244,17 +262,30 @@ def main():
         pass
 
     # --- Init target pose from current BIASED state (controller's frame) ---
-    # Target must be in the same frame as the controller's internal "current"
-    # view, which is FK(q_biased). We read /getstate to get that frame.
     state0 = get_state_biased()
     target_xyz = np.array(state0["pose"][:3], dtype=np.float64)
     target_quat_xyzw = list(state0["pose"][3:])
     print(f"[OK] Initial target (biased frame): xyz={np.round(target_xyz, 3)}")
     print(f"     quat(xyzw)={np.round(target_quat_xyzw, 3)}")
 
-    # --- State machine ---
-    mode = "task"
-    backup_steps = 0
+    # --- HierarchicalSupervisor (3-state FSM with 6D homing) ---
+    supervisor = HierarchicalSupervisor(
+        d_safe=D_SAFE,
+        d_clear=D_CLEAR,
+        clear_n_steps=CLEAR_N_STEPS,
+        homing_pos_tol=HOMING_POS_TOL,
+        homing_rot_tol=HOMING_ROT_TOL,
+        # Homing controller's internal scale must match what we apply to /pose.
+        # We re-use BACKUP scales so the homing response rate matches the same
+        # feedback loop the impedance controller is tuned for.
+        homing_action_scale=BACKUP_ACTION_SCALE * LOOKAHEAD,
+        homing_rot_action_scale=BACKUP_ROTATION_SCALE * LOOKAHEAD,
+        homing_kp_pos=1.0,
+        homing_kp_rot=1.0,
+    )
+    supervisor.reset()
+
+    # Observation buffer for backup policy (3-frame stack)
     obs_buf = deque(maxlen=OBS_STACK)
 
     # Hand velocity tracking
@@ -265,8 +296,13 @@ def main():
     rng = np.random.default_rng(0)
 
     print("\n=== Deployment Active ===")
-    print("  SpaceMouse = task policy placeholder")
-    print("  Put hand near TCP to trigger backup policy")
+    print("  TASK    (green)  — SpaceMouse controls the arm")
+    print("  BACKUP  (red)    — hand < 15cm surface-dist triggers policy avoidance")
+    print("  HOMING  (orange) — after 3 consecutive clear frames, return to tcp_start")
+    if args.no_workspace_clamp:
+        print("  !! WORKSPACE CLAMP DISABLED — target pose can go anywhere. E-STOP READY.")
+    else:
+        print(f"  workspace clamp: xyz in [{WORKSPACE_MIN.tolist()}, {WORKSPACE_MAX.tolist()}]")
     print("  Press 'q' in window to quit\n")
 
     dt = 1.0 / CTRL_HZ
@@ -318,30 +354,38 @@ def main():
                 hand_vel = np.zeros(3)
                 hand_dist = None
 
-            # --- State transitions ---
-            if mode == "task":
-                if hand_dist is not None and hand_dist < TRIGGER_DIST:
-                    mode = "backup"
-                    backup_steps = 0
-                    obs_buf.clear()
-                    print(f"[TRIGGER] hand_dist={hand_dist*1000:.0f}mm -> backup")
-            elif mode == "backup":
-                release = (
-                    hand_dist is None or
-                    hand_dist > RELEASE_DIST or
-                    backup_steps >= MAX_BACKUP_STEPS
-                )
-                if release:
-                    reason = ("lost" if hand_dist is None else
-                              "far" if hand_dist > RELEASE_DIST else "timeout")
-                    print(f"[RELEASE] reason={reason}, backup_steps={backup_steps} -> task")
-                    mode = "task"
-                    backup_steps = 0
+            # --- TCP in controller frame (biased) — input to supervisor ---
+            # Supervisor/HomingController use [w, x, y, z] quaternion convention.
+            actual_xyz_biased = np.array(state_biased["pose"][:3], dtype=np.float64)
+            actual_quat_xyzw = list(state_biased["pose"][3:])
+            actual_quat_wxyz = quat_xyzw_to_wxyz(actual_quat_xyzw)
 
-            # --- Action ---
-            if mode == "backup":
-                # Backup policy path
-                # Use last known hand if detection dropped
+            # --- FSM step ---
+            prev_mode = supervisor.mode
+            # Supervisor needs a finite hand distance; use a large value when no hand.
+            dist_for_fsm = hand_dist if hand_dist is not None else 1e9
+            new_mode = supervisor.step(
+                min_hand_dist=dist_for_fsm,
+                tcp_current_pos=actual_xyz_biased,
+                tcp_current_quat=actual_quat_wxyz,
+            )
+            if new_mode != prev_mode:
+                extra = ""
+                if new_mode == Mode.BACKUP and supervisor.tcp_start_pos is not None:
+                    tsp = supervisor.tcp_start_pos
+                    extra = f"  tcp_start=({tsp[0]:.3f},{tsp[1]:.3f},{tsp[2]:.3f})"
+                print(f"[FSM] {prev_mode.name} -> {new_mode.name}{extra}")
+                if prev_mode != Mode.BACKUP and new_mode == Mode.BACKUP:
+                    # Fresh backup episode: reset obs buffer
+                    obs_buf.clear()
+
+            # --- Action via supervisor.select_action (lazy callbacks) ---
+            def task_action_fn():
+                sm, _ = spacemouse.get_action()
+                sm = [0.0 if abs(v) < 0.05 else v for v in sm]
+                return np.array([*sm[:6], 0.0], dtype=np.float32)  # 7D [dx,dy,dz,drx,dry,drz,grip]
+
+            def backup_action_fn():
                 use_hand_pos = hand_pos if hand_pos is not None else (
                     last_hand_pos if last_hand_pos is not None else fk_tcp
                 )
@@ -349,83 +393,86 @@ def main():
                 obs_buf.append(obs28)
                 obs84 = stack_frames(obs_buf, single_dim=28)
                 obs_t = torch.from_numpy(obs84).float().unsqueeze(0).to(device)
-
                 with torch.no_grad():
                     action_t = policy.select_action(batch={"observation.state": obs_t})
                 action6 = action_t.squeeze(0).cpu().numpy()[:6]
+                return np.array([*action6, 0.0], dtype=np.float32)
 
-                # Scale + look-ahead
-                action_scaled_xyz = action6[:3] * BACKUP_ACTION_SCALE * LOOKAHEAD
-                action_scaled_rpy = action6[3:6] * BACKUP_ROTATION_SCALE * LOOKAHEAD
-                backup_steps += 1
+            action7 = supervisor.select_action(
+                task_action_fn, backup_action_fn,
+                tcp_current_pos=actual_xyz_biased,
+                tcp_current_quat=actual_quat_wxyz,
+            )
 
-                # DIAGNOSTIC
-                actual_xyz = np.array(state["pose"][:3])
-                tgt_err = np.linalg.norm(target_xyz - actual_xyz) * 1000
-                print(f"  [backup {backup_steps:2d}] "
-                      f"dxyz={np.round(action_scaled_xyz*1000,1)}mm  "
-                      f"ACTUAL_TCP=({actual_xyz[0]:.3f},{actual_xyz[1]:.3f},{actual_xyz[2]:.3f})  "
-                      f"TGT_ERR={tgt_err:.0f}mm")
+            # Pick scale per mode (homing uses same as backup — see supervisor init)
+            if new_mode == Mode.TASK:
+                scale_xyz = TASK_ACTION_SCALE * LOOKAHEAD
+                scale_rot = TASK_ROTATION_SCALE * LOOKAHEAD
+            else:  # BACKUP or HOMING
+                scale_xyz = BACKUP_ACTION_SCALE * LOOKAHEAD
+                scale_rot = BACKUP_ROTATION_SCALE * LOOKAHEAD
 
-            else:  # task mode — SpaceMouse
-                sm_action, _ = spacemouse.get_action()
-                # Deadzone
-                sm_action = [0.0 if abs(v) < 0.05 else v for v in sm_action]
-                action_scaled_xyz = np.array(sm_action[:3]) * TASK_ACTION_SCALE * LOOKAHEAD
-                action_scaled_rpy = np.array(sm_action[3:6]) * TASK_ROTATION_SCALE * LOOKAHEAD
+            action_scaled_xyz = action7[:3] * scale_xyz
+            action_scaled_rpy = action7[3:6] * scale_rot
 
             # --- Apply delta to CURRENT BIASED pose (controller's frame) ---
-            # state_biased["pose"] = what controller considers "current" position.
-            # Adding delta to this keeps target in a frame consistent with the
-            # controller's internal reference, so no phantom error develops.
-            actual_xyz = np.array(state_biased["pose"][:3], dtype=np.float64)
-            actual_quat_xyzw = list(state_biased["pose"][3:])
-
             # Rate limit the xyz delta
             delta_mag = np.linalg.norm(action_scaled_xyz)
             max_step = MAX_CART_SPEED * dt
             if delta_mag > max_step:
                 action_scaled_xyz = action_scaled_xyz * (max_step / delta_mag)
 
-            target_xyz = actual_xyz + action_scaled_xyz
-            target_xyz = np.clip(target_xyz, WORKSPACE_MIN, WORKSPACE_MAX)
+            target_xyz = actual_xyz_biased + action_scaled_xyz
+            if not args.no_workspace_clamp:
+                target_xyz = np.clip(target_xyz, WORKSPACE_MIN, WORKSPACE_MAX)
 
             if np.any(np.abs(action_scaled_rpy) > 1e-6):
+                # HomingController returns axis-angle vector (|v| = angle, v/|v| = axis).
+                # Backup policy's rpy is also naturally a rotation vector at small angles.
+                # from_rotvec is the correct decoder for both; from_euler("xyz") would
+                # interpret the vector as sequential Euler angles.
                 cur_R = R.from_quat(actual_quat_xyzw)
-                dR = R.from_euler("xyz", action_scaled_rpy)
+                dR = R.from_rotvec(action_scaled_rpy)
                 target_quat_xyzw = list((cur_R * dR).as_quat())
             else:
                 target_quat_xyzw = actual_quat_xyzw
 
             if not args.dry_run:
-                pose_resp = None
-                try:
-                    # franka_server expects [x, y, z, qx, qy, qz, qw]
-                    pose_resp = requests.post(URL + "pose",
-                        json={"arr": [*target_xyz.tolist(), *target_quat_xyzw]},
-                        timeout=0.5)
-                except requests.exceptions.Timeout:
-                    pass
-                if mode == "backup" and pose_resp is not None:
-                    print(f"    /pose status={pose_resp.status_code}  body={pose_resp.text[:40]}  "
-                          f"target=({target_xyz[0]:.3f},{target_xyz[1]:.3f},{target_xyz[2]:.3f})")
+                send_pose(target_xyz, target_quat_xyzw)
 
             # --- Visualization ---
             vis = hand_detector.draw_detection(color_img, hand)
-            mode_color = (0, 0, 255) if mode == "backup" else (0, 255, 0)
-            cv2.putText(vis, f"MODE: {mode.upper()}", (10, 30),
+            mode_colors = {
+                Mode.TASK:   (0, 255, 0),      # green
+                Mode.BACKUP: (0, 0, 255),      # red
+                Mode.HOMING: (0, 165, 255),    # orange
+            }
+            mode_color = mode_colors[new_mode]
+            cv2.putText(vis, f"MODE: {new_mode.name}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, mode_color, 2)
+
             if hand_dist is not None:
-                dist_color = (0, 0, 255) if hand_dist < TRIGGER_DIST else (
-                    (0, 165, 255) if hand_dist < RELEASE_DIST else (0, 255, 0))
+                dist_color = (0, 0, 255) if hand_dist < D_SAFE else (
+                    (0, 165, 255) if hand_dist < D_CLEAR else (0, 255, 0))
                 cv2.putText(vis,
-                            f"surface-dist: {hand_dist*1000:.0f}mm  (r_hand={r_hand_debug*1000:.0f}mm, r_grip={R_GRIPPER*1000:.0f}mm)",
+                            f"surface-dist: {hand_dist*1000:.0f}mm  "
+                            f"(r_hand={r_hand_debug*1000:.0f}mm, r_grip={R_GRIPPER*1000:.0f}mm)",
                             (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, dist_color, 2)
-            if mode == "backup":
-                cv2.putText(vis, f"backup step {backup_steps}/{MAX_BACKUP_STEPS}",
+
+            # State-specific annotations
+            if new_mode == Mode.BACKUP:
+                cv2.putText(vis,
+                            f"backup | clear_count {supervisor.clear_count}/{CLEAR_N_STEPS}",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            cv2.putText(vis, f"TCP: ({target_xyz[0]:.3f},{target_xyz[1]:.3f},{target_xyz[2]:.3f})",
+            elif new_mode == Mode.HOMING and supervisor.tcp_start_pos is not None:
+                tsp = supervisor.tcp_start_pos
+                pos_err = float(np.linalg.norm(actual_xyz_biased - tsp)) * 1000
+                cv2.putText(vis,
+                            f"homing | pos_err={pos_err:.0f}mm tol={HOMING_POS_TOL*1000:.0f}mm",
+                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
+
+            cv2.putText(vis, f"TCP target: ({target_xyz[0]:.3f},{target_xyz[1]:.3f},{target_xyz[2]:.3f})",
                         (10, vis.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2)
 
             cv2.imshow("Backup Policy Deployment", vis)
@@ -440,6 +487,13 @@ def main():
     except KeyboardInterrupt:
         print("\nstopped by user")
     finally:
+        # Clear any injected bias so it doesn't persist to the next run.
+        try:
+            requests.post(URL + "clear_encoder_bias", timeout=2.0)
+            print("[cleanup] encoder_bias cleared to zero")
+        except Exception as e:
+            print(f"[cleanup] WARNING: failed to clear bias: {e}")
+            print("          run  curl -X POST http://192.168.100.1:5000/clear_encoder_bias  manually")
         cv2.destroyAllWindows()
         hand_detector.stop()
         spacemouse.close()
