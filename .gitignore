@@ -21,3 +21,6 @@ calibration_data/
 d455_color.png
 d455_depth.png
 debug_aruco_frame.png
+
+# BiasMonitor npz dumps
+bias_*.npz
