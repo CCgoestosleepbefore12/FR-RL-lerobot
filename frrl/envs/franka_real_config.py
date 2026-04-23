@@ -12,6 +12,24 @@ import numpy as np
 from frrl.fault_injection import EncoderBiasConfig
 
 
+def center_square_crop(img: np.ndarray) -> np.ndarray:
+    """对任意 H×W×C 图像做中心正方形裁剪：边长 = min(H, W)。"""
+    h, w = img.shape[:2]
+    s = min(h, w)
+    y0 = (h - s) // 2
+    x0 = (w - s) // 2
+    return img[y0 : y0 + s, x0 : x0 + s]
+
+
+def workspace_roi_crop_placeholder(img: np.ndarray) -> np.ndarray:
+    """阶段 3.5 ArUco 4 角标定完成前的 front ROI 占位：暂用中心正方形。
+
+    等 scripts/define_workspace_crop.py 写完并生成 yaml 后，这里切到基于 yaml
+    的 ROI 裁剪即可（不改 env 层接口）。
+    """
+    return center_square_crop(img)
+
+
 @dataclass
 class FrankaRealConfig:
     """Franka Panda 真机环境配置。"""
@@ -21,12 +39,25 @@ class FrankaRealConfig:
     server_url: str = "http://192.168.100.1:5000/"
 
     # RealSense D455 相机配置
+    # front: 正前方俯视，承担全局定位 + 小目标（吸管）远距离识别 → 分辨率更高
+    # wrist: 腕部末端视角，近距离细节 → 分辨率较低即可
+    # Serial numbers 对应 hpc-old 工作站上 2 台 D455（用户 2026-04-23 物理确认）。
+    # 换机器时修改这里或传自定义 config。
     cameras: Dict[str, dict] = field(default_factory=lambda: {
-        "front": {"serial_number": "000000000000", "dim": (640, 480), "fps": 15, "exposure": 40000},
-        "wrist": {"serial_number": "000000000000", "dim": (640, 480), "fps": 15, "exposure": 40000},
+        "front": {"serial_number": "234222303420", "dim": (640, 480), "fps": 15, "exposure": 40000},
+        "wrist": {"serial_number": "318122303303", "dim": (640, 480), "fps": 15, "exposure": 40000},
     })
-    image_crop: Dict[str, callable] = field(default_factory=dict)
-    image_size: Tuple[int, int] = (128, 128)
+    image_crop: Dict[str, callable] = field(default_factory=lambda: {
+        "front": workspace_roi_crop_placeholder,   # 阶段 3.5 切到真正 ROI
+        "wrist": center_square_crop,
+    })
+    # SAC 架构 (frrl/policies/sac/modeling_sac.py:586) 要求所有相机同尺寸
+    # (单一 image_encoder 批 forward 所有相机)。都用 128² 符合 HIL-SERL paper。
+    # 如需高分辨率识别小目标，需先 refactor encoder 支持 per-camera shape。
+    image_size: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
+        "front": (128, 128),
+        "wrist": (128, 128),
+    })
 
     # 动作缩放: (xyz_m/step, rotation_rad/step, gripper_scale)
     action_scale: Tuple[float, float, float] = (0.04, 0.2, 1.0)
@@ -90,10 +121,19 @@ class FrankaRealConfig:
     })
 
     # Episode 控制
-    max_episode_length: int = 200
+    max_episode_length: int = 300   # 30s @ 10Hz; 20s (200) 不够做 pick-place
     hz: int = 10
+    # 末端直线速度安全上限 (m/s)。在线训练期 policy 可能输出极限 action
+    # (action_scale[0]=0.04 × 10Hz = 0.4 m/s)，超过该值会被裁剪以保护硬件。
+    # 标定后根据任务可调；deploy_backup_policy.py 同样采用 0.30 m/s。
+    max_cart_speed: float = 0.30
     gripper_sleep: float = 0.6
     joint_reset_period: int = 0  # N episode 做一次关节重置，0=不做
+
+    # Reward 后端选择
+    #   "pose":     依据 target_pose + reward_threshold 的位姿阈值（默认，兼容老脚本）
+    #   "keyboard": HIL-SERL 风格人工按键（S/Enter/Space/Backspace），需要 pynput
+    reward_backend: str = "pose"
 
     # 奖励阈值 (pick-and-place)
     reward_threshold: np.ndarray = field(

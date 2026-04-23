@@ -76,6 +76,7 @@ from frrl.transport.utils import (
     send_bytes_in_chunks,
     transitions_to_bytes,
 )
+from frrl.rl.actor_utils import DISCARD_INFO_KEY, should_discard_episode  # noqa: F401
 from frrl.utils.random_utils import set_seed
 from frrl.utils.robot_utils import precise_sleep
 from frrl.utils.transition import (
@@ -372,7 +373,20 @@ def act_with_policy(
 
             update_policy_parameters(policy=policy, parameters_queue=parameters_queue, device=device)
 
-            if len(list_transition_to_send_to_learner) > 0:
+            # Honor operator's episode discard flag (HIL-SERL keyboard reward:
+            # Backspace = scene was misarranged / noise / not a valid rollout).
+            # Drop ALL transitions from this episode — they never reach either
+            # replay buffer. Intervention transitions are discarded too; if the
+            # operator wanted to keep them they shouldn't have hit Backspace.
+            episode_discarded = should_discard_episode(new_transition.get(TransitionKey.INFO, {}))
+
+            if episode_discarded:
+                logging.info(
+                    f"[ACTOR] Episode discarded — dropping "
+                    f"{len(list_transition_to_send_to_learner)} transitions"
+                )
+                list_transition_to_send_to_learner = []
+            elif len(list_transition_to_send_to_learner) > 0:
                 push_transitions_to_transport_queue(
                     transitions=list_transition_to_send_to_learner,
                     transitions_queue=transitions_queue,
@@ -394,6 +408,7 @@ def act_with_policy(
                 "Interaction step": interaction_step,
                 "Episode intervention": int(episode_intervention),
                 "Intervention rate": intervention_rate,
+                "Episode discarded": int(episode_discarded),
                 **stats,
             }
             # 添加环境 info 中的安全指标（从最后一步的 transition 获取）

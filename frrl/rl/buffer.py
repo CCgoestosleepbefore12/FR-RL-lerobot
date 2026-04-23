@@ -15,10 +15,13 @@
 # limitations under the License.
 
 import functools
+import pickle as pkl
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from typing import TypedDict
+from pathlib import Path
+from typing import Any, TypedDict
 
+import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 from tqdm import tqdm
@@ -75,6 +78,106 @@ def random_shift(images: torch.Tensor, pad: int = 4):
     _, _, h, w = images.shape
     images = F.pad(input=images, pad=(pad, pad, pad, pad), mode="replicate")
     return random_crop_vectorized(images=images, output_size=(h, w))
+
+
+def _to_batched_tensor(v: Any) -> torch.Tensor:
+    """Convert numpy array, torch tensor, or python scalar to a batched tensor.
+
+    Always adds exactly one leading batch dim:
+      scalar     → (1,)
+      shape (N,) → (1, N)
+      shape (H,W,C) → (1, H, W, C)
+    """
+    if isinstance(v, torch.Tensor):
+        t = v
+    elif isinstance(v, np.ndarray):
+        t = torch.from_numpy(v.copy())
+    elif isinstance(v, (bool, int, float)):
+        t = torch.tensor(v)
+    else:
+        raise TypeError(f"cannot convert {type(v).__name__} to tensor")
+    return t.unsqueeze(0)
+
+
+def _flatten_obs_to_tensor_dict(
+    obs: Any, prefix: str = ""
+) -> dict[str, torch.Tensor]:
+    """Recursively flatten a nested dict observation into flat-key torch tensors.
+
+    ``obs["pixels"]["front"]`` → ``{"pixels.front": tensor}``. Leaves are converted
+    via ``_to_batched_tensor``. A non-dict top-level ``obs`` is wrapped under the key
+    ``"state"`` to match the fallback expected by the Transition schema.
+    """
+    if not isinstance(obs, dict):
+        return {("state" if not prefix else prefix): _to_batched_tensor(obs)}
+    out: dict[str, torch.Tensor] = {}
+    for k, v in obs.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.update(_flatten_obs_to_tensor_dict(v, key))
+        else:
+            out[key] = _to_batched_tensor(v)
+    return out
+
+
+def _require_keys(d: dict, keys: tuple[str, ...]) -> None:
+    missing = [k for k in keys if k not in d]
+    if missing:
+        raise KeyError(f"transition dict missing required keys: {missing}")
+
+
+def _remap_and_transform(
+    flat_obs: dict[str, torch.Tensor],
+    key_map: dict[str, str],
+    transpose_set: set[str],
+    resize_map: dict[str, tuple[int, int]] | None = None,
+    normalize_set: set[str] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Apply key rename + optional HWC→CHW transpose + optional resize + optional /255 normalize.
+
+    Called once per observation (and once per next_observation) during pickle
+    loading. Pipeline per key:
+
+      1. Rename via ``key_map`` (pickle key → buffer key). Unmapped keys pass through.
+      2. If new key is in ``transpose_set``: (..., H, W, C) → (..., C, H, W).
+      3. If new key is in ``resize_map``: bilinear resize to (target_h, target_w).
+         Runs AFTER the transpose, so it expects CHW layout.
+      4. If new key is in ``normalize_set``: cast to float32 and divide by 255.
+         Matches VanillaObservationProcessorStep in the online path so offline
+         and online image distributions agree.
+    """
+    out: dict[str, torch.Tensor] = {}
+    resize_map = resize_map or {}
+    normalize_set = normalize_set or set()
+    for k, v in flat_obs.items():
+        new_key = key_map.get(k, k)
+        if new_key in transpose_set:
+            # (B, H, W, C) → (B, C, H, W)
+            if v.ndim == 4:
+                v = v.permute(0, 3, 1, 2).contiguous()
+            elif v.ndim == 3:
+                v = v.permute(2, 0, 1).contiguous()
+            else:
+                raise ValueError(
+                    f"cannot HWC→CHW transpose tensor of ndim {v.ndim} (key={new_key})"
+                )
+        if new_key in resize_map:
+            target_h, target_w = resize_map[new_key]
+            # Assume CHW (post-transpose). Input v shape: (1, C, H, W).
+            if v.ndim != 4:
+                raise ValueError(
+                    f"resize expects (B, C, H, W); got ndim={v.ndim} for key={new_key}"
+                )
+            if (v.shape[-2], v.shape[-1]) != (target_h, target_w):
+                orig_dtype = v.dtype
+                v_f = v.float()
+                v_f = F.interpolate(v_f, size=(target_h, target_w), mode="bilinear", align_corners=False)
+                v = v_f.to(orig_dtype)
+        if new_key in normalize_set:
+            # uint8 [0, 255] → float32 [0, 1]
+            v = v.float() / 255.0
+        out[new_key] = v
+    return out
 
 
 class ReplayBuffer:
@@ -415,6 +518,144 @@ class ReplayBuffer:
         while queue:
             yield queue.popleft()
             enqueue(1)
+
+    @classmethod
+    def from_pickle_transitions(
+        cls,
+        pickle_paths: Sequence[str | Path],
+        capacity: int | None = None,
+        device: str = "cuda:0",
+        state_keys: Sequence[str] | None = None,
+        image_augmentation_function: Callable | None = None,
+        use_drq: bool = True,
+        storage_device: str = "cpu",
+        optimize_memory: bool = False,
+        key_map: dict[str, str] | None = None,
+        transpose_hwc_to_chw: Sequence[str] | None = None,
+        resize_images: dict[str, tuple[int, int]] | None = None,
+        normalize_to_unit: Sequence[str] | None = None,
+    ) -> "ReplayBuffer":
+        """Load HIL-SERL-format demo pickles into a ReplayBuffer.
+
+        Expected pickle layout (matches `rail-berkeley/hil-serl`
+        `examples/record_demos.py` and our own `scripts/collect_demo_task_policy.py`):
+
+            [
+              {
+                "observations":      dict | np.ndarray,
+                "actions":           np.ndarray,
+                "next_observations": dict | np.ndarray,
+                "rewards":           float,
+                "masks":             float,      # ignored; 1 - done
+                "dones":             bool,
+                "infos":             dict,       # ignored
+              },
+              ...
+            ]
+
+        Nested observation dicts are flattened with dot-separated keys, so
+        ``obs["pixels"]["front"]`` becomes state key ``"pixels.front"``. NumPy
+        arrays are converted to torch tensors with a leading batch dim of 1.
+
+        Args:
+            pickle_paths: one or more pickle files. Transitions are concatenated
+                in the order given (no shuffling).
+            capacity: buffer capacity. If None, auto-sized to the total number of
+                loaded transitions.
+            key_map: optional mapping from pickle-side state keys to buffer-side
+                state keys. Example: ``{"pixels.front": "observation.images.front",
+                "agent_pos": "observation.state"}``. Keys not in the map pass through
+                unchanged. Keys in the map but not in the pickle are ignored.
+            transpose_hwc_to_chw: optional list of buffer-side keys whose tensors
+                should be permuted (..., H, W, C) → (..., C, H, W) at load time.
+                Image encoders expect CHW; pickles from our collection script
+                are HWC uint8.
+            normalize_to_unit: optional list of buffer-side keys whose tensors
+                should be converted from ``uint8 [0, 255]`` to ``float32 [0, 1]``
+                at load time. Needed to match online-path processors which do
+                this divide; offline/online distribution drift otherwise.
+
+        Returns:
+            ReplayBuffer containing the loaded transitions, ready to be sampled
+            like an online buffer.
+
+        Raises:
+            ValueError: if no transitions are loaded or capacity is too small.
+            KeyError: if any transition is missing a required key.
+        """
+        all_transitions: list[dict] = []
+        for path in pickle_paths:
+            with open(path, "rb") as f:
+                batch = pkl.load(f)
+            if not isinstance(batch, list):
+                raise ValueError(f"{path} must unpickle to a list; got {type(batch)}")
+            all_transitions.extend(batch)
+
+        if not all_transitions:
+            raise ValueError(f"no transitions loaded from {list(pickle_paths)}")
+
+        if capacity is None:
+            capacity = len(all_transitions)
+        if capacity < len(all_transitions):
+            raise ValueError(
+                f"capacity ({capacity}) < loaded transitions ({len(all_transitions)})"
+            )
+
+        replay_buffer = cls(
+            capacity=capacity,
+            device=device,
+            state_keys=state_keys,
+            image_augmentation_function=image_augmentation_function,
+            use_drq=use_drq,
+            storage_device=storage_device,
+            optimize_memory=optimize_memory,
+        )
+
+        transpose_set = set(transpose_hwc_to_chw or [])
+        key_map = key_map or {}
+        resize_map = resize_images or {}
+        normalize_set = set(normalize_to_unit or [])
+
+        for t in all_transitions:
+            _require_keys(t, ("observations", "actions", "next_observations", "rewards", "dones"))
+            state = _remap_and_transform(
+                _flatten_obs_to_tensor_dict(t["observations"]),
+                key_map=key_map,
+                transpose_set=transpose_set,
+                resize_map=resize_map,
+                normalize_set=normalize_set,
+            )
+            next_state = _remap_and_transform(
+                _flatten_obs_to_tensor_dict(t["next_observations"]),
+                key_map=key_map,
+                transpose_set=transpose_set,
+                resize_map=resize_map,
+                normalize_set=normalize_set,
+            )
+            action = _to_batched_tensor(t["actions"])
+
+            # Preserve complementary_info schema so subsequent online-phase
+            # transitions (which carry `discrete_penalty` + `is_intervention`
+            # via frrl.rl.actor.TeleopEvents routing) can share the same buffer
+            # storage. Default: all demo steps are intervention (human teleop).
+            info = t.get("infos", {}) or {}
+            is_intervention = bool(info.get("is_intervention", True))
+            complementary_info = {
+                "discrete_penalty": torch.tensor([info.get("discrete_penalty", 0.0)], dtype=torch.float32),
+                "is_intervention": is_intervention,
+            }
+
+            replay_buffer.add(
+                state={k: v.to(storage_device) for k, v in state.items()},
+                action=action.to(storage_device),
+                reward=float(t["rewards"]),
+                next_state={k: v.to(storage_device) for k, v in next_state.items()},
+                done=bool(t["dones"]),
+                truncated=False,  # hil-serl schema has no truncated flag
+                complementary_info=complementary_info,
+            )
+
+        return replay_buffer
 
     @classmethod
     def from_lerobot_dataset(

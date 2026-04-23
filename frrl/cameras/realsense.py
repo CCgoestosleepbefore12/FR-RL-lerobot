@@ -11,6 +11,7 @@ import copy
 import logging
 import queue
 import threading
+import time
 from collections import OrderedDict
 from typing import Dict, Optional, Tuple
 
@@ -98,10 +99,21 @@ class VideoCapture:
         self.t.start()
 
     def _reader(self):
+        consecutive_failures = 0
         while self.enable:
             ret, frame = self.cap.read()
             if not ret:
+                consecutive_failures += 1
+                # Don't spin at 100% CPU when camera is disconnected / hung.
+                # Log every N-th failure so we see it without flooding logs.
+                if consecutive_failures == 1 or consecutive_failures % 100 == 0:
+                    logging.warning(
+                        f"VideoCapture {self.name}: read() returned no frame "
+                        f"({consecutive_failures} consecutive failures)"
+                    )
+                time.sleep(0.01)
                 continue
+            consecutive_failures = 0
             if not self.q.empty():
                 try:
                     self.q.get_nowait()
@@ -125,14 +137,16 @@ class RealSenseCameraManager:
     Args:
         camera_configs: {相机名: {serial_number, dim, fps, exposure, ...}}
         image_crop: {相机名: crop函数}，可选
-        image_size: 输出图像尺寸 (width, height)
+        image_size: 输出图像尺寸。可以是:
+            - Tuple[int, int]: 所有相机统一尺寸 (width, height)
+            - Dict[str, Tuple[int, int]]: 按相机名指定，缺省相机会报错
     """
 
     def __init__(
         self,
         camera_configs: Dict[str, dict],
         image_crop: Optional[Dict[str, callable]] = None,
-        image_size: Tuple[int, int] = (128, 128),
+        image_size=(128, 128),
     ):
         self.image_crop = image_crop or {}
         self.image_size = image_size
@@ -143,6 +157,13 @@ class RealSenseCameraManager:
             self.caps[cam_name] = VideoCapture(rs_cap)
 
         logging.info(f"RealSenseCameraManager 初始化: {list(self.caps.keys())}")
+
+    def _size_for(self, cam_name: str) -> Tuple[int, int]:
+        if isinstance(self.image_size, dict):
+            if cam_name not in self.image_size:
+                raise KeyError(f"image_size dict 缺少 '{cam_name}'")
+            return self.image_size[cam_name]
+        return self.image_size
 
     def get_images(self) -> Dict[str, np.ndarray]:
         """获取所有相机图像，裁剪并缩放到目标尺寸。
@@ -162,8 +183,8 @@ class RealSenseCameraManager:
             if cam_name in self.image_crop:
                 bgr = self.image_crop[cam_name](bgr)
 
-            # 缩放到目标尺寸
-            resized = cv2.resize(bgr, self.image_size)
+            # 缩放到目标尺寸（支持 per-camera 不同尺寸）
+            resized = cv2.resize(bgr, self._size_for(cam_name))
             # BGR → RGB
             images[cam_name] = resized[..., ::-1].copy()
 
