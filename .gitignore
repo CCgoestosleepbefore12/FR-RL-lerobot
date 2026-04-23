@@ -24,3 +24,12 @@ debug_aruco_frame.png
 
 # BiasMonitor npz dumps
 bias_*.npz
+
+# Task policy demo pickles (per-robot teleop recordings, too large for git)
+demos/task_policy/*.pkl
+
+# Auto-generated dataset statistics
+dataset_stats_generated.json
+
+# pytest
+.pytest_cache/
