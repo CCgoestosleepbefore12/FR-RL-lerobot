@@ -205,18 +205,28 @@ def start_learner_threads(
 
         concurrency_entity = Process
 
-    communication_process = concurrency_entity(
-        target=start_learner,
-        args=(
-            parameters_queue,
-            transition_queue,
-            interaction_message_queue,
-            shutdown_event,
-            cfg,
-        ),
-        daemon=True,
-    )
-    communication_process.start()
+    # Pretrain-only mode: no actor will connect, so we don't spawn the gRPC server.
+    # The training function still runs but its main online loop returns early after
+    # offline pretrain completes.
+    communication_process = None
+    if not cfg.policy.offline_only_mode:
+        communication_process = concurrency_entity(
+            target=start_learner,
+            args=(
+                parameters_queue,
+                transition_queue,
+                interaction_message_queue,
+                shutdown_event,
+                cfg,
+            ),
+            daemon=True,
+        )
+        communication_process.start()
+    else:
+        logging.info(
+            "[LEARNER] offline_only_mode=True: skipping gRPC actor server "
+            "(no online actor expected)"
+        )
 
     add_actor_information_and_train(
         cfg=cfg,
@@ -233,8 +243,9 @@ def start_learner_threads(
     interaction_message_queue.close()
     parameters_queue.close()
 
-    communication_process.join()
-    logging.info("[LEARNER] Communication process joined")
+    if communication_process is not None:
+        communication_process.join()
+        logging.info("[LEARNER] Communication process joined")
 
     logging.info("[LEARNER] join queues")
     transition_queue.cancel_join_thread()
@@ -340,7 +351,12 @@ def add_actor_information_and_train(
     batch_size = cfg.batch_size
     offline_replay_buffer = None
 
-    if cfg.dataset is not None:
+    # Initialize offline buffer when either a dataset is configured OR we're in
+    # pretrain-only mode with demo pickles (the latter doesn't need a dataset).
+    needs_offline_buffer = cfg.dataset is not None or (
+        cfg.policy.offline_only_mode and cfg.policy.demo_pickle_paths
+    )
+    if needs_offline_buffer:
         offline_replay_buffer = initialize_offline_replay_buffer(
             cfg=cfg,
             device=device,
@@ -358,10 +374,15 @@ def add_actor_information_and_train(
         dataset_repo_id = cfg.dataset.repo_id
 
     # ================================================================
-    # 热启动：在offline demo上预训练，让策略有基本能力再开始online交互
+    # 热启动 / Pretrain-only：在 offline demo 上预训练
+    #   offline_only_mode=True  → 跑 offline_pretrain_steps 步，然后保存退出
+    #   offline_only_mode=False → 跑 offline_warmup_steps 步，然后进入主 online loop
     # ================================================================
-    if offline_replay_buffer is not None and not cfg.resume and cfg.policy.offline_warmup_steps > 0:
+    if cfg.policy.offline_only_mode:
+        warmup_steps = cfg.policy.offline_pretrain_steps
+    else:
         warmup_steps = cfg.policy.offline_warmup_steps
+    if offline_replay_buffer is not None and not cfg.resume and warmup_steps > 0:
         logging.info(f"[LEARNER] Warmup: pre-training on offline demo for {warmup_steps} steps...")
         offline_warmup_iter = offline_replay_buffer.get_iterator(
             batch_size=batch_size * 2, async_prefetch=async_prefetch, queue_size=2
@@ -425,6 +446,38 @@ def add_actor_information_and_train(
 
         push_actor_policy_to_queue(parameters_queue, policy)
         logging.info(f"[LEARNER] Warmup complete. Pushed initial policy to Actor.")
+
+    # Pretrain-only mode: save checkpoint and exit before the main online loop.
+    # The saved checkpoint is later loaded as a resume point when the online
+    # actor+learner pipeline starts (阶段 6).
+    if cfg.policy.offline_only_mode:
+        logging.info(
+            f"[LEARNER] offline_only_mode: pretraining complete at step "
+            f"{optimization_step}, saving checkpoint and exiting"
+        )
+        if saving_checkpoint:
+            save_training_checkpoint(
+                cfg=cfg,
+                optimization_step=optimization_step,
+                online_steps=online_steps,
+                interaction_message=interaction_message,
+                policy=policy,
+                optimizers=optimizers,
+                replay_buffer=replay_buffer,
+                offline_replay_buffer=offline_replay_buffer,
+                dataset_repo_id=dataset_repo_id,
+                fps=fps,
+            )
+            logging.info(f"[LEARNER] Pretrain checkpoint saved at step {optimization_step}")
+        # Close wandb cleanly — without this the run stays "crashed" in the UI
+        # when wandb is enabled, since we return before the main loop's cleanup.
+        if wandb_logger is not None:
+            try:
+                import wandb
+                wandb.finish()
+            except Exception as e:
+                logging.warning(f"wandb.finish() failed: {e}")
+        return
 
     # Initialize iterators
     online_iterator = None
@@ -510,7 +563,12 @@ def add_actor_information_and_train(
             # Sample from the iterators
             batch = next(online_iterator)
 
-            if dataset_repo_id is not None:
+            # Mix offline/prior buffer 50/50 whenever it exists — RLPD core.
+            # Previously checked `dataset_repo_id is not None`, but pretrain-only
+            # mode populates the offline buffer from pickle with `cfg.dataset=None`
+            # (and thus `dataset_repo_id=None`), causing the mix to silently
+            # disappear after resuming online. Use the buffer presence directly.
+            if offline_replay_buffer is not None:
                 batch_offline = next(offline_iterator)
                 batch = concatenate_batch_transitions(
                     left_batch_transitions=batch, right_batch_transition=batch_offline
@@ -568,7 +626,9 @@ def add_actor_information_and_train(
         # Sample for the last update in the UTD ratio
         batch = next(online_iterator)
 
-        if dataset_repo_id is not None:
+        # Mix offline 50/50 here too — see UTD-sampling block above for why
+        # this cannot key off dataset_repo_id.
+        if offline_replay_buffer is not None:
             batch_offline = next(offline_iterator)
             batch = concatenate_batch_transitions(
                 left_batch_transitions=batch, right_batch_transition=batch_offline
@@ -1100,13 +1160,30 @@ def initialize_replay_buffer(
         )
 
 
+def _validate_resize_map(raw: dict) -> dict:
+    """Coerce demo_resize_images list→tuple + validate every value is [H, W]."""
+    out = {}
+    for k, v in raw.items():
+        if not (isinstance(v, (list, tuple)) and len(v) == 2):
+            raise ValueError(
+                f"demo_resize_images[{k}] must be [H, W] (len 2); got {v!r}"
+            )
+        out[k] = (int(v[0]), int(v[1]))
+    return out
+
+
 def initialize_offline_replay_buffer(
     cfg: TrainRLServerPipelineConfig,
     device: str,
     storage_device: str,
 ) -> ReplayBuffer:
     """
-    Initialize an offline replay buffer from a dataset.
+    Initialize an offline replay buffer from a dataset or from demo pickles.
+
+    When `cfg.policy.offline_only_mode` is True and `cfg.policy.demo_pickle_paths`
+    is non-empty, the buffer is populated directly from hil-serl-format pickle
+    files (see ReplayBuffer.from_pickle_transitions). Otherwise the regular
+    LeRobotDataset path is used.
 
     Args:
         cfg (TrainRLServerPipelineConfig): Training configuration
@@ -1116,6 +1193,39 @@ def initialize_offline_replay_buffer(
     Returns:
         ReplayBuffer: Initialized offline replay buffer
     """
+    # Pretrain-only path: load directly from pickle demos (no LeRobotDataset).
+    if cfg.policy.offline_only_mode and cfg.policy.demo_pickle_paths:
+        logging.info(
+            f"[LEARNER] offline_only_mode: loading demos from "
+            f"{len(cfg.policy.demo_pickle_paths)} pickle(s)"
+        )
+        state_keys = None
+        if cfg.policy.input_features is not None:
+            state_keys = list(cfg.policy.input_features.keys())
+        return ReplayBuffer.from_pickle_transitions(
+            pickle_paths=cfg.policy.demo_pickle_paths,
+            capacity=cfg.policy.offline_buffer_capacity,
+            device=device,
+            storage_device=storage_device,
+            state_keys=state_keys,
+            # Disable optimize_memory for pickle path: avoids the "last
+            # transition's next_state is the first transition's state" bug
+            # when capacity == len(transitions) (all-episode-boundary confusion).
+            optimize_memory=False,
+            # DrQ aug assumes all image keys share the same (H,W), which held
+            # under front=224 / wrist=128. Both are 128 now, but we keep it
+            # disabled for offline path: demos are augmented separately via
+            # processor pipeline if desired.
+            use_drq=False,
+            key_map=dict(cfg.policy.demo_key_map) if cfg.policy.demo_key_map else None,
+            transpose_hwc_to_chw=list(cfg.policy.demo_transpose_hwc_to_chw)
+                if cfg.policy.demo_transpose_hwc_to_chw else None,
+            resize_images=_validate_resize_map(cfg.policy.demo_resize_images)
+                if cfg.policy.demo_resize_images else None,
+            normalize_to_unit=list(cfg.policy.demo_normalize_to_unit)
+                if cfg.policy.demo_normalize_to_unit else None,
+        )
+
     if not cfg.resume:
         logging.info("make_dataset offline buffer")
         offline_dataset = make_dataset(cfg)

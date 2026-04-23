@@ -150,6 +150,35 @@ class SACConfig(PreTrainedConfig):
     # Offline-demo warmup: number of gradient steps on offline buffer before
     # switching to online interaction. Set to 0 to disable warmup.
     offline_warmup_steps: int = 500
+    # Pretrain-only mode: when True, learner skips gRPC actor server, runs
+    # `offline_pretrain_steps` gradient updates on offline_replay_buffer
+    # (populated from demo pickles), saves a checkpoint, and exits. Online
+    # training can then resume from that checkpoint. Use for HIL-SERL style
+    # pretraining from SpaceMouse demos before wiring up the real-robot actor.
+    offline_only_mode: bool = False
+    # Number of gradient steps to run in offline_only_mode. Ignored unless
+    # offline_only_mode == True.
+    offline_pretrain_steps: int = 5000
+    # Pickle paths for demo transitions (hil-serl schema). Only used when
+    # offline_only_mode == True; populates offline_replay_buffer at startup.
+    demo_pickle_paths: list[str] = field(default_factory=list)
+    # Pickle → buffer state-key rename map. Used by from_pickle_transitions to
+    # turn collect-time schema (e.g. "pixels.front", "agent_pos") into the
+    # "observation.*" convention SAC.validate_features requires.
+    demo_key_map: dict[str, str] = field(default_factory=dict)
+    # List of buffer-side state keys whose tensors should be HWC→CHW permuted
+    # at load time. Image encoders expect CHW; our pickles store HWC uint8.
+    demo_transpose_hwc_to_chw: list[str] = field(default_factory=list)
+    # Buffer-side image key → target (H, W) for bilinear resize at load time.
+    # Needed when collected demos have a different resolution than the policy
+    # expects (e.g. old 224² front pickles but config now uses 128²). Runs
+    # AFTER the transpose, so expects CHW layout.
+    demo_resize_images: dict[str, list[int]] = field(default_factory=dict)
+    # Buffer-side image keys to divide by 255 (uint8 [0,255] → float32 [0,1])
+    # at load time. Must match the per-key normalization the online path does
+    # in VanillaObservationProcessorStep — otherwise the encoder sees a 255×
+    # offset between pretrain and online phases.
+    demo_normalize_to_unit: list[str] = field(default_factory=list)
     # Frequency of policy updates
     policy_update_freq: int = 1
 
