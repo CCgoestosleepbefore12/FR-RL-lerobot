@@ -417,3 +417,59 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 | 无偏差baseline | outputs/train/2026-03-23/02-26-18_frrl_hil_sac_pick_cube/ | last |
 | 固定偏差0.2rad | outputs/train/2026-03-24/21-45-16_frrl_hil_sac_pick_cube_bias/ | last |
 | 随机偏差[0,0.25] | outputs/train/2026-03-25/19-26-27_frrl_hil_sac_pick_cube_bias_random/ | 010000 |
+
+---
+
+## 十、Task Policy 真机 HIL-SERL 训练 Pipeline（阶段 1–5 完成，2026-04-23）
+
+完整的真机 pick-place task policy 训练框架已搭建完毕，**阶段 1–5（观测升级 → keyboard reward → actor discard hook → SpaceMouse demo 采集 → offline pretrain）**全部可工作。首次 smoke 测试 100 步 pretrain，`critic_loss=0.0135`，6M 可训参数 / 8M 总参，1s/step 真机数据吞吐验证通过。
+
+**详细文档见 [`docs/task_policy_training.md`](task_policy_training.md)**。
+
+### 阶段交付物
+
+| 阶段 | 交付 | 说明 |
+|------|------|------|
+| **阶段 1** | `FrankaRealEnv` 29D 观测 + 双相机 | `joint_pos_biased(7) + joint_vel(7) + gripper(1) + tcp_biased(7) + tcp_true(7)`；`tcp_true` 为 privileged 作弊通道；双路相机 128×128 共享 encoder |
+| **阶段 2** | Keyboard reward + `go_home` | S/Enter/Space/Backspace 四键协议；`KeyboardRewardListener` 状态机；`env.go_home()` 收尾安全复位 |
+| **阶段 3** | Actor discard hook | `frrl/rl/actor_utils.py::should_discard_episode` 在 episode 结束时按 `info["discard"]` 丢整条 rollout |
+| **阶段 4** | SpaceMouse demo 采集 + pickle adapter | `scripts/collect_demo_task_policy.py` 输出 hil-serl schema pickle；`ReplayBuffer.from_pickle_transitions` 适配器（key_map + HWC→CHW + resize + /255 normalize） |
+| **阶段 5** | Offline-only pretrain | `SACConfig.offline_only_mode=True` 跳过 gRPC actor，从 pickle 加载到 `offline_replay_buffer` 跑 N 步 warmup loop 保存 checkpoint；`scripts/pretrain_task_policy.py` 薄 CLI |
+
+### 4-agent 代码 Review + P0/P1/P2/P3 修复集合
+
+session 末 4 agent（独立 review / vs 仿真 / vs hil-serl 原仓库 / meta-review）发现并修复了以下问题：
+
+**P0 Blocker（全部已修）**：
+- HIL 链路三件套（intervene_action 字段、complementary_info schema、learner 混样条件）
+- Actor teleop_action 接入（RLPD intervention 路径）
+- HTTP requests timeout=2.0（防止 server 卡死阻塞 loop）
+- Image `/255` 归一化（对齐 online processor，避免 offline/online 分布漂移）
+- Action speed cap（`max_cart_speed=0.30`，保留 action_scale 0.04）
+
+**P1（除 GripperPenaltyWrapper 外已修）**：
+- `wait_for_start` 接 `shutdown_event`
+- pynput 缺失在 `required=True` 时抛错
+- Pickle 路径 `optimize_memory=False`（避免最后一条 next_state bug）
+- dataset_stats 合理默认值 + `scripts/compute_dataset_stats.py` 工具
+
+**P2/P3**：reward `int→float`、`close()` 幂等、去重双重 deepcopy、RealSense reader sleep、`wandb.finish()`、rewards `__init__` re-export、resize_map 长度校验。
+
+### 测试覆盖
+
+新增 8 个测试文件共 **115 个 pytest cases**，覆盖：config 默认字段、观测 shape layout（逐 slice 断言）、相机尺寸分发、键盘状态机（含并发压测）、pickle adapter（含端到端 round-trip + 兼容性测试）、actor discard hook、offline_only_mode config。执行时间约 2.6s。
+
+### 关键决策记录
+
+- **tcp_true 作弊通道**：无噪声（和 sim 的 `noisy_real_tcp` + 5mm 高斯不同），意在简化训练信号；future 消融实验可验证"无作弊通道"情况。
+- **双相机 128²**：来自 SAC `modeling_sac.py:586` 硬编码同尺寸约束；future refactor 可支持异构。
+- **`shared_encoder=true`**：frozen ResNet10 本无梯度，三份副本浪费（15.6M → 8.47M total params）。
+- **Action scale 0.04 保留**：和 demo 采集 scale 一致避免分布漂移；用 `max_cart_speed=0.30` 做硬件 safety net。
+
+### 下一步（阶段 6 待做）
+
+1. **ArUco 4 角 workspace 校准**：`scripts/define_workspace_crop.py`，替换 `workspace_roi_crop_placeholder`
+2. **50 条真实 demo + 真 dataset_stats**：用 `scripts/compute_dataset_stats.py` 算完填回 config
+3. **5000 步真 pretrain + wandb**：观察 critic_loss 收敛
+4. **Online HIL 训练接通**：`InterventionWrapper` 包 FrankaRealEnv + SpaceMouse override；actor resume from pretrain checkpoint
+5. **GripperPenaltyWrapper port**（P1 剩项）：对齐 sim 的 `-0.05` 夹爪频繁切换惩罚

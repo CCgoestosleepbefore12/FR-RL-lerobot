@@ -4,6 +4,9 @@
 > 真机编码器偏差 B+D 注入、相机/teleop 基础）已经完成并落地。
 > 当前实施状态的权威来源是 [`project_progress.md §2.5`](project_progress.md)。
 >
+> **Task policy 训练 pipeline（pretrain + online HIL）见独立文档
+> [`task_policy_training.md`](task_policy_training.md)**（2026-04-23 阶段 1–5 完结）。
+>
 > 本文保留作为**设计决策与原始规划**的历史记录，里面的"从 ~/hil-serl/ 移植 ..."
 > 等描述反映的是**计划**，对应代码现在都已进入 `frrl/robot_servers/` /
 > `frrl/envs/franka_real_*.py` / `frrl/cameras/` / `frrl/teleoperators/` 等正式位置。
