@@ -8,17 +8,27 @@
 ```
 FR-RL-lerobot/
 ├── frrl/                    # 主 Python 包
-│   ├── envs/                # MuJoCo 仿真环境（pick-cube / pick-place / arrange-boxes /
-│   │                        #   backup-policy / safe）和真机环境 (franka_real_env)
-│   ├── robot_servers/       # RT PC 上跑的 Flask server（franka_server.py + gripper）
-│   ├── controllers/         # OSC 控制器（仿真）
-│   ├── fault_injection.py   # EncoderBiasInjector
-│   ├── rl/                  # Actor + Learner + Replay Buffer
+│   ├── envs/
+│   │   ├── sim/             # MuJoCo 仿真 env（pick-cube / pick-place / backup-policy）+ OSC 控制器
+│   │   ├── real.py          # 真机 FrankaRealEnv (HTTP → RT PC Flask server)
+│   │   ├── real_config.py   # 真机相机/action scale/clip box 等配置
+│   │   ├── configs.py       # env 配置 dataclass
+│   │   └── wrappers/        # gym wrapper 栈（动作/观测/奖励注入）
+│   ├── robots/franka_real/  # 真机外围：servers/ (Flask) + cameras/ (RealSense) +
+│   │                        #   vision/ (WiLoR 手检测 + ArUco TCP) + trajectory_executor
+│   ├── rl/
+│   │   ├── core/            # actor / learner / learner_service / buffer / env_factory
+│   │   ├── infra/           # process / queue / wandb / actor_utils / transport (gRPC)
+│   │   └── supervisor/      # 部署态 FSM (HierarchicalSupervisor) + HomingController
 │   ├── policies/sac/        # SAC 网络与训练逻辑
 │   ├── processor/           # 观测/动作 transition 处理器
 │   ├── teleoperators/       # SpaceMouse + 键盘输入
-│   ├── cameras/             # RealSense 相机
-│   └── trajectory_executor.py
+│   ├── rewards/             # 奖励函数（键盘 reward / shaped reward 等）
+│   ├── optim/               # 优化器与调度器
+│   ├── datasets/            # LeRobotDataset wrapper
+│   ├── configs/             # draccus dataclass schema（命令行 / 实验配置）
+│   ├── utils/               # control_utils / logging / 通用小工具
+│   └── fault_injection.py   # EncoderBiasInjector（B+D 通道注入）
 ├── scripts/                 # 训练/评估/真机自检脚本 + JSON configs (scripts/configs/)
 ├── docs/                    # 详细文档（见下方索引）
 ├── tests/                   # 单元测试
