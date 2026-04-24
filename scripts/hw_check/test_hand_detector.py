@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import requests
 
-from frrl.vision.hand_detector import HandDetector
+from frrl.robots.franka_real.vision.hand_detector import HandDetector
 
 URL = "http://192.168.100.1:5000/"
 

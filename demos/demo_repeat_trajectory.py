@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from frrl.envs.sim.panda_pick_place_env import PandaPickPlaceEnv
-from frrl.trajectory_executor import Waypoint, TrajectoryInterpolator, TrajectoryExecutor
+from frrl.robots.franka_real.trajectory_executor import Waypoint, TrajectoryInterpolator, TrajectoryExecutor
 
 
 def create_stable_trajectory(

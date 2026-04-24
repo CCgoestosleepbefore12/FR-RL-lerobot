@@ -92,7 +92,7 @@ frrl/
   入库
 - `franka_server.py` + 依赖的 gripper server 从 `~/hil-serl/` 搬进
   `frrl/robot_servers/`，彻底结束"代码分散在 hil-serl 和本仓库两边"的历史债；
-  启动方式从 `python franka_server.py` 改为 `python -m frrl.robot_servers.franka_server`
+  启动方式从 `python franka_server.py` 改为 `python -m frrl.robots.franka_real.servers.franka_server`
 - 新增 `/set_encoder_bias` / `/clear_encoder_bias` / `/get_encoder_bias` 三个 HTTP
   路由，`/getstate` 返回的 `q`/`pose` 是 biased 值
 - GPU 侧 `FrankaRealEnv._set_encoder_bias` hook 和路由名天然对齐，

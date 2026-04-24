@@ -57,7 +57,7 @@ import torch
 from torch import nn
 from torch.multiprocessing import Event, Queue
 
-# from frrl.cameras import opencv  # 真机才需要
+# from frrl.robots.franka_real.cameras import opencv  # 真机才需要
 from frrl.configs import parser
 from frrl.configs.train import TrainRLServerPipelineConfig
 from frrl.policies.factory import make_policy

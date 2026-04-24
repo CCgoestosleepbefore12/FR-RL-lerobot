@@ -41,7 +41,7 @@ from frrl.fault_injection import BiasMonitor
 from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
-from frrl.vision.hand_detector import HandDetector
+from frrl.robots.franka_real.vision.hand_detector import HandDetector
 
 URL = "http://192.168.100.1:5000/"
 

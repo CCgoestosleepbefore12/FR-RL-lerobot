@@ -365,7 +365,7 @@ class FrankaRealEnv(gym.Env):
 
         if self._camera_manager is None:
             try:
-                from frrl.cameras.realsense import RealSenseCameraManager
+                from frrl.robots.franka_real.cameras.realsense import RealSenseCameraManager
                 self._camera_manager = RealSenseCameraManager(
                     camera_configs=self._resolve_camera_serials(self.config.cameras),
                     image_crop=self.config.image_crop,
@@ -391,7 +391,7 @@ class FrankaRealEnv(gym.Env):
            → front=A, wrist=B
         如果某个 serial 已经是真实 serial（非占位符），原样保留。
         """
-        from frrl.cameras.realsense import RSCapture
+        from frrl.robots.franka_real.cameras.realsense import RSCapture
 
         PLACEHOLDER = "000000000000"
         has_placeholder = any(

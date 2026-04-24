@@ -19,7 +19,7 @@ import numpy as np
 import pyrealsense2 as rs
 import requests
 
-from frrl.vision.tcp_tracker import TCPTracker
+from frrl.robots.franka_real.vision.tcp_tracker import TCPTracker
 
 URL = "http://192.168.100.1:5000/"
 

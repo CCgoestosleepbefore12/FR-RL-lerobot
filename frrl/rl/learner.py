@@ -59,7 +59,7 @@ from torch import nn
 from torch.multiprocessing import Queue
 from torch.optim.optimizer import Optimizer
 
-# from frrl.cameras import opencv  # 真机才需要
+# from frrl.robots.franka_real.cameras import opencv  # 真机才需要
 from frrl.configs import parser
 from frrl.configs.train import TrainRLServerPipelineConfig
 from frrl.datasets.factory import make_dataset

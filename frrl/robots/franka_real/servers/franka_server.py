@@ -1,6 +1,6 @@
 """
 This file starts a control server running on the real time PC connected to the franka robot.
-In a screen run `python -m frrl.robot_servers.franka_server`
+In a screen run `python -m frrl.robots.franka_real.servers.franka_server`
 
 Originally adapted from hil-serl (serl_robot_infra/robot_servers/franka_server.py).
 Maintained in FR-RL-lerobot so that encoder-bias injection (fault injection point D)

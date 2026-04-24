@@ -73,7 +73,7 @@ ping -c 3 172.16.0.2            # 应通
 2. `source /opt/ros/noetic/setup.bash`
 3. `source ~/serl_ws/devel/setup.bash`
 4. `cd ~/FR-RL-lerobot`
-5. 启动 `python -m frrl.robot_servers.franka_server --robot_ip=172.16.0.2 --gripper_type=Franka --flask_url=0.0.0.0`
+5. 启动 `python -m frrl.robots.franka_real.servers.franka_server --robot_ip=172.16.0.2 --gripper_type=Franka --flask_url=0.0.0.0`
 
 **成功日志的关键行**：
 
@@ -195,7 +195,7 @@ conda activate frankaserver
 source /opt/ros/noetic/setup.bash
 source /home/yuliang/serl_ws/devel/setup.bash
 cd /home/yuliang/FR-RL-lerobot
-exec python -m frrl.robot_servers.franka_server \
+exec python -m frrl.robots.franka_real.servers.franka_server \
     --robot_ip=172.16.0.2 \
     --gripper_type=Franka \
     --flask_url=0.0.0.0

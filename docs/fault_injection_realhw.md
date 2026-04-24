@@ -88,7 +88,7 @@
 `franka_server.py` 是纯 Python，只在 RT PC 上跑，逻辑上就是本项目的一部分；
 以前在 `hil-serl` 下纯粹是历史遗留（项目最早只移植了 `franka_env.py` 这一侧）。
 搬进 `frrl/robot_servers/` 之后 hil-serl 完全不再参与运行时，调用路径走
-`python -m frrl.robot_servers.franka_server`，相对导入正常工作。
+`python -m frrl.robots.franka_real.servers.franka_server`，相对导入正常工作。
 
 `serl_franka_controllers` 是 **catkin ROS 包**，必须住在 ROS workspace 里才能被
 `catkin_make` 构建和 `roslaunch` 加载，结构上没法直接塞进 Python package。
@@ -202,7 +202,7 @@ void CartesianImpedanceController::encoderBiasCallback(
 搬入时同步把 lazy gripper server import 从原先的
 `from robot_servers.franka_gripper_server import FrankaGripperServer` 改成
 相对导入 `from .franka_gripper_server import FrankaGripperServer`，以配合新的
-`python -m frrl.robot_servers.franka_server` 启动方式。
+`python -m frrl.robots.franka_real.servers.franka_server` 启动方式。
 
 **为什么 `self.q` 仍保留真值**：`reset_joint()` 里的等待循环
 `np.allclose(target - self.q, 0)` 需要真实关节角作比较基准，如果写成 biased
@@ -241,7 +241,7 @@ catkin_make --only-pkg-with-deps serl_franka_controllers
 ~/kill_franka_server.sh             # 清掉所有 ros/franka 进程
 source ~/serl_ws/devel/setup.bash   # 关键：让 BiasedState 的 Python 绑定可用
 # Desk: Error Recovery → Unlock Joints → 激活 FCI
-~/start_franka_server.sh             # cd ~/FR-RL-lerobot && python -m frrl.robot_servers.franka_server
+~/start_franka_server.sh             # cd ~/FR-RL-lerobot && python -m frrl.robots.franka_real.servers.franka_server
 ```
 
 **启动健康检查**（另开终端）：

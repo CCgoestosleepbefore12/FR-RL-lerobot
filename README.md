@@ -44,7 +44,7 @@ bash scripts/real/train_hil_sac.sh        # 具体任务/配置见脚本内部
 
 1. RT PC：启动 Flask server
    ```bash
-   ~/start_franka_server.sh   # 内部 cd 到本仓库并跑 python -m frrl.robot_servers.franka_server
+   ~/start_franka_server.sh   # 内部 cd 到本仓库并跑 python -m frrl.robots.franka_real.servers.franka_server
    ```
    启动流程/FCI/网络配置见 [`docs/rt_pc_runbook.md`](docs/rt_pc_runbook.md)。
 

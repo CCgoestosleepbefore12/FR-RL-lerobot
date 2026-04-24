@@ -5,7 +5,7 @@ This tests only the _size_for() dispatch logic.
 """
 import pytest
 
-from frrl.cameras.realsense import RealSenseCameraManager
+from frrl.robots.franka_real.cameras.realsense import RealSenseCameraManager
 
 
 def _make_manager_without_hardware(image_size):
