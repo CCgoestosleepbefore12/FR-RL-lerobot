@@ -324,6 +324,22 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
     # Franka Panda 真机环境
     if hasattr(cfg, 'franka_config') and cfg.franka_config is not None:
         from frrl.envs.real import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+
+        # JSON config 传进来是 dict：用默认值 + override 构造 FrankaRealConfig。
+        # 只支持 scalar 和 encoder_bias_config 嵌套 dict；带 numpy / callable
+        # 的字段（cameras, image_crop, abs_pose_limit_*）走 Python 默认值。
+        if isinstance(cfg.franka_config, dict):
+            from frrl.fault_injection import EncoderBiasConfig
+            fc_dict = dict(cfg.franka_config)
+            bias_dict = fc_dict.get("encoder_bias_config")
+            if isinstance(bias_dict, dict):
+                # JSON 里 bias_range 是 list，EncoderBiasConfig 字段类型是 Tuple
+                bias_dict = dict(bias_dict)
+                if "bias_range" in bias_dict:
+                    bias_dict["bias_range"] = tuple(bias_dict["bias_range"])
+                fc_dict["encoder_bias_config"] = EncoderBiasConfig(**bias_dict)
+            cfg.franka_config = FrankaRealConfig(**fc_dict)
 
         env = FrankaRealEnv(config=cfg.franka_config)
 

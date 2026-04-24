@@ -121,6 +121,13 @@ case "$VARIANT" in
         TASK_ID="PandaBackupPolicyS1V2-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v2"
         ;;
+    task_real)
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_task_real.json"
+        echo "=== Task Policy 真机 HIL 训练: Franka + SpaceMouse + keyboard reward + J1 bias ==="
+        echo "    流程: offline pretrain 5k → online HIL 50k（~1.4h @ 10Hz）"
+        TASK_ID=""  # 真机不走 gymnasium 注册，env_factory 从 franka_config 分支建 env
+        EXTRA_ARGS="--job_name frrl_task_policy_real"
+        ;;
     custom)
         TASK_ID="${3:?请指定环境ID，例如: FRRLPandaPickPlaceKeyboard-v0}"
         echo "=== 自定义任务: $TASK_ID ==="
@@ -128,7 +135,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "未知任务: $VARIANT"
-        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, custom"
+        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, task_real, custom"
         exit 1
         ;;
 esac
@@ -147,6 +154,14 @@ case "$ROLE" in
             --config_path "$CONFIG" $EXTRA_ARGS
         ;;
     record)
+        # task_real 不走 shell record（demo 用独立脚本，schema 是 hil-serl pickle）
+        if [ "$VARIANT" = "task_real" ]; then
+            echo "task_real 变体不使用 shell record，请用:"
+            echo "  python scripts/real/collect_demo_task_policy.py -n 50"
+            echo "采集完成后把输出 pickle 路径填进 scripts/configs/train_hil_sac_task_real.json 的"
+            echo "policy.demo_pickle_paths 字段，再启动 learner + actor。"
+            exit 0
+        fi
         # safe变体用专用的录制config和cache路径
         case "$VARIANT" in
             safe)
@@ -181,8 +196,14 @@ case "$ROLE" in
         echo ""
         echo "完整训练流程:"
         echo ""
-        echo "  步骤1 — 录制Demo（30个episode）:"
-        echo "    bash scripts/real/train_hil_sac.sh $VARIANT record"
+        if [ "$VARIANT" = "task_real" ]; then
+            echo "  步骤1 — 采集真机 demo（默认 50 successes）:"
+            echo "    python scripts/real/collect_demo_task_policy.py -n 50"
+            echo "    把输出 pickle 填进 train_hil_sac_task_real.json 的 demo_pickle_paths"
+        else
+            echo "  步骤1 — 录制Demo（30个episode）:"
+            echo "    bash scripts/real/train_hil_sac.sh $VARIANT record"
+        fi
         echo ""
         echo "  步骤2 — 启动训练:"
         echo "    终端1: bash scripts/real/train_hil_sac.sh $VARIANT learner"
