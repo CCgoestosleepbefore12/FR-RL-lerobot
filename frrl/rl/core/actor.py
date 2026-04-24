@@ -63,12 +63,12 @@ from frrl.configs.train import TrainRLServerPipelineConfig
 from frrl.policies.factory import make_policy
 from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.processor import TransitionKey
-from frrl.rl.process import ProcessSignalHandler
-from frrl.rl.queue import get_last_item_from_queue
+from frrl.rl.infra.process import ProcessSignalHandler
+from frrl.rl.infra.queue import get_last_item_from_queue
 # from frrl.robots import so100_follower  # 真机才需要
 from frrl.teleoperators.utils import TeleopEvents
-from frrl.transport import services_pb2, services_pb2_grpc
-from frrl.transport.utils import (
+from frrl.rl.infra.transport import services_pb2, services_pb2_grpc
+from frrl.rl.infra.transport.utils import (
     bytes_to_state_dict,
     grpc_channel_options,
     python_object_to_bytes,
@@ -76,7 +76,7 @@ from frrl.transport.utils import (
     send_bytes_in_chunks,
     transitions_to_bytes,
 )
-from frrl.rl.actor_utils import DISCARD_INFO_KEY, should_discard_episode  # noqa: F401
+from frrl.rl.infra.actor_utils import DISCARD_INFO_KEY, should_discard_episode  # noqa: F401
 from frrl.utils.random_utils import set_seed
 from frrl.utils.robot_utils import precise_sleep
 from frrl.utils.transition import (

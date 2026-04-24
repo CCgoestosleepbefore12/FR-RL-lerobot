@@ -584,7 +584,7 @@ scripts/
 
 ```bash
 # 步骤1：录制 demo（30个episode）
-python -m frrl.rl.env_factory \
+python -m frrl.rl.core.env_factory \
     --config_path configs/real_robot/record_demo.json \
     --mode record
 
@@ -626,11 +626,11 @@ def compute_reward(self):
 # HPC 4090 上，两个终端
 
 # 终端1：Learner
-python -m frrl.rl.learner \
+python -m frrl.rl.core.learner \
     --config_path configs/real_robot/train_franka_pick_place.json
 
 # 终端2：Actor（确保 RT PC 的 franka_server.py 已启动）
-python -m frrl.rl.actor \
+python -m frrl.rl.core.actor \
     --config_path configs/real_robot/train_franka_pick_place.json
 ```
 

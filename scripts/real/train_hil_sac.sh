@@ -137,13 +137,13 @@ esac
 case "$ROLE" in
     learner)
         echo "启动 Learner (GPU训练进程)..."
-        python -m frrl.rl.learner \
+        python -m frrl.rl.core.learner \
             --config_path "$CONFIG" $EXTRA_ARGS
         ;;
     actor)
         echo "启动 Actor (环境交互 + 键盘遥操)..."
         echo "请确保 Learner 已在另一个终端启动"
-        python -m frrl.rl.actor \
+        python -m frrl.rl.core.actor \
             --config_path "$CONFIG" $EXTRA_ARGS
         ;;
     record)
@@ -173,7 +173,7 @@ case "$ROLE" in
         echo "录制Demo（键盘遥操）..."
         echo "任务: $TASK_ID"
         echo "操作: Space激活干预 → 方向键移动 → Shift上下 → Ctrl夹爪 → Enter标记成功 → ESC退出"
-        python -m frrl.rl.env_factory \
+        python -m frrl.rl.core.env_factory \
             --config_path "$RECORD_CONFIG" \
             --env.task "$TASK_ID"
         ;;

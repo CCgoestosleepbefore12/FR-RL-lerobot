@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from frrl.transport import services_pb2 as lerobot_dot_transport_dot_services__pb2
+from frrl.rl.infra.transport import services_pb2 as lerobot_dot_transport_dot_services__pb2
 
 GRPC_GENERATED_VERSION = '1.73.1'
 GRPC_VERSION = grpc.__version__

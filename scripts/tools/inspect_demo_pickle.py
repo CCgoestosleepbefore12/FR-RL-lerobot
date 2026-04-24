@@ -51,7 +51,7 @@ def inspect_raw_pickle(path: str):
 
 
 def load_into_buffer(paths):
-    from frrl.rl.buffer import ReplayBuffer
+    from frrl.rl.core.buffer import ReplayBuffer
     buf = ReplayBuffer.from_pickle_transitions(
         pickle_paths=paths,
         device="cpu",

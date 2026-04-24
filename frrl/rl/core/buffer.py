@@ -636,7 +636,7 @@ class ReplayBuffer:
 
             # Preserve complementary_info schema so subsequent online-phase
             # transitions (which carry `discrete_penalty` + `is_intervention`
-            # via frrl.rl.actor.TeleopEvents routing) can share the same buffer
+            # via frrl.rl.core.actor.TeleopEvents routing) can share the same buffer
             # storage. Default: all demo steps are intervention (human teleop).
             info = t.get("infos", {}) or {}
             is_intervention = bool(info.get("is_intervention", True))

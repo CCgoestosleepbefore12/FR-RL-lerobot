@@ -30,7 +30,7 @@ from pathlib import Path
 import draccus
 
 from frrl.configs.train import TrainRLServerPipelineConfig
-from frrl.rl.learner import train
+from frrl.rl.core.learner import train
 
 
 def _expand_globs(patterns: list[str]) -> list[str]:

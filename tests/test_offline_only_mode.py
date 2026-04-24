@@ -8,7 +8,7 @@ against real demos. These tests pin down the public contract:
   * Each config instance gets its own demo_pickle_paths list (no shared mutable state)
 
 The learner-side integration (initialize_offline_replay_buffer routing to
-pickle loader) can't be unit-tested here because importing frrl.rl.learner
+pickle loader) can't be unit-tested here because importing frrl.rl.core.learner
 pulls in gRPC stubs which need a protobuf version not installed in this env.
 That path is exercised via the end-to-end pretrain script.
 """

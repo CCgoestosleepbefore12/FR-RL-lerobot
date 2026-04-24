@@ -66,13 +66,13 @@ from frrl.datasets.factory import make_dataset
 from frrl.datasets.lerobot_dataset import LeRobotDataset
 from frrl.policies.factory import make_policy
 from frrl.policies.sac.modeling_sac import SACPolicy
-from frrl.rl.buffer import ReplayBuffer, concatenate_batch_transitions
-from frrl.rl.process import ProcessSignalHandler
-from frrl.rl.wandb_utils import WandBLogger
+from frrl.rl.core.buffer import ReplayBuffer, concatenate_batch_transitions
+from frrl.rl.infra.process import ProcessSignalHandler
+from frrl.rl.infra.wandb_utils import WandBLogger
 # from frrl.robots import so100_follower  # 真机才需要
 from frrl.teleoperators.utils import TeleopEvents
-from frrl.transport import services_pb2_grpc
-from frrl.transport.utils import (
+from frrl.rl.infra.transport import services_pb2_grpc
+from frrl.rl.infra.transport.utils import (
     MAX_MESSAGE_SIZE,
     bytes_to_python_object,
     bytes_to_transitions,
@@ -151,7 +151,7 @@ def train(cfg: TrainRLServerPipelineConfig, job_name: str | None = None):
 
     # Setup WandB logging if enabled
     if cfg.wandb.enable and cfg.wandb.project:
-        from frrl.rl.wandb_utils import WandBLogger
+        from frrl.rl.infra.wandb_utils import WandBLogger
 
         wandb_logger = WandBLogger(cfg)
     else:

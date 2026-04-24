@@ -1,4 +1,4 @@
-"""Tests for frrl.rl.actor.should_discard_episode.
+"""Tests for frrl.rl.core.actor.should_discard_episode.
 
 This validates the discard hook used by the training actor loop. The hook decides
 whether an episode's transitions should be dropped from BOTH replay buffers
@@ -10,7 +10,7 @@ that FrankaRealEnv feeds into it via info["discard"].
 """
 import pytest
 
-from frrl.rl.actor_utils import DISCARD_INFO_KEY, should_discard_episode
+from frrl.rl.infra.actor_utils import DISCARD_INFO_KEY, should_discard_episode
 
 
 class TestShouldDiscardEpisode:

@@ -25,7 +25,7 @@ from typing import Any
 
 import torch
 
-from frrl.transport import services_pb2
+from frrl.rl.infra.transport import services_pb2
 from frrl.utils.transition import Transition
 
 # FIX for protobuf: Assign the enum to a variable and ignore the type error once

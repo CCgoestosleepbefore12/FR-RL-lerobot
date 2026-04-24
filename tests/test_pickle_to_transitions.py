@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from frrl.rl.buffer import (
+from frrl.rl.core.buffer import (
     ReplayBuffer,
     _flatten_obs_to_tensor_dict,
     _require_keys,
