@@ -33,6 +33,8 @@ class SpaceMouseTeleop(Teleoperator):
         self._last_action = np.zeros(7, dtype=np.float32)
         self._last_buttons = [0, 0, 0, 0]
         self._is_intervention = False
+        # 迟滞状态机：一旦进入接管，信号需连续 persist_steps 步 < exit_threshold 才退出
+        self._below_exit_count = 0
 
     # ================================================================
     # 抽象属性实现
@@ -104,10 +106,24 @@ class SpaceMouseTeleop(Teleoperator):
         # 7D ndarray: [dx, dy, dz, rx, ry, rz, gripper]
         # InterventionActionProcessorStep 的 isinstance(teleop_action, np.ndarray) 分支会直接使用
         self._last_action = np.concatenate([raw_action[:6], [gripper]]).astype(np.float32)
-        self._is_intervention = (
-            np.linalg.norm(raw_action[:6]) > self.config.action_threshold
-            or any(self._last_buttons)
-        )
+
+        # 方案 A + 迟滞：幅值越过 enter 进入接管；按钮按下强制进入；
+        # 退出需幅值连续 persist_steps 步低于 exit 且无按钮（按钮释放瞬间不退出，
+        # 避免"抓取完放手"帧被误判回 policy）。
+        magnitude = float(np.linalg.norm(raw_action[:6]))
+        any_button = any(self._last_buttons)
+        if not self._is_intervention:
+            if magnitude > self.config.enter_threshold or any_button:
+                self._is_intervention = True
+                self._below_exit_count = 0
+        else:
+            if magnitude < self.config.exit_threshold and not any_button:
+                self._below_exit_count += 1
+                if self._below_exit_count >= self.config.persist_steps:
+                    self._is_intervention = False
+                    self._below_exit_count = 0
+            else:
+                self._below_exit_count = 0
 
         return self._last_action
 
