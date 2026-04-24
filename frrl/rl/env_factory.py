@@ -323,7 +323,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
     """
     # Franka Panda 真机环境
     if hasattr(cfg, 'franka_config') and cfg.franka_config is not None:
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real import FrankaRealEnv
 
         env = FrankaRealEnv(config=cfg.franka_config)
 

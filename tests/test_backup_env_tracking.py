@@ -6,7 +6,7 @@ Usage:
 import sys
 import numpy as np
 
-from frrl.envs.panda_backup_policy_env import (
+from frrl.envs.sim.panda_backup_policy_env import (
     PandaBackupPolicyEnv,
     MotionMode,
     D_TIGHT,

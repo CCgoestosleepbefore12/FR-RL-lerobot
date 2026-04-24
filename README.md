@@ -50,8 +50,8 @@ bash scripts/real/train_hil_sac.sh        # 具体任务/配置见脚本内部
 
 2. GPU 机：构造 `FrankaRealEnv` 跑训练或评估
    ```python
-   from frrl.envs.franka_real_config import FrankaRealConfig
-   from frrl.envs.franka_real_env import FrankaRealEnv
+   from frrl.envs.real_config import FrankaRealConfig
+   from frrl.envs.real import FrankaRealEnv
    from frrl.fault_injection import EncoderBiasConfig
 
    cfg = FrankaRealConfig(

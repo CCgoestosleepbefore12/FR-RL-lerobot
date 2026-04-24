@@ -12,8 +12,8 @@ Verifies the 29D observation layout decided for task policy training:
 import numpy as np
 import pytest
 
-from frrl.envs.franka_real_config import FrankaRealConfig
-from frrl.envs.franka_real_env import FrankaRealEnv
+from frrl.envs.real_config import FrankaRealConfig
+from frrl.envs.real import FrankaRealEnv
 
 
 @pytest.fixture

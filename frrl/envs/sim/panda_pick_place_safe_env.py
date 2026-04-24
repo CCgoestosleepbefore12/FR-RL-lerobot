@@ -22,7 +22,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from frrl.envs.base import FrankaGymEnv, GymRenderingSpec
+from frrl.envs.sim.base import FrankaGymEnv, GymRenderingSpec
 from frrl.fault_injection import EncoderBiasConfig
 
 # 机器人home位置
@@ -89,7 +89,7 @@ class PandaPickPlaceSafeEnv(FrankaGymEnv):
             raise ValueError(f"Unknown obs_mode: {obs_mode}")
         self._obs_mode = obs_mode
 
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent
         super().__init__(
             xml_path=project_root / "assets" / "pick_place_safe_scene.xml",
             seed=seed,

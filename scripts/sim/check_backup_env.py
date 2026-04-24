@@ -11,7 +11,7 @@ import time
 import numpy as np
 import mujoco.viewer
 
-from frrl.envs.panda_backup_policy_env import PandaBackupPolicyEnv
+from frrl.envs.sim.panda_backup_policy_env import PandaBackupPolicyEnv
 
 
 def main():

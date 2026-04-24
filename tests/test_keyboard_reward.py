@@ -191,8 +191,8 @@ class TestEnvIntegration:
         Swap the listener immediately for a pynput-free one so the test doesn't
         start a real X11 keyboard hook on dev machines.
         """
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
 
         cfg = FrankaRealConfig(reward_backend="keyboard")
         env = FrankaRealEnv(cfg)
@@ -202,8 +202,8 @@ class TestEnvIntegration:
         env.close()
 
     def test_env_init_pose_backend_has_no_listener(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
 
         cfg = FrankaRealConfig()  # default is "pose"
         env = FrankaRealEnv(cfg)
@@ -211,8 +211,8 @@ class TestEnvIntegration:
         env.close()
 
     def test_compute_reward_keyboard_no_outcome(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
 
         cfg = FrankaRealConfig(reward_backend="keyboard")
         env = FrankaRealEnv(cfg)
@@ -223,8 +223,8 @@ class TestEnvIntegration:
         env.close()
 
     def test_compute_reward_keyboard_success(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
 
         cfg = FrankaRealConfig(reward_backend="keyboard")
         env = FrankaRealEnv(cfg)
@@ -236,8 +236,8 @@ class TestEnvIntegration:
         env.close()
 
     def test_compute_reward_pose_without_target(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
 
         cfg = FrankaRealConfig()  # target_pose default None
         env = FrankaRealEnv(cfg)

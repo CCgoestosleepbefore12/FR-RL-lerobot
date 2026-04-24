@@ -19,7 +19,7 @@ import numpy as np
 import time
 import yaml
 from pathlib import Path
-from frrl.envs.panda_pick_place_env import PandaPickPlaceEnv
+from frrl.envs.sim.panda_pick_place_env import PandaPickPlaceEnv
 from frrl.trajectory_executor import Waypoint, TrajectoryInterpolator, TrajectoryExecutor
 from frrl.fault_injection import EncoderBiasConfig
 

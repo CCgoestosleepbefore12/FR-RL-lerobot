@@ -10,7 +10,7 @@ from pathlib import Path
 # 使用frrl包
 
 import numpy as np
-from frrl.envs.panda_pick_place_env import PandaPickPlaceEnv
+from frrl.envs.sim.panda_pick_place_env import PandaPickPlaceEnv
 from frrl.trajectory_executor import Waypoint, TrajectoryInterpolator, TrajectoryExecutor
 
 

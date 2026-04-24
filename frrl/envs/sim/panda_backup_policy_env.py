@@ -37,12 +37,12 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from frrl.envs.panda_pick_place_safe_env import (
+from frrl.envs.sim.panda_pick_place_safe_env import (
     PandaPickPlaceSafeEnv,
     HAND_COLLISION_DIST,
     ZONE_C_MIN_Y,
 )
-from frrl.envs.base import GymRenderingSpec
+from frrl.envs.sim.base import GymRenderingSpec
 from frrl.fault_injection import EncoderBiasConfig
 
 # ── 常量 ──────────────────────────────────────────────────

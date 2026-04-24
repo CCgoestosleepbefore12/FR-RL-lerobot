@@ -4,10 +4,10 @@
 
 import gymnasium as gym
 
-from frrl.envs.panda_pick_cube_env import PandaPickCubeGymEnv
-from frrl.envs.panda_pick_place_env import PandaPickPlaceEnv
-from frrl.envs.panda_backup_policy_env import PandaBackupPolicyEnv
-from frrl.envs.panda_pick_place_safe_env import PandaPickPlaceSafeEnv
+from frrl.envs.sim.panda_pick_cube_env import PandaPickCubeGymEnv
+from frrl.envs.sim.panda_pick_place_env import PandaPickPlaceEnv
+from frrl.envs.sim.panda_backup_policy_env import PandaBackupPolicyEnv
+from frrl.envs.sim.panda_pick_place_safe_env import PandaPickPlaceSafeEnv
 from frrl.envs.wrappers.hil_wrappers import (
     GripperPenaltyWrapper,
     InputsControlWrapper,

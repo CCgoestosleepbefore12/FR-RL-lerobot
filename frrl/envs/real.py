@@ -19,7 +19,7 @@ import numpy as np
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
-from frrl.envs.franka_real_config import FrankaRealConfig
+from frrl.envs.real_config import FrankaRealConfig
 from frrl.fault_injection import EncoderBiasConfig, EncoderBiasInjector
 
 logging.basicConfig(level=logging.INFO)

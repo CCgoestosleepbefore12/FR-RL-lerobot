@@ -310,8 +310,8 @@ curl -X POST http://192.168.100.1:5000/getstate
 # 再最小 env 验证（mock 相机模式）
 python3 - <<'PY'
 from frrl.fault_injection import EncoderBiasConfig
-from frrl.envs.franka_real_config import FrankaRealConfig
-from frrl.envs.franka_real_env import FrankaRealEnv
+from frrl.envs.real_config import FrankaRealConfig
+from frrl.envs.real import FrankaRealEnv
 
 cfg = FrankaRealConfig(
     server_url="http://192.168.100.1:5000/",

@@ -50,8 +50,8 @@ class TestEnvActorContract:
     the key name, this test catches it."""
 
     def test_keyboard_discard_flows_to_info(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
         from frrl.rewards.keyboard_reward import KeyboardRewardListener
 
         cfg = FrankaRealConfig(reward_backend="keyboard")
@@ -71,8 +71,8 @@ class TestEnvActorContract:
         env.close()
 
     def test_keyboard_success_does_not_discard(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
         from frrl.rewards.keyboard_reward import KeyboardRewardListener
 
         cfg = FrankaRealConfig(reward_backend="keyboard")
@@ -90,8 +90,8 @@ class TestEnvActorContract:
         env.close()
 
     def test_pose_backend_never_discards(self):
-        from frrl.envs.franka_real_config import FrankaRealConfig
-        from frrl.envs.franka_real_env import FrankaRealEnv
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.envs.real import FrankaRealEnv
 
         cfg = FrankaRealConfig()  # pose backend
         env = FrankaRealEnv(cfg)

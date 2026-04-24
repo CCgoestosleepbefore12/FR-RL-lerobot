@@ -35,7 +35,7 @@ from frrl.processor import (
 from frrl.processor.converters import identity_transition
 from frrl.processor.core import TransitionKey
 from frrl.rl.supervisor import HomingController
-from frrl.envs.panda_backup_policy_env import HIDDEN_POS
+from frrl.envs.sim.panda_backup_policy_env import HIDDEN_POS
 
 
 def run(ckpt: str, n_episodes: int, n_backup: int, n_homing: int,

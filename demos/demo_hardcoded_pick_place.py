@@ -11,7 +11,7 @@ from pathlib import Path
 # 使用frrl包
 
 import numpy as np
-from frrl.envs.panda_pick_place_env import PandaPickPlaceEnv
+from frrl.envs.sim.panda_pick_place_env import PandaPickPlaceEnv
 
 
 def hardcoded_pick_and_place(render=True):

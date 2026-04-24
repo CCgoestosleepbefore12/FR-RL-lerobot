@@ -12,7 +12,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from frrl.envs.base import FrankaGymEnv, GymRenderingSpec
+from frrl.envs.sim.base import FrankaGymEnv, GymRenderingSpec
 from frrl.fault_injection import EncoderBiasConfig
 
 _PANDA_HOME = np.asarray((0, 0.195, 0, -2.43, 0, 2.62, 0.785))
@@ -36,7 +36,7 @@ class PandaPickCubeGymEnv(FrankaGymEnv):
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
     ):
         self.reward_type = reward_type
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent
         super().__init__(
             xml_path=project_root / "assets" / "pick_cube_scene.xml",
             seed=seed,

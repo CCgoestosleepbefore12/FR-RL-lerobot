@@ -1,8 +1,8 @@
-"""Tests for frrl.envs.franka_real_config."""
+"""Tests for frrl.envs.real_config."""
 import numpy as np
 import pytest
 
-from frrl.envs.franka_real_config import (
+from frrl.envs.real_config import (
     FrankaRealConfig,
     center_square_crop,
     workspace_roi_crop_placeholder,

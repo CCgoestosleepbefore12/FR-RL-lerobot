@@ -41,8 +41,8 @@ from typing import Tuple
 
 import numpy as np
 
-from frrl.envs.franka_real_config import FrankaRealConfig
-from frrl.envs.franka_real_env import FrankaRealEnv
+from frrl.envs.real_config import FrankaRealConfig
+from frrl.envs.real import FrankaRealEnv
 from frrl.fault_injection import EncoderBiasConfig
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
 

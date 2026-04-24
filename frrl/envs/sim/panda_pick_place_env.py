@@ -13,7 +13,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from frrl.envs.base import FrankaGymEnv, GymRenderingSpec
+from frrl.envs.sim.base import FrankaGymEnv, GymRenderingSpec
 from frrl.fault_injection import EncoderBiasConfig
 
 _PANDA_HOME = np.asarray((0, -0.785, 0, -2.35, 0, 1.57, np.pi / 4))
@@ -51,7 +51,7 @@ class PandaPickPlaceEnv(FrankaGymEnv):
         self.reward_type = reward_type
         self._random_block_position = random_block_position
 
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent
         super().__init__(
             xml_path=project_root / "assets" / "scene.xml",
             seed=seed,

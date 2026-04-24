@@ -19,7 +19,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from frrl.controllers.opspace import mat_to_quat, opspace
+from frrl.envs.sim.opspace import mat_to_quat, opspace
 from frrl.fault_injection import EncoderBiasConfig, EncoderBiasInjector
 
 MAX_GRIPPER_COMMAND = 255
@@ -129,7 +129,7 @@ class FrankaGymEnv(MujocoGymEnv):
         encoder_bias_config: Optional[EncoderBiasConfig] = None,
     ):
         if xml_path is None:
-            project_root = Path(__file__).parent.parent.parent
+            project_root = Path(__file__).parent.parent.parent.parent
             xml_path = project_root / "assets" / "pick_cube_scene.xml"
 
         super().__init__(

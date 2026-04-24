@@ -8,7 +8,7 @@ frrl.envs - 统一环境注册（gym_frrl/ 命名空间）
 from gymnasium.envs.registration import register
 
 from frrl.fault_injection import EncoderBiasConfig
-from frrl.envs.base import FrankaGymEnv, GymRenderingSpec  # noqa: F401
+from frrl.envs.sim.base import FrankaGymEnv, GymRenderingSpec  # noqa: F401
 from frrl.envs.configs import EnvConfig, HILSerlRobotEnvConfig  # noqa: F401
 
 # ============================================================
@@ -16,7 +16,7 @@ from frrl.envs.configs import EnvConfig, HILSerlRobotEnvConfig  # noqa: F401
 # ============================================================
 register(
     id="gym_frrl/FRRLPandaPickPlace-v0",
-    entry_point="frrl.envs.panda_pick_place_env:PandaPickPlaceEnv",
+    entry_point="frrl.envs.sim.panda_pick_place_env:PandaPickPlaceEnv",
     max_episode_steps=200,
 )
 
@@ -25,7 +25,7 @@ register(
 # ============================================================
 register(
     id="gym_frrl/PandaPickCubeBase-v0",
-    entry_point="frrl.envs.panda_pick_cube_env:PandaPickCubeGymEnv",
+    entry_point="frrl.envs.sim.panda_pick_cube_env:PandaPickCubeGymEnv",
     max_episode_steps=200,
 )
 
@@ -63,7 +63,7 @@ register(
 
 register(
     id="gym_frrl/PandaPickPlaceSafeBase-v0",
-    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    entry_point="frrl.envs.sim.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
     max_episode_steps=200,
 )
 
@@ -114,7 +114,7 @@ _SAFE_BIAS_J1_RANDOM_KW = dict(
 # 31D Full：完整观测（含 real_tcp + block + plate + hand）
 register(
     id="gym_frrl/PandaPickPlaceSafeObs31BiasJ1Random-v0",
-    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    entry_point="frrl.envs.sim.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
     max_episode_steps=200,
     kwargs={**_SAFE_BIAS_J1_RANDOM_KW, "obs_mode": "obs31"},
 )
@@ -133,7 +133,7 @@ register(
 # 28D：去 real_tcp，测试外部 TCP oracle 是否必要
 register(
     id="gym_frrl/PandaPickPlaceSafeObs28BiasJ1Random-v0",
-    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    entry_point="frrl.envs.sim.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
     max_episode_steps=200,
     kwargs={**_SAFE_BIAS_J1_RANDOM_KW, "obs_mode": "obs28"},
 )
@@ -152,7 +152,7 @@ register(
 # 25D：去 block/plate，保留 real_tcp + hand，测试显式物体坐标是否必要
 register(
     id="gym_frrl/PandaPickPlaceSafeObs25BiasJ1Random-v0",
-    entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+    entry_point="frrl.envs.sim.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
     max_episode_steps=200,
     kwargs={**_SAFE_BIAS_J1_RANDOM_KW, "obs_mode": "obs25"},
 )
@@ -191,7 +191,7 @@ for _dim in (27, 24, 21):
     _base_id = f"gym_frrl/PandaPickPlaceTaskObs{_dim}BiasJ1Random-v0"
     register(
         id=_base_id,
-        entry_point="frrl.envs.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
+        entry_point="frrl.envs.sim.panda_pick_place_safe_env:PandaPickPlaceSafeEnv",
         max_episode_steps=200,
         kwargs={**_TASK_BIAS_J1_RANDOM_KW, "obs_mode": f"obs{_dim}"},
     )
@@ -214,7 +214,7 @@ for _dim in (27, 24, 21):
 # S1: 单个移动障碍物（28D 观测），TRACKING 模式，20 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS1-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
     kwargs={"num_obstacles": 1},
 )
@@ -222,7 +222,7 @@ register(
 # S1 无 DR（用于对比实验）
 register(
     id="gym_frrl/PandaBackupPolicyS1NoDR-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
     kwargs={"num_obstacles": 1, "enable_dr": False},
 )
@@ -230,7 +230,7 @@ register(
 # S1 位移预算放宽：MAX_DISPLACEMENT 0.15→0.20，让"沿手反向退"成为可行解
 register(
     id="gym_frrl/PandaBackupPolicyS1Relaxed-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
     kwargs={"num_obstacles": 1, "max_displacement": 0.20},
 )
@@ -238,7 +238,7 @@ register(
 # S1 位移放宽 + 幸存奖金翻倍：0.20m + bonus 5→10，最激进的训练方案
 register(
     id="gym_frrl/PandaBackupPolicyS1Combo-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
     kwargs={"num_obstacles": 1, "max_displacement": 0.20, "survival_bonus": 10.0},
 )
@@ -250,7 +250,7 @@ register(
 # 贴墙绕角或捉迷藏的歪行为（真机层另行提供 workspace clamp）
 register(
     id="gym_frrl/PandaBackupPolicyS1V2-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
     kwargs={
         "num_obstacles": 1,
@@ -263,7 +263,7 @@ register(
 # S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS2-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=10,
     kwargs={"num_obstacles": 2},
 )
@@ -279,7 +279,7 @@ _BIAS_J1_CONFIG = EncoderBiasConfig(
 # S1 + 编码器偏差（TRACKING 模式，20 步 episode）
 register(
     id="gym_frrl/PandaBackupPolicyS1BiasJ1-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=20,
     kwargs={"num_obstacles": 1, "encoder_bias_config": _BIAS_J1_CONFIG},
 )
@@ -287,7 +287,7 @@ register(
 # S2 + 编码器偏差
 register(
     id="gym_frrl/PandaBackupPolicyS2BiasJ1-v0",
-    entry_point="frrl.envs.panda_backup_policy_env:PandaBackupPolicyEnv",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
     max_episode_steps=10,
     kwargs={"num_obstacles": 2, "encoder_bias_config": _BIAS_J1_CONFIG},
 )
