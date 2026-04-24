@@ -22,12 +22,27 @@ def center_square_crop(img: np.ndarray) -> np.ndarray:
 
 
 def workspace_roi_crop_placeholder(img: np.ndarray) -> np.ndarray:
-    """阶段 3.5 ArUco 4 角标定完成前的 front ROI 占位：暂用中心正方形。
+    """workspace 标定完成前的 front ROI 占位：暂用中心正方形。
 
-    等 scripts/define_workspace_crop.py 写完并生成 yaml 后，这里切到基于 yaml
-    的 ROI 裁剪即可（不改 env 层接口）。
+    跑完 scripts/real/define_workspace.py 后，把 cfg.image_crop["front"] 换成
+    make_workspace_roi_crop(u0, v0, u1, v1) 即可。
     """
     return center_square_crop(img)
+
+
+def make_workspace_roi_crop(u0: int, v0: int, u1: int, v1: int):
+    """构造 front 相机的 workspace ROI crop 函数。
+
+    参数为 define_workspace.py 采样+投影得到的像素 bbox（inclusive u0/v0，
+    exclusive u1/v1，遵循 numpy slice 语义）。返回的闭包对 640×480 BGR 原
+    始帧做 `img[v0:v1, u0:u1]`，输出交给下游 cv2.resize 到 image_size。
+
+    bbox 非正方形也没关系：resize 会把它拉到目标尺寸；SAC encoder 只要求各
+    相机输出 image_size 一致，不要求 crop 前等比。
+    """
+    def crop(img: np.ndarray) -> np.ndarray:
+        return img[v0:v1, u0:u1]
+    return crop
 
 
 @dataclass
@@ -150,5 +165,13 @@ class FrankaRealConfig:
     # 编码器偏差注入
     encoder_bias_config: Optional[EncoderBiasConfig] = None
 
-    # 显示
+    # Live view：每 step 在本地 imshow 两路相机的原始 640×480 BGR 帧（crop 前）。
+    # Demo 采集 / online HIL 训练时都默认开，便于肉眼监控相机视角和手/物体位置。
+    # 开销 ~3-5% 单核 CPU；headless（无 X11）会首次 cv2.error 后自动降级。
     display_image: bool = True
+
+    # BiasMonitor：matplotlib 弹窗，2Hz 绘制每个带 bias joint 的 q_true vs
+    # q_biased 波形（含 episode 边界竖线 + ep 号 + bias 数值标注）。env 仅在
+    # encoder_bias_config 非空 & 本开关 True 时创建 BiasMonitor。默认关：
+    # headless 训练不要 GUI，本地 demo / online HIL 时脚本侧显式置 True 即可。
+    enable_bias_monitor: bool = False

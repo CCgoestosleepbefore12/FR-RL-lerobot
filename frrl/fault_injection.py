@@ -276,6 +276,14 @@ class BiasMonitor:
         self._initialized = False
         self._disabled = False  # set True if plot init fails (e.g., no display)
 
+        # Episode boundary markers — each entry is a dict:
+        #   {"t": float, "ep": int, "label": str,
+        #    "vlines": [Line2D...], "texts": [Text...]}
+        # Populated by mark_episode_boundary(); artists created lazily (after
+        # plot init) and pruned when the marker's t falls off the sliding
+        # window. Also saved to npz on close() for offline segmentation.
+        self._ep_markers: List[dict] = []
+
     def _try_init_plot(self, bias: np.ndarray) -> None:
         """Lazy plot setup on first nonzero bias. Idempotent."""
         if self._initialized or self._disabled or not self._render:
@@ -315,9 +323,63 @@ class BiasMonitor:
             fig.canvas.flush_events()
             self._active_joints = active
             self._initialized = True
+            # Retroactively draw any episode boundaries that were marked before
+            # the plot was initialized (typical: reset() marks boundary → first
+            # step() update triggers init).
+            for m in self._ep_markers:
+                if not m["vlines"]:
+                    self._draw_boundary_artists(m)
         except Exception as e:
             print(f"[BiasMonitor] plot init failed (will only save data): {e}")
             self._disabled = True
+
+    def _draw_boundary_artists(self, marker: dict) -> None:
+        """Draw the vline + top-anchored label on every subplot for one marker."""
+        from matplotlib.transforms import blended_transform_factory
+        t = marker["t"]
+        for ax in self._axes:
+            line = ax.axvline(t, color="gray", linestyle="--",
+                              linewidth=0.8, alpha=0.6)
+            tx = ax.text(
+                t, 0.98, " " + marker["label"],
+                transform=blended_transform_factory(ax.transData, ax.transAxes),
+                va="top", ha="left", fontsize=8, color="dimgray",
+            )
+            marker["vlines"].append(line)
+            marker["texts"].append(tx)
+
+    def mark_episode_boundary(
+        self,
+        ep_num: int,
+        bias: Optional[np.ndarray] = None,
+    ) -> None:
+        """Record a reset event so the plot shows a dashed vline + label.
+
+        Call from env.reset() *after* the new bias has been set. `bias` (if
+        given) is embedded in the label so each episode's injected value is
+        visible on the plot without needing to read subplot titles.
+
+        Safe to call before the figure is initialized — artists are buffered
+        and drawn when the first nonzero-bias `update()` triggers init.
+        """
+        t = time.time() - self._t0
+        if bias is not None:
+            active = [
+                f"J{j+1} {float(bias[j]):+.3f}"
+                for j in range(len(bias))
+                if abs(float(bias[j])) > self._bias_eps
+            ]
+            label = f"ep{ep_num}  " + " ".join(active) if active else f"ep{ep_num}"
+        else:
+            label = f"ep{ep_num}"
+        marker = {"t": t, "ep": ep_num, "label": label,
+                  "vlines": [], "texts": []}
+        self._ep_markers.append(marker)
+        if self._initialized and not self._disabled:
+            try:
+                self._draw_boundary_artists(marker)
+            except Exception as e:
+                print(f"[BiasMonitor] boundary draw failed: {e}")
 
     def update(
         self,
@@ -358,6 +420,23 @@ class BiasMonitor:
             ax.relim()
             ax.autoscale_view()
 
+        # Prune episode boundary artists that have scrolled off the ring buffer
+        # (t < oldest retained sample). Matplotlib keeps them in the axes list
+        # forever unless explicitly removed.
+        if self._ep_markers and self._times:
+            t_min = float(self._times[0])
+            surviving = []
+            for m in self._ep_markers:
+                if m["t"] >= t_min:
+                    surviving.append(m)
+                    continue
+                for artist in m["vlines"] + m["texts"]:
+                    try:
+                        artist.remove()
+                    except Exception:
+                        pass
+            self._ep_markers = surviving
+
         try:
             self._fig.canvas.draw_idle()
             self._fig.canvas.flush_events()
@@ -369,12 +448,20 @@ class BiasMonitor:
         """Save buffered data to npz (if configured) and close the figure."""
         if self._save_path is not None and len(self._times) > 0:
             try:
+                # Episode boundaries: only in-window markers have been retained,
+                # but that's what you need for segmenting the saved q_* arrays.
+                ep_t = np.array([m["t"] for m in self._ep_markers],
+                                dtype=np.float32)
+                ep_num = np.array([m["ep"] for m in self._ep_markers],
+                                  dtype=np.int32)
                 np.savez(
                     self._save_path,
                     t=np.array(self._times, dtype=np.float32),
                     q_true=np.stack(list(self._q_true)),
                     q_biased=np.stack(list(self._q_biased)),
                     bias=np.stack(list(self._biases)),
+                    ep_boundary_t=ep_t,
+                    ep_boundary_num=ep_num,
                 )
                 print(f"[BiasMonitor] saved {len(self._times)} samples to {self._save_path}")
             except Exception as e:

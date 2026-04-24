@@ -102,6 +102,8 @@ def make_config(use_bias: bool) -> FrankaRealConfig:
             bias_mode="random_uniform",
             bias_range=(-0.2, 0.2),
         )
+        # 弹出 BiasMonitor 波形窗（仅在本地 demo 时开；远程 headless 训练用默认 False）
+        cfg.enable_bias_monitor = True
     return cfg
 
 

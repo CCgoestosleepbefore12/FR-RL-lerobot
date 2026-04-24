@@ -118,6 +118,13 @@ class FrankaRealEnv(gym.Env):
         else:
             self.bias_injector = None
 
+        # BiasMonitor（可选）：matplotlib 波形图，q_true vs q_biased + ep 边界竖线。
+        # 仅在有 bias 注入且显式启用时创建，避免 headless 训练/离线场景弹窗。
+        self._bias_monitor = None
+        if self.bias_injector is not None and config.enable_bias_monitor:
+            from frrl.fault_injection import BiasMonitor
+            self._bias_monitor = BiasMonitor(update_hz=2.0)
+
         # 运行时状态 —— biased（来自 /getstate）
         self.currpos = np.zeros(7)     # xyz + quat  (7D) biased
         self.currvel = np.zeros(6)     # 末端速度    (6D)
@@ -136,6 +143,9 @@ class FrankaRealEnv(gym.Env):
         # 相机（延迟初始化，允许无相机的 mock 测试）
         self._camera_manager = None
         self._camera_init_failed = False  # 一次失败就标记，避免每步重试刷屏
+        # Live view（config.display_image=True 时两路相机原始 BGR imshow）：
+        # headless 或 cv2 GUI 不可用时自动降级为 False，避免每步刷警告。
+        self._live_view_failed = False
 
         # 键盘 reward listener（仅当 reward_backend == "keyboard" 时启动）
         self._keyboard_reward = None
@@ -184,6 +194,10 @@ class FrankaRealEnv(gym.Env):
             if bias is not None:
                 self._set_encoder_bias(bias.tolist())
                 logging.info(f"真机 Episode: bias = {np.round(bias, 4)}")
+                if self._bias_monitor is not None:
+                    self._bias_monitor.mark_episode_boundary(
+                        ep_num=self.cycle_count, bias=bias,
+                    )
             else:
                 self._set_encoder_bias([0.0] * 7)
 
@@ -239,6 +253,15 @@ class FrankaRealEnv(gym.Env):
         self._update_currpos()
         self._update_currpos_true()
         obs = self._compute_observation()
+        self._render_live_view()
+        # BiasMonitor：推 (q_true, q_biased, bias) 一个样本；绘制被 update_hz 限流
+        # （默认 2Hz）。bias_injector 在无故障 episode 下 current_bias 为 None，
+        # 此时用零向量占位以保持时间轴连续（plot init 仍需首个非零 bias）。
+        if self._bias_monitor is not None:
+            bias = self.bias_injector.current_bias
+            if bias is None:
+                bias = np.zeros(7, dtype=np.float32)
+            self._bias_monitor.update(self.q_true, self.q, bias)
         rinfo = self.compute_reward(obs)
         # Separate terminated (task success / user stop) from truncated (time limit):
         # gymnasium's bootstrap logic relies on this split (terminated disables bootstrap,
@@ -289,6 +312,29 @@ class FrankaRealEnv(gym.Env):
         """
         self._is_intervention_pending = bool(is_intervention)
 
+    def _render_live_view(self) -> None:
+        """本地 imshow 两路相机的原始 BGR 帧（640×480，crop 前）。
+
+        仅当 `config.display_image=True` 且相机已初始化且没有历史失败时才调用
+        `cv2.imshow`。headless（无 X11）首次调用会抛 cv2.error → 吞掉 + 打一次
+        warning + 置 `_live_view_failed=True`，后续 step 不再尝试。
+        """
+        if (
+            not self.config.display_image
+            or self._live_view_failed
+            or self._camera_manager is None
+        ):
+            return
+        try:
+            for name, bgr in self._camera_manager.get_images_raw().items():
+                cv2.imshow(f"cam/{name}", bgr)
+            cv2.waitKey(1)
+        except cv2.error as e:
+            logging.warning(
+                f"live view 失败（无 GUI？）: {e} — 后续步骤跳过 imshow"
+            )
+            self._live_view_failed = True
+
     def close(self):
         if self._camera_manager is not None:
             try:
@@ -302,6 +348,17 @@ class FrankaRealEnv(gym.Env):
             except Exception as e:
                 logging.warning(f"keyboard listener stop failed: {e}")
             self._keyboard_reward = None
+        if self._bias_monitor is not None:
+            try:
+                self._bias_monitor.close()
+            except Exception as e:
+                logging.warning(f"bias monitor close failed: {e}")
+            self._bias_monitor = None
+        # 关闭所有 live view 窗口（若曾打开过）；headless 下无窗口也安全。
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
 
     # ================================================================
     # 观测

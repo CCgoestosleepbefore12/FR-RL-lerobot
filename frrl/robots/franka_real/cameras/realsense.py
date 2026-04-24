@@ -151,6 +151,9 @@ class RealSenseCameraManager:
         self.image_crop = image_crop or {}
         self.image_size = image_size
         self.caps: OrderedDict[str, VideoCapture] = OrderedDict()
+        # 最近一次 get_images() 读到的原始 BGR 帧（640×480，crop/resize 前），供 live
+        # view 可视化使用；初次 get_images() 之前为空 dict。
+        self._last_raw: Dict[str, np.ndarray] = {}
 
         for cam_name, kwargs in camera_configs.items():
             rs_cap = RSCapture(name=cam_name, **kwargs)
@@ -179,6 +182,9 @@ class RealSenseCameraManager:
                 logging.error(f"相机 {cam_name} 超时，无法读取帧")
                 raise
 
+            # 缓存原始帧给 live view（crop/resize 之前，能看到完整视场）
+            self._last_raw[cam_name] = bgr
+
             # 裁剪（可选）
             if cam_name in self.image_crop:
                 bgr = self.image_crop[cam_name](bgr)
@@ -189,6 +195,14 @@ class RealSenseCameraManager:
             images[cam_name] = resized[..., ::-1].copy()
 
         return images
+
+    def get_images_raw(self) -> Dict[str, np.ndarray]:
+        """返回最近一次 get_images() 读到的原始 BGR 帧（640×480，未裁剪/缩放）。
+
+        用于 live view 可视化。调用方不应修改返回值（下一次 get_images() 会覆盖
+        同名 key）。get_images() 未调用过时返回空 dict。
+        """
+        return self._last_raw
 
     def close(self):
         for cap in self.caps.values():
