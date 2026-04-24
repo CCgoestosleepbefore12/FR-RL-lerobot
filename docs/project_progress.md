@@ -323,10 +323,11 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 - [ ] ArUco 4 角 workspace 校准（`scripts/define_workspace_crop.py`）
 - [ ] 50 条真机 demo + 真 dataset_stats（`scripts/tools/compute_dataset_stats.py`）
 - [ ] 5000 步真 pretrain + wandb 收敛观察
-- [ ] Online HIL 训练接通（InterventionWrapper + SpaceMouse override + resume from pretrain）
+- [x] Online HIL 训练接通（SpaceMouseTeleop 迟滞干预 + processor pipeline + `train_hil_sac_task_real.json`）
+- [ ] 真机端到端首跑（硬件到位后跑 `bash scripts/real/train_hil_sac.sh task_real {learner,actor}` 联调）
 - [ ] 真机训练首跑（`random_uniform(-0.15, 0.15)` J1 bias）
 - [ ] 真机版 `eval_bias_curve_realhw.py`
-- [ ] GripperPenaltyWrapper port（对齐 sim 的 `-0.05` 惩罚）
+- [x] GripperPenaltyWrapper 激活（`train_hil_sac_task_real.json` 里 `gripper_penalty=-0.05`，`GripperPenaltyProcessorStep` 早已接线）
 
 ### [sim] 优先级高
 - [ ] 加 `bias_signal` 显式偏差信号 + UTD=4 重训
@@ -434,10 +435,19 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 - **shared_encoder=true**：frozen ResNet10 无梯度，三副本浪费（15.6M → 8.47M 总参）
 - **action_scale 0.04 保留**：和 demo 采集 scale 一致避免分布漂移；`max_cart_speed=0.30` 做硬件 safety net
 
-### 下一步（阶段 6）
+### 阶段 6 交付（2026-04-25 软件侧完结）
 
-1. ArUco 4 角 workspace 校准（`scripts/define_workspace_crop.py`，替换 `workspace_roi_crop_placeholder`）
-2. 50 条真实 demo + 真 dataset_stats（`compute_dataset_stats.py` 算完填回 config）
-3. 5000 步真 pretrain + wandb（critic_loss 收敛）
-4. Online HIL 接通（InterventionWrapper 包 FrankaRealEnv + SpaceMouse override，actor resume）
-5. GripperPenaltyWrapper port（对齐 sim `-0.05`）
+| 项 | 状态 | 交付物 |
+|---|---|---|
+| ArUco workspace 校准脚本 | ✅ 软件 | `scripts/real/define_workspace.py`（SpaceMouse 采样 + `make_workspace_roi_crop` factory） |
+| BiasMonitor 可视化 | ✅ 软件 | `fault_injection.py::BiasMonitor` + `enable_bias_monitor` config flag |
+| SpaceMouse 干预检测（迟滞） | ✅ 软件 | `SpaceMouseTeleop` enter=0.05 / exit=0.02 / persist=3 |
+| Task Policy 真机 HIL config + shell | ✅ 软件 | `train_hil_sac_task_real.json` + `train_hil_sac.sh task_real` variant |
+| GripperPenalty 激活 | ✅ 软件 | `gripper_penalty=-0.05` 对齐 sim |
+| ArUco 4 角 workspace 校准**执行** | ⏳ 硬件 | 跑脚本 → 填回 `real_config.py::image_crop["front"]` |
+| `abs_pose_limit` 手动引导采样 | ⏳ 硬件 | 需要真机引导 |
+| 50 条真机 demo 采集 | ⏳ 硬件 | `python scripts/real/collect_demo_task_policy.py -n 50` |
+| 真 dataset_stats | ⏳ 硬件 | `compute_dataset_stats.py` 跑完填回 config（现在是先验占位） |
+| 5000 步真 pretrain + wandb | ⏳ 硬件 | demo 就位后 learner 启动即自动执行 |
+| 真机端到端首跑 | ⏳ 硬件 | `task_real learner` + `task_real actor` 双终端 |
+| `eval_bias_curve_realhw.py` | ⏳ 硬件 | 训完 ckpt 后再搭，现在搭无价值 |
