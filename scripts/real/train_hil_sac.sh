@@ -24,7 +24,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # scripts/real/ → scripts/ → project root（阶段 1 重组后下移一层）
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-CONFIG="$PROJECT_DIR/configs/train_hil_sac_base.json"
+CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_base.json"
 
 VARIANT="${1:-baseline}"
 ROLE="${2:-both}"
@@ -74,49 +74,49 @@ case "$VARIANT" in
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_hil_sac_arrange_boxes"
         ;;
     safe)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_safe.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_safe.json"
         echo "=== 安全场景: PickPlaceSafe 无偏差 ==="
         TASK_ID="PandaPickPlaceSafeKeyboard-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_hil_sac_safe"
         ;;
     safe_bias)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_safe_bias.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_safe_bias.json"
         echo "=== 安全场景: PickPlaceSafe + Joint1随机偏差 ==="
         TASK_ID="PandaPickPlaceSafeBiasJ1RandomKeyboard-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_hil_sac_safe_bias"
         ;;
     backup)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1.json"
         echo "=== Backup Policy S1: 单障碍物避障训练 ==="
         TASK_ID="PandaBackupPolicyS1-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1"
         ;;
     backup_s2)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s2.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s2.json"
         echo "=== Backup Policy S2: 移动+静止障碍物避障训练 ==="
         TASK_ID="PandaBackupPolicyS2-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s2"
         ;;
     backup_tracking)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1_tracking.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1_tracking.json"
         echo "=== Backup Policy S1-TRACKING: 手追 TCP 避障训练（6D, 300k, 20step, disp=0.15）==="
         TASK_ID="PandaBackupPolicyS1-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_tracking"
         ;;
     backup_tracking_relaxed)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1_tracking_relaxed.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1_tracking_relaxed.json"
         echo "=== Backup Policy S1-TRACKING-Relaxed: 位移预算 0.20m（6D, 300k, 20step, 端口 50052）==="
         TASK_ID="PandaBackupPolicyS1Relaxed-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_tracking_relaxed"
         ;;
     backup_tracking_combo)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1_tracking_combo.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1_tracking_combo.json"
         echo "=== Backup Policy S1-TRACKING-Combo: disp=0.20 + bonus=10（6D, 300k, 20step, 端口 50053）==="
         TASK_ID="PandaBackupPolicyS1Combo-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_tracking_combo"
         ;;
     backup_v2)
-        CONFIG="$PROJECT_DIR/configs/train_hil_sac_backup_s1_v2.json"
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1_v2.json"
         echo "=== Backup Policy S1-V2 防作弊: arm-sphere(r=10cm) + rotation budget/penalty（6D, 300k, 20step, 端口 50054）==="
         TASK_ID="PandaBackupPolicyS1V2-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v2"
@@ -150,19 +150,19 @@ case "$ROLE" in
         # safe变体用专用的录制config和cache路径
         case "$VARIANT" in
             safe)
-                RECORD_CONFIG="$PROJECT_DIR/configs/record_demo_safe.json"
+                RECORD_CONFIG="$PROJECT_DIR/scripts/configs/record_demo_safe.json"
                 DEMO_CACHE="$HOME/.cache/huggingface/lerobot/frrl/pick_place_safe_demo"
                 ;;
             safe_bias)
-                RECORD_CONFIG="$PROJECT_DIR/configs/record_demo_safe_bias.json"
+                RECORD_CONFIG="$PROJECT_DIR/scripts/configs/record_demo_safe_bias.json"
                 DEMO_CACHE="$HOME/.cache/huggingface/lerobot/frrl/pick_place_safe_bias_demo"
                 ;;
             backup|backup_s2)
-                RECORD_CONFIG="$PROJECT_DIR/configs/record_demo_backup.json"
+                RECORD_CONFIG="$PROJECT_DIR/scripts/configs/record_demo_backup.json"
                 DEMO_CACHE="$HOME/.cache/huggingface/lerobot/frrl/backup_policy_demo"
                 ;;
             *)
-                RECORD_CONFIG="$PROJECT_DIR/configs/record_demo.json"
+                RECORD_CONFIG="$PROJECT_DIR/scripts/configs/record_demo.json"
                 DEMO_CACHE="$HOME/.cache/huggingface/lerobot/frrl/pick_place_demo"
                 ;;
         esac

@@ -8,7 +8,7 @@ degenerate.
 Usage:
     python scripts/tools/compute_dataset_stats.py --demos "demos/task_policy/*.pkl"
 
-Prints a JSON fragment you can paste into configs/train_task_policy_franka.json
+Prints a JSON fragment you can paste into scripts/configs/train_task_policy_franka.json
 under policy.dataset_stats.
 """
 import argparse

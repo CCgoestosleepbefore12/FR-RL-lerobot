@@ -400,7 +400,7 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 | `frrl/rl/core/actor.py` | Actor（环境交互）|
 | `frrl/rl/core/env_factory.py` | 环境+处理器工厂 |
 | `frrl/policies/sac/modeling_sac.py` | SAC 网络结构 |
-| `configs/train_hil_sac_base.json` | 训练配置 |
+| `scripts/configs/train_hil_sac_base.json` | 训练配置 |
 | `scripts/real/train_hil_sac.sh` | 训练启动脚本 |
 | `scripts/sim/eval_policy.py` | 单环境评估 |
 | `scripts/sim/eval_bias_curve.py` | 偏差曲线评估 |

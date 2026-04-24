@@ -15,7 +15,7 @@ what the online phase will pick up.
 
 Usage:
     python scripts/tools/pretrain_task_policy.py \\
-        --config configs/train_task_policy_franka.json \\
+        --config scripts/configs/train_task_policy_franka.json \\
         --demo-paths "demos/task_policy/*.pkl" \\
         --steps 5000 \\
         --output-dir checkpoints/task_policy_pretrain

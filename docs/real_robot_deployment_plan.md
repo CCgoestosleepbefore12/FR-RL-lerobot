@@ -559,7 +559,7 @@ def reset(self, **kwargs):
 
 ### 4.1 配置文件变更（相对仿真）
 
-基于 `configs/train_hil_sac_base.json`，真机配置需修改以下字段：
+基于 `scripts/configs/train_hil_sac_base.json`，真机配置需修改以下字段：
 
 | 字段 | 仿真值 | 真机值 | 原因 |
 |------|--------|--------|------|
