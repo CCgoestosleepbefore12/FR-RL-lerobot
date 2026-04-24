@@ -22,7 +22,7 @@ Operator protocol during collection:
     timeout    (max_episode_length steps) → trajectory discarded
     Ctrl+C     abort — already-collected successes are saved
 
-Output: demos/task_policy/task_policy_demos_{N}_{complete|aborted}_{timestamp}.pkl
+Output: data/task_policy_demos/task_policy_demos_{N}_{complete|aborted}_{timestamp}.pkl
 
 Usage:
     python scripts/real/collect_demo_task_policy.py                 # default 50 successes, bias on
@@ -149,7 +149,7 @@ def main():
                     help="target number of successful demos (default 50)")
     ap.add_argument("--no-bias", action="store_true",
                     help="disable J1 bias injection (default: bias enabled)")
-    ap.add_argument("--output-dir", type=str, default="demos/task_policy")
+    ap.add_argument("--output-dir", type=str, default="data/task_policy_demos")
     args = ap.parse_args()
 
     logging.basicConfig(

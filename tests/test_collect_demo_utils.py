@@ -127,12 +127,12 @@ class TestClassifyEpisodeEnd:
 
 class TestOutputFilename:
     def test_filename_includes_count_and_suffix(self):
-        name = output_filename("demos/task_policy", 42, aborted=False)
+        name = output_filename("data/task_policy_demos", 42, aborted=False)
         assert "task_policy_demos_42_complete_" in name
         assert name.endswith(".pkl")
 
     def test_aborted_flag_changes_suffix(self):
-        name = output_filename("demos/task_policy", 7, aborted=True)
+        name = output_filename("data/task_policy_demos", 7, aborted=True)
         assert "task_policy_demos_7_aborted_" in name
 
     def test_respects_output_dir(self):

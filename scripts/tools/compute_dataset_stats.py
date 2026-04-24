@@ -6,7 +6,7 @@ normalizer either crashes or runs identity, causing training to diverge or
 degenerate.
 
 Usage:
-    python scripts/tools/compute_dataset_stats.py --demos "demos/task_policy/*.pkl"
+    python scripts/tools/compute_dataset_stats.py --demos "data/task_policy_demos/*.pkl"
 
 Prints a JSON fragment you can paste into scripts/configs/train_task_policy_franka.json
 under policy.dataset_stats.

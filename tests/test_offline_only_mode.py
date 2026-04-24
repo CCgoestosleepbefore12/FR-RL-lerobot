@@ -30,7 +30,7 @@ class TestSACConfigFields:
 
     def test_demo_pickle_paths_is_assignable(self):
         cfg = SACConfig()
-        cfg.demo_pickle_paths = ["demos/a.pkl", "demos/b.pkl"]
+        cfg.demo_pickle_paths = ["data/a.pkl", "data/b.pkl"]
         assert len(cfg.demo_pickle_paths) == 2
 
     def test_each_config_instance_gets_fresh_list(self):

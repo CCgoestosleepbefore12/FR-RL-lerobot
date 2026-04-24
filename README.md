@@ -19,22 +19,19 @@ FR-RL-lerobot/
 │   ├── teleoperators/       # SpaceMouse + 键盘输入
 │   ├── cameras/             # RealSense 相机
 │   └── trajectory_executor.py
-├── scripts/                 # 训练/评估/真机自检脚本
-├── demos/                   # 早期 sim 环境的硬编码 pick-and-place 演示（见 demos/README.md）
-├── configs/                 # 训练 JSON + bias YAML
+├── scripts/                 # 训练/评估/真机自检脚本 + JSON configs (scripts/configs/)
 ├── docs/                    # 详细文档（见下方索引）
+├── tests/                   # 单元测试
 ├── patches/                 # 对外部 catkin 包的改动（见 patches/README.md）
 ├── assets/                  # MuJoCo 场景/模型
-└── checkpoints/             # 预训练策略 checkpoint（不完全入 git）
+├── data/                    # HIL-SERL 采集的 demo pickle（本地，不入 git）
+└── checkpoints/             # 预训练策略 checkpoint（白名单入 git）
 ```
 
 ## 快速开始（仿真）
 
 ```bash
 conda activate lerobot
-
-# 硬编码 pick-and-place 验证仿真环境
-python demos/demo_continuous_loop.py --episodes 10
 
 # 训练（带编码器偏差的 RLPD）
 bash scripts/real/train_hil_sac.sh        # 具体任务/配置见脚本内部

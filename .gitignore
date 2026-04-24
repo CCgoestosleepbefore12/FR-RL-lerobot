@@ -26,7 +26,7 @@ debug_aruco_frame.png
 bias_*.npz
 
 # Task policy demo pickles (per-robot teleop recordings, too large for git)
-demos/task_policy/*.pkl
+data/task_policy_demos/*.pkl
 
 # Auto-generated dataset statistics
 dataset_stats_generated.json
