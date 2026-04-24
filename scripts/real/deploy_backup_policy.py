@@ -6,16 +6,17 @@ Three-state FSM (driven by frrl.rl.supervisor):
   HOMING   — Returns TCP to the 6D pose recorded when TASK was interrupted,
              then hands control back to TASK (seamless resume).
 
-Transitions:
-  TASK → BACKUP      : min_hand_dist < d_safe (0.15m surface-to-surface)
-  BACKUP → HOMING    : min_hand_dist > d_clear (0.20m) for clear_n_steps (3) steps
+Transitions (center-to-center distance, matches sim training semantics):
+  TASK → BACKUP      : min_hand_dist < d_safe (0.30m hand_body_equiv ↔ bbox_center)
+  BACKUP → HOMING    : min_hand_dist > d_clear (0.35m) for clear_n_steps (3) steps
   HOMING → BACKUP    : hand returns (dist < d_safe); tcp_start retained
   HOMING → TASK      : pos_err < 2cm AND rot_err < 2.9° (6D converged)
 
 Observation for BACKUP policy (per frame, 28D × 3 stack = 84D):
   robot_state (18D): q(7) + dq(7) + gripper(1) + noisy_tcp(3) — from /getstate_true
   obstacle (10D)  : active(1) + hand_pos(3) + hand_vel(3) + hand_rel_pos(3)
-                    hand_pos is Minkowski-inflated for box-vs-box avoidance.
+                    hand_pos is the raw bbox geometric center, matching sim
+                    training's obstacle_pos semantics (center-to-center dist).
 
 Usage:
     python scripts/real/deploy_backup_policy.py
@@ -45,9 +46,13 @@ from frrl.robots.franka_real.vision.hand_detector import HandDetector
 
 URL = "http://192.168.100.1:5000/"
 
-# HierarchicalSupervisor thresholds
-D_SAFE = 0.15          # m — hand distance < d_safe → enter BACKUP
-D_CLEAR = 0.20         # m — hand distance > d_clear → allow BACKUP → HOMING
+# HierarchicalSupervisor thresholds (Route A: center-to-center semantics)
+# Sim training uses hand_body-to-obstacle center distance with
+# ARM_COLLISION_DIST = 0.135m (hard termination) and spawn range 0.21-0.30m.
+# D_SAFE=0.30 lands BACKUP trigger right at sim's max spawn distance (fully
+# in-distribution); D_CLEAR=0.35 gives a 5cm hysteresis band.
+D_SAFE = 0.30          # m — center-to-center dist < d_safe → enter BACKUP
+D_CLEAR = 0.35         # m — center-to-center dist > d_clear → allow BACKUP → HOMING
 CLEAR_N_STEPS = 3      # consecutive clear steps before BACKUP → HOMING
 HOMING_POS_TOL = 0.02  # m
 HOMING_ROT_TOL = 0.05  # rad (~2.9°)
@@ -68,12 +73,14 @@ LOOKAHEAD = 2.0
 # Rate limit: max Cartesian speed (m/s). Clips single-step delta.
 MAX_CART_SPEED = 0.30          # m/s — Franka nominal max is ~2 m/s
 
-# Arm bounding sphere radius (meters).
-# V2 training (PandaBackupPolicyS1V2-v0) uses ARM_SPHERE_RADIUS = 0.10m covering
-# wrist + hand, centered at the mocap weld point (= TCP). Match that value so the
-# policy's learned "avoid at X distance" semantics apply to the correct volume.
-# See docs/backup_policy.md "V2 防作弊" for rationale.
-R_GRIPPER = 0.10
+# Franka flange → pinch_site (TCP) offset along gripper +z axis.
+# Sim's arm bounding sphere is centered at panda_hand body (= flange, mocap weld
+# point, rotation-invariant). Real's state["pose"][:3] is at pinch_site (TCP).
+# To align, we reconstruct the flange-equivalent point:
+#   hand_body_equiv = TCP - TCP_OFFSET * gripper_z_base
+# and use it as the center for min_hand_dist (matches sim's collision-check
+# reference point). See docs/backup_policy_deployment.md §6.4 for rationale.
+TCP_OFFSET = 0.1034  # m, Franka Hand kinematic flange→pinch offset
 
 OBS_STACK = 3
 CTRL_HZ = 10.0
@@ -119,29 +126,14 @@ def quat_xyzw_to_wxyz(q_xyzw):
     return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float64)
 
 
-def compute_virtual_hand_pos(bbox_center, bbox_size_3d, tcp_pos, r_gripper=R_GRIPPER):
-    """Minkowski trick: inflate hand sphere by gripper radius, shrink gripper to
-    a point (TCP). The resulting point-to-point distance from TCP to the virtual
-    hand point equals the surface-to-surface distance between the two bboxes.
-
-    bbox_size_3d: (w, h) in meters, image-plane extent at hand depth.
+def compute_hand_body_equiv(tcp_pos, quat_xyzw):
+    """Sim-equivalent arm sphere center: flange point 10.34cm behind TCP along
+    the gripper +z axis. Matches panda_hand body xpos (= mocap weld point) in
+    sim, which is the reference center for collision termination at training
+    time. Use true (unbiased) pose so real geometry matches bbox_center frame.
     """
-    # Hand bounding sphere = half of the 2D bbox diagonal
-    r_hand = 0.5 * float(np.linalg.norm(bbox_size_3d[:2]))
-    r_effective = r_gripper + r_hand
-
-    direction = tcp_pos - bbox_center
-    distance = float(np.linalg.norm(direction))
-
-    if distance < 1e-6:
-        return bbox_center.copy(), 0.0, r_hand
-    if distance <= r_effective:
-        # Surfaces overlap — policy sees "obstacle on TCP"
-        return tcp_pos.copy(), 0.0, r_hand
-    # Move hand point toward TCP by r_effective
-    virtual = bbox_center + (direction / distance) * r_effective
-    surface_dist = distance - r_effective
-    return virtual, surface_dist, r_hand
+    gripper_z_base = R.from_quat(quat_xyzw).apply([0, 0, 1])
+    return tcp_pos - TCP_OFFSET * gripper_z_base
 
 
 def build_obs28(state, hand_pos, hand_vel, tcp_noisy):
@@ -326,7 +318,7 @@ def main():
 
     print("\n=== Deployment Active ===")
     print("  TASK    (green)  — SpaceMouse controls arm + gripper (btn0=close, btn1=open)")
-    print("  BACKUP  (red)    — hand < 15cm surface-dist triggers policy avoidance")
+    print(f"  BACKUP  (red)    — hand_body_equiv-to-bbox center-dist < {D_SAFE*100:.0f}cm triggers policy avoidance")
     print("  HOMING  (orange) — after 3 consecutive clear frames, return to tcp_start")
     if args.no_workspace_clamp:
         print("  !! WORKSPACE CLAMP DISABLED — target pose can go anywhere. E-STOP READY.")
@@ -357,18 +349,24 @@ def main():
             fk_tcp = np.array(state["pose"][:3], dtype=np.float64)
             tcp_noisy = fk_tcp + rng.normal(0, TCP_NOISE_STD, 3)
 
-            # Hand position + velocity, with Minkowski inflation for box-vs-box
-            # avoidance semantics.
+            # Route A alignment: policy obs uses obstacle geometric center
+            # (matches sim training's obstacle_pos semantics). FSM uses
+            # hand_body_equiv ↔ bbox_center center-to-center distance (matches
+            # sim's arm_sphere_center ↔ obstacle_center collision reference).
             r_hand_debug = 0.0
             if hand.active:
                 bbox_center = hand.pos_robot  # raw YOLO bbox center in robot frame
                 bbox_size = hand.bbox_size_3d  # (w, h) in meters
+                r_hand_debug = 0.5 * float(np.linalg.norm(bbox_size[:2]))  # viz only
 
-                # Virtual hand point: distance from TCP to this point equals
-                # surface-to-surface distance between gripper and hand bboxes.
-                hand_pos, hand_dist, r_hand_debug = compute_virtual_hand_pos(
-                    bbox_center, bbox_size, fk_tcp, r_gripper=R_GRIPPER,
-                )
+                # Policy observation: raw bbox center (no Minkowski inflation).
+                hand_pos = bbox_center.copy()
+
+                # FSM trigger distance: center-to-center between flange-equiv
+                # (sim's arm sphere center) and the raw hand bbox center.
+                # Use true (unbiased) pose so distance reflects real geometry.
+                hand_body_equiv = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
+                hand_dist = float(np.linalg.norm(hand_body_equiv - bbox_center))
 
                 # Velocity from raw bbox center (physical motion of the hand)
                 now = time.time()
@@ -513,8 +511,8 @@ def main():
                 dist_color = (0, 0, 255) if hand_dist < D_SAFE else (
                     (0, 165, 255) if hand_dist < D_CLEAR else (0, 255, 0))
                 cv2.putText(vis,
-                            f"surface-dist: {hand_dist*1000:.0f}mm  "
-                            f"(r_hand={r_hand_debug*1000:.0f}mm, r_grip={R_GRIPPER*1000:.0f}mm)",
+                            f"center-dist: {hand_dist*1000:.0f}mm  "
+                            f"(r_hand={r_hand_debug*1000:.0f}mm)",
                             (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, dist_color, 2)
 
