@@ -12,9 +12,9 @@
 | Exp 5 | Backup Zero-shot Bias 迁移 | `PandaBackupPolicyS1BiasJ1-v0` | ✅ 已完成 | 99.0% → 98.5%，近乎无损 |
 | Exp 6 | DR 策略在 NoDR env 评估 | `PandaBackupPolicyS1NoDR-v0` | ✅ 已完成 | 反直觉：99.0% → **96.5%**（更干净环境反而更差）|
 | Exp 7 | Backup S2 多障碍 | `PandaBackupPolicyS2-v0` | ✅ 已完成 | 200k utd=4：**83-91%**（vs S1 99%），多障碍难度跃升 |
-| Exp 1-Obs27 | Task policy 观测消融（27D full）| `PandaPickPlaceBiasJ1RandomKeyboard-v0`（待建）| 🟡 待做（env 未建） | — |
-| Exp 1-Obs24 | Task policy 观测消融（24D 去 real_tcp）| `PandaPickPlaceObs24BiasJ1RandomKeyboard-v0`（待建）| 🟡 待做（env 未建） | — |
-| Exp 1-Obs21 | Task policy 观测消融（21D 去 block/plate）| `PandaPickPlaceObs21BiasJ1RandomKeyboard-v0`（待建）| 🟡 待做（env 未建） | — |
+| Exp 1-Obs27 | Task policy 观测消融（27D full）| `PandaPickPlaceTaskObs27BiasJ1RandomKeyboard-v0` | 🟡 env + config 已就绪，待训练 | — |
+| Exp 1-Obs24 | Task policy 观测消融（24D 去 real_tcp）| `PandaPickPlaceTaskObs24BiasJ1RandomKeyboard-v0` | 🟡 env + config 已就绪，待训练 | — |
+| Exp 1-Obs21 | Task policy 观测消融（21D 去 block/plate）| `PandaPickPlaceTaskObs21BiasJ1RandomKeyboard-v0` | 🟡 env + config 已就绪，待训练 | — |
 
 ---
 
@@ -564,13 +564,13 @@ DR 训练时策略看到的观测长这样：
 | 24D 去 real_tcp | 24 | robot_state(18) + block(3) + plate(3) |
 | 21D 去 block/plate | 21 | robot_state(18) + real_tcp(3) |
 
-**前置工作**（未完成）：
-1. 新建 env：`PandaPickPlaceBiasJ1Random-v0`（及 Keyboard 变体），从 `FRRLPandaPickPlace-v0` 派生，加 `EncoderBiasConfig(target_joints=[0])`
-2. env 加 `obs_mode` 参数支持 27D/24D/21D
-3. 新建 3 份 record/train config：`configs/train_hil_sac_task_bias_obs{27,24,21}.json`
-4. 录制 1 次 27D demo，用 `scripts/tools/slice_safe_demo.py`（或派生脚本）切片到 24D/21D
+**前置工作状态**：
+1. ✅ env 已注册：`PandaPickPlaceTaskObs{27,24,21}BiasJ1Random-v0` 和 Keyboard 变体（见 `frrl/envs/__init__.py::190-208`），从 `PandaPickPlaceSafeEnv` 派生（关 safety layer + hand_appear_prob=0），`EncoderBiasConfig(target_joints=[0], bias_range=[-0.15, 0.15])`
+2. ✅ `obs_mode` 参数支持 27D/24D/21D（env `kwargs={"obs_mode": "obs27/24/21"}`）
+3. ✅ 3 份 train config 已建：`scripts/configs/train_hil_sac_task_bias_obs{27,24,21}.json`
+4. ⏳ 待做：录制 1 次 27D demo + 切片到 24D/21D；三 seed 启动训练
 
-**历史遗留**：`configs/train_hil_sac_safe_bias_obs{31,28,25}.json` 和对应的 `PandaPickPlaceSafeObs*` env 注册是 **Joint Safe RL 方向**的残留（带 hand + safety layer + hand 观测），与当前 Modular 方向不符，暂不删除，如需 joint 消融可复用。
+**历史遗留**：`scripts/configs/train_hil_sac_safe_bias_obs{31,28,25}.json` 和对应的 `PandaPickPlaceSafeObs*` env 注册是 **Joint Safe RL 方向**的残留（带 hand + safety layer + hand 观测），与当前 Modular 方向不符，暂不删除，如需 joint 消融可复用。
 
 ---
 
@@ -671,7 +671,7 @@ DR 训练时策略看到的观测长这样：
 | Relaxed | `PandaBackupPolicyS1Relaxed-v0` | **0.20** | 5.0 | 50052 | 1001 |
 | Combo | `PandaBackupPolicyS1Combo-v0` | **0.20** | **10.0** | 50053 | 1002 |
 
-配置：`configs/train_hil_sac_backup_s1_tracking{,_relaxed,_combo}.json`；启动脚本变体 `backup_tracking{,_relaxed,_combo}`。
+配置：`scripts/configs/train_hil_sac_backup_s1_tracking{,_relaxed,_combo}.json`；启动脚本变体 `backup_tracking{,_relaxed,_combo}`。
 
 **为什么动的是 `SURVIVAL_BONUS`（终局 +5→+10）而不是 `SURVIVAL_REWARD`（每步 +0.5）**：
 per-step 奖励会整体放大 reward scale，污染和 Base 的直接对比；终局 bonus 只在 `truncated` 触发，信号集中在"存活完整 episode"这个事件上，正是我们想放大的 credit assignment 目标。
@@ -708,7 +708,7 @@ bash scripts/real/train_hil_sac.sh backup_tracking_combo actor
 
 - `frrl/envs/sim/panda_backup_policy_env.py`：`__init__` 新增 `max_displacement` / `survival_bonus` 参数，`step()` 使用实例变量而非模块常量
 - `frrl/envs/__init__.py`：新增 `PandaBackupPolicyS1Relaxed-v0` / `S1Combo-v0`
-- `configs/train_hil_sac_backup_s1_tracking_relaxed.json` / `..._combo.json`：新建
+- `scripts/configs/train_hil_sac_backup_s1_tracking_relaxed.json` / `..._combo.json`：新建
 - `scripts/real/train_hil_sac.sh`：新增两个变体分支
 - `frrl/rl/supervisor/homing.py`：Part G 坐标系 bug 修复
 - `tests/test_homing_controller.py`：新增 non-identity start 测试；`test_rot_convergence_simulation` 改用局部系右乘
@@ -761,7 +761,7 @@ python scripts/sim/eval_backup_policy.py \
 
 - `frrl/envs/sim/panda_backup_policy_env.py`：`__init__` 新增 V2 三个参数；`_check_multi_safety` 按 `use_arm_sphere_collision` 分支；`step()` 追加旋转预算 + 旋转惩罚；新增 `_compute_rotation_angle` / `_quat_conjugate`；`info["rotation"]` 导出
 - `frrl/envs/__init__.py`：新增 `PandaBackupPolicyS1V2-v0`
-- `configs/train_hil_sac_backup_s1_v2.json`：新建（端口 50054, seed 1003, 300k）
+- `scripts/configs/train_hil_sac_backup_s1_v2.json`：新建（端口 50054, seed 1003, 300k）
 - `scripts/real/train_hil_sac.sh`：新增 `backup_v2` 变体
 - `scripts/sim/eval_backup_policy.py`：choices 加入 V2
 - `tests/test_backup_env_tracking.py`：+4 V2 测试（总 11 个）

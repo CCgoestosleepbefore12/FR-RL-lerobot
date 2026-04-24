@@ -13,8 +13,11 @@
 > `frrl/teleoperators/` 等正式位置。
 >
 > **注**：文中提到的 `frrl/{robot_servers, cameras, vision}/` 与 `frrl/envs/franka_real_*.py`
-> 等路径在 2026-04 refactor（Stage 2a/2b/2c）后已变更；最新目录结构以仓库当前状态
-> 和 [`project_progress.md`](project_progress.md) 为准。下文保留原路径以还原规划脉络。
+> 等路径在 2026-04 refactor（Stage 2a/2b/2c）后已变更。真机外围（`servers/` +
+> `cameras/` + `vision/` + `trajectory_executor.py`）统一搬入 `frrl/robots/franka_real/`；
+> env 改名 `frrl/envs/real.py` + `real_config.py`；OSC 归并到 `frrl/envs/sim/opspace.py`
+> （sim 专用）。下文保留原路径以还原规划脉络，最新目录结构以仓库当前状态
+> 和 [`project_progress.md §2.1`](project_progress.md) 为准。
 > 真机启动/验证流程请看 [`rt_pc_runbook.md`](rt_pc_runbook.md) 和
 > [`fault_injection_realhw.md`](fault_injection_realhw.md)。
 
@@ -834,37 +837,38 @@ class FrankaRealSafeEnv(FrankaRealEnv):
         return super().step(full_action)
 ```
 
-**对应仿真侧模块**：`frrl/rl/supervisor/hierarchical.py`（待建），真机直接复用该 supervisor。
+**对应仿真侧模块**：`frrl/rl/supervisor/hierarchical.py`（✅ 2026-04 已实装 `HierarchicalSupervisor` + `HomingController`，真机直接复用）。
 
-### 5.5 新增文件
+### 5.5 新增文件（Stage 2 refactor 后的实际路径）
 
-| 文件 | 说明 |
-|------|------|
-| `frrl/vision/__init__.py` | 视觉模块入口 |
-| `frrl/vision/hand_detector.py` | MediaPipe Hands + D455 → 3D 手部位置（CPU 推理） |
-| `frrl/vision/camera_calibration.py` | AprilTag 标定工具 → T_cam_to_robot |
-| `frrl/envs/franka_real_safe_env.py` | FrankaRealEnv + HandDetector + backup policy 切换逻辑 |
-| `scripts/calibrate_camera.py` | 标定流程脚本 |
-| `configs/real_robot/deploy_franka_safe.json` | 真机安全部署配置 |
+| 规划路径 | 实际落地路径 | 状态 |
+|----------|-------------|------|
+| `frrl/vision/__init__.py` | `frrl/robots/franka_real/vision/__init__.py` | ✅ |
+| `frrl/vision/hand_detector.py` | `frrl/robots/franka_real/vision/hand_detector.py`（改用 **WiLoR + YOLOv8** 替代 MediaPipe，精度更高） | ✅ |
+| `frrl/vision/camera_calibration.py` | `scripts/tools/calibrate_cam_to_robot.py`（SVD 点对齐 + hand-eye 诊断） | ✅ |
+| `frrl/envs/franka_real_safe_env.py` | **不再单独建 env**；切换逻辑下沉到 `frrl/rl/supervisor/HierarchicalSupervisor`（TASK/BACKUP/HOMING 三态），部署入口为 `scripts/real/deploy_backup_policy.py` | ✅ |
+| `scripts/calibrate_camera.py` | `scripts/tools/calibrate_cam_to_robot.py` | ✅ |
+| `configs/real_robot/deploy_franka_safe.json` | 部署走 Python CLI 参数 + `scripts/configs/` 下的训练/评估 JSON，无单独 deploy json | 采用替代方案 |
 
 ### 5.6 已完成的仿真侧改动
 
 | 文件 | 修改 |
 |------|------|
-| `frrl/envs/panda_backup_policy_env.py` | 重构：S1/S2 场景 + 4 种运动模式 + DR + 新奖励函数 |
-| `frrl/envs/__init__.py` | S1/S2/NoDR/BiasJ1 共 6 个 gym 注册 |
-| `configs/train_hil_sac_backup_s1.json` | S1 训练配置（28D 输入） |
-| `configs/train_hil_sac_backup_s2.json` | S2 训练配置（38D 输入） |
+| `frrl/envs/sim/panda_backup_policy_env.py` | 重构：S1/S2 场景 + 4 种运动模式 + DR + 新奖励函数；V2 新几何 (`ARM_SPHERE_RADIUS=0.10`) + rotation budget 软惩罚 |
+| `frrl/envs/__init__.py` | S1/S2/NoDR/BiasJ1 + V2 变体 + tracking/relaxed/combo 多 gym 注册 |
+| `scripts/configs/train_hil_sac_backup_s1.json` | S1 训练配置（28D 输入） |
+| `scripts/configs/train_hil_sac_backup_s1_v2.json` | V2 新几何训练配置 |
+| `scripts/configs/train_hil_sac_backup_s2.json` | S2 训练配置（38D 输入） |
 | `scripts/sim/eval_backup_policy.py` | 评估脚本：运动模式统计 + 奖励统计 |
 | `scripts/sim/check_backup_env.py` | 可视化调试脚本 |
 
 ### 5.7 部署步骤
 
-1. **仿真训练 backup policy**：先 S1 后 S2，确认收敛（存活率 >90%）← **当前进行中**
-2. **相机标定**：`python scripts/calibrate_camera.py`（RT PC 就绪后）
-3. **HandDetector 独立验证**：D455 → MediaPipe → 3D 手部位置，精度 <4cm，延迟 <15ms
-4. **真机部署 backup policy（sim2real）**：加载仿真 checkpoint，HandDetector 提供手部位置
-5. **联合测试**：task policy + backup policy 切换，人手进出工作区
+1. **仿真训练 backup policy**：S1 (99%) ✅ / S2 (83-91%) ✅ / S1 V2 新几何 ✅
+2. **相机标定**：`python scripts/tools/calibrate_cam_to_robot.py`（✅ SVD 点对齐 + hand-eye 诊断）
+3. **HandDetector 独立验证**：D455 → **WiLoR + YOLOv8** → 3D 手部位置（脚本 `scripts/hw_check/test_hand_detector.py`）
+4. **真机部署 backup policy（sim2real）**：`scripts/real/deploy_backup_policy.py` 加载 V2 checkpoint + BiasMonitor 可视化 ✅
+5. **联合测试**：详见 [`backup_policy_deployment.md`](backup_policy_deployment.md) §3.9 三阶段测试
 
 ### 验证
 
@@ -892,18 +896,18 @@ class FrankaRealSafeEnv(FrankaRealEnv):
 
 ## 文件清单
 
-### 新增
-| 文件 | 阶段 |
-|------|------|
-| `frrl/envs/franka_real_env.py` | 一 |
-| `frrl/envs/franka_real_config.py` | 一 |
-| `frrl/cameras/realsense.py` | 一 |
-| `frrl/teleoperators/spacemouse/` (4个文件) | 二 |
-| `configs/real_robot/` (3个JSON) | 四、五 |
-| `frrl/vision/hand_detector.py` | 五 |
-| `frrl/vision/camera_calibration.py` | 五 |
-| `frrl/envs/franka_real_safe_env.py` | 五 |
-| `scripts/calibrate_camera.py` | 五 |
+### 新增（括号内为 Stage 2 refactor 后的实际路径）
+| 规划路径 | 实际路径 | 阶段 |
+|----------|---------|------|
+| `frrl/envs/franka_real_env.py` | `frrl/envs/real.py` | 一 ✅ |
+| `frrl/envs/franka_real_config.py` | `frrl/envs/real_config.py` | 一 ✅ |
+| `frrl/cameras/realsense.py` | `frrl/robots/franka_real/cameras/realsense.py` | 一 ✅ |
+| `frrl/teleoperators/spacemouse/` (4 个文件) | 同路径 | 二 ✅ |
+| `configs/real_robot/` (3 个 JSON) | 走 `scripts/configs/` + CLI 参数（未单独建 real_robot 子目录） | 四、五 — 替代方案 |
+| `frrl/vision/hand_detector.py` | `frrl/robots/franka_real/vision/hand_detector.py`（WiLoR+YOLOv8） | 五 ✅ |
+| `frrl/vision/camera_calibration.py` | `scripts/tools/calibrate_cam_to_robot.py`（SVD + hand-eye） | 五 ✅ |
+| `frrl/envs/franka_real_safe_env.py` | 未建；切换逻辑在 `frrl/rl/supervisor/hierarchical.py` | 五 ✅（架构替代） |
+| `scripts/calibrate_camera.py` | `scripts/tools/calibrate_cam_to_robot.py` | 五 ✅ |
 
 ### 修改
 | 文件 | 阶段 |

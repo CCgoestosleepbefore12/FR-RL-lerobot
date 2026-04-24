@@ -1,5 +1,16 @@
 # FR-RL 完整数据流
 
+> **快照范围**：本文记录的是 **[sim] PickCube Exp 2 时期（24D obs + 4D action + Joint 4 bias）** 的 pipeline，用作理解 RLPD + HIL-SERL 数据流的参考。
+>
+> **当前实际部署**：
+> - [sim] PickCube 现为 `agent_pos=18D` + 可选 `environment_state`（`block_pos(3)+noisy_real_tcp(3)`）；PickPlace 消融 env（27D/24D/21D）已就绪
+> - [real] `FrankaRealEnv` 为 `agent_pos=29D`（`joint_pos_biased(7)+joint_vel(7)+gripper(1)+tcp_biased(7)+tcp_true(7)`）
+> - [共通] Action 已统一到 **7D** `[dx,dy,dz,rx,ry,rz,gripper]`；旧 4D 仅 PickCube 历史实验使用
+> - [共通] `EEActionWrapper` 已改为内部 pass-through；旋转分量由 env 内处理而不是 wrapper
+> - [共通] Bias `target_joints` 当前配置 = **J1 (index 0)**，范围 `[-0.15, 0.15] rad`；PickCube Exp 2 历史用 Joint 4（index 3）[0, 0.25] rad
+>
+> 以下文字保留 Exp 2 视角，阅读时请带这些上下文。
+
 ## 概览
 
 ```

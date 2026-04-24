@@ -198,8 +198,9 @@ if truncated: r += 5.0
 | 障碍物位置噪声 | N(0, 0.03) | MediaPipe + 深度 累计误差 ±3cm |
 | 障碍物速度噪声 | N(0, 0.01) | 帧间差分抖动 |
 | 观测延迟 | U(0, 2) 步 | 检测+推理延迟 ~0-20ms |
-| 障碍物生成距离 | U(0.12, 0.25)m | 不同进入距离 |
-| 障碍物移动速度 | U(0.008, 0.025)m/step | 不同手速 |
+| 障碍物生成距离（V1 `HAND_SPAWN_DIST`）| U(0.15, 0.30) m | 不同进入距离 |
+| 障碍物生成距离（V2 `ARM_SPAWN_DIST`） | U(0.21, 0.30) m | 下限 >1.5×ARM_COLLISION_DIST(0.2025m) 防 1-step death |
+| 障碍物移动速度（`HAND_SPEED_RANGE`） | U(0.005, 0.015) m/step | 不同手速 |
 | TCP 位置噪声 | N(0, 0.005) | 已有，保留 |
 
 ### 观测延迟实现
@@ -219,21 +220,24 @@ obs_pos = pos_history[-(1 + delay)]
 ## 7. 训练配置
 
 - 算法: SAC (Soft Actor-Critic)
-- 先训 S1，确认收敛后训 S2
-- Episode 长度: 10 步
-- 评估: 200 步连续生存率
+- 先训 S1，确认收敛后训 S2；V2 几何 + rotation budget 软惩罚继承 S1 超参
+- Episode 长度: **20 步**（2026-04-21 V2 从 10 步改 20，给 HOMING 阶段足够窗口）
+- 评估: 200 episodes 存活率统计
 
-| 参数 | 值 |
-|------|-----|
-| online_steps | 50,000 |
-| online_buffer_capacity | 200,000 |
-| online_step_before_learning | 1,000 |
-| discount | 1.0 |
-| temperature_init | 0.1 |
-| critic_lr | 3e-4 |
-| actor_lr | 3e-4 |
-| utd_ratio | 4 |
-| batch_size | 256 |
+| 参数 | S1 v0 | S1 V2（新几何 + rotation budget 软惩罚） | S2 |
+|------|------|------------------------------------|-----|
+| online_steps | 200,000 | 145,000（训练峰值 ckpt） | 200,000 |
+| max_episode_steps | 10 → 20（V2 起） | 20 | 10 |
+| online_buffer_capacity | 200,000 | 200,000 | 200,000 |
+| online_step_before_learning | 1,000 | 1,000 | 1,000 |
+| discount | 1.0 | 1.0 | 1.0 |
+| temperature_init | 0.1 | 0.1 | 0.1 |
+| critic_lr / actor_lr | 3e-4 | 3e-4 | 3e-4 |
+| utd_ratio | 4 | 4 | **4**（utd=8 会在 100k 崩，见 sim_exp_data Exp 7）|
+| batch_size | 256 | 256 | 256 |
+| `ROTATION_COEFF` | — | 0.2（旋转软惩罚） | — |
+| `MAX_ROTATION` | — | π（等效关闭硬终止） | — |
+| `ARM_SPHERE_RADIUS` | N/A（用三点 TCP+指尖） | 0.10 m（wrist+hand 单球） | N/A |
 
 ---
 
@@ -253,48 +257,54 @@ obs_pos = pos_history[-(1 + delay)]
 
 ## 9. 文件清单
 
-### 已完成（仿真侧）
+### [sim] 仿真侧
 
 ```
-frrl/envs/sim/panda_backup_policy_env.py          ✓ 已重构
+frrl/envs/sim/panda_backup_policy_env.py          ✓
   - S1/S2 场景，28D/38D 观测
+  - V2 几何（wrist+hand 单球 R=0.10m）+ rotation budget 软惩罚
   - 4 种运动模式（LINEAR/ARC/STOP_GO/PASSING）
   - 位移 + 动作幅度 + 平滑惩罚
   - DR：位置噪声、速度噪声、观测延迟
-  - 编码器偏差路径修复（使用 get_robot_state()）
+  - 编码器偏差路径（使用 get_robot_state()）
 
-frrl/envs/__init__.py                          ✓ 已更新
-  - S1/S2/NoDR/BiasJ1 共 6 个 gym 注册
+frrl/envs/__init__.py                          ✓ 已注册
+  - S1 / S2 / NoDR / BiasJ1 / V2 / Relaxed / Combo 等变体
 
-configs/train_hil_sac_backup_s1.json           ✓ 已创建（28D 输入）
-configs/train_hil_sac_backup_s2.json           ✓ 已创建（38D 输入）
-scripts/sim/eval_backup_policy.py                  ✓ 已更新（运动模式+奖励统计）
-scripts/sim/check_backup_env.py                    ✓ 已更新（S1/S2 选择+DR 开关）
-scripts/real/train_hil_sac.sh                       ✓ 已更新（backup/backup_s2 分支）
+scripts/configs/train_hil_sac_backup_s1.json      ✓（S1 v0）
+scripts/configs/train_hil_sac_backup_s1_v2.json   ✓（V2 新几何 + 软惩罚）
+scripts/configs/train_hil_sac_backup_s1_tracking*.json  ✓（tracking/tracking_combo/tracking_relaxed）
+scripts/configs/train_hil_sac_backup_s2.json      ✓（38D S2）
+scripts/sim/eval_backup_policy.py                 ✓（运动模式+奖励统计）
+scripts/sim/check_backup_env.py                   ✓（S1/S2 选择+DR 开关）
+scripts/real/train_hil_sac.sh                     ✓（backup/backup_s2/backup_s1_v2 分支）
 ```
 
-### 待实现（真机侧，需要硬件）
+### [real] 真机侧（已实装，2026-04）
 
 ```
-frrl/robots/franka_real/vision/__init__.py
-  - 视觉模块入口
+frrl/robots/franka_real/vision/__init__.py        ✓
 
-frrl/robots/franka_real/vision/hand_detector.py
-  - HandDetector 类
-  - 输入: RGB + Depth (D455)
-  - 内部: MediaPipe Hands (CPU 推理, ~5-10ms)
-  - 输出: hand_active(bool), hand_pos_robot(3D), hand_confidence(float)
-  - 依赖: T_cam_to_robot (标定矩阵, .npy 文件)
+frrl/robots/franka_real/vision/hand_detector.py   ✓
+  - HandDetector: WiLoR 模型（精度/鲁棒性优于原计划 MediaPipe）
+  - 输入: RGB + Depth (D455) → 输出 hand_active / hand_pos_robot / confidence
+  - 依赖 T_cam_to_robot (.npy)
 
-frrl/robots/franka_real/vision/camera_calibration.py
-  - CameraCalibrator 类
-  - AprilTag 标定: 多组 (末端位姿, 像素检测) → T_cam_to_robot (4×4)
-  - 保存/加载 .npy
+frrl/robots/franka_real/vision/aruco_tcp.py       ✓
+  - ArUco 4 角 TCP 追踪（privileged 作弊通道 / workspace 校准）
 
-scripts/calibrate_camera.py
-  - 标定流程脚本
-  - 步骤: 采集多位姿 → 求解 AX=XB → 保存 T_cam_to_robot
+scripts/tools/calibrate_cam_to_robot.py           ✓
+  - 默认 SVD 点对齐（AX=XB hand-eye 作为诊断）
+  - 输出 T_cam_to_robot.npy
+
+scripts/real/deploy_backup_policy.py              ✓
+  - HierarchicalSupervisor (TASK/BACKUP/HOMING 三态) + HomingController + BiasMonitor
+  - 详见 backup_policy_deployment.md
 ```
+
+**待办（非实现工作，详见 `docs/project_progress.md` §7）**：
+- `abs_pose_limit` 工作空间边界手动标定
+- ArUco 4 角 workspace 校准脚本（`scripts/define_workspace_crop.py`）
 
 ---
 
@@ -334,7 +344,7 @@ python scripts/sim/check_backup_env.py --num_obstacles 2 --no_dr
 
 ### 真机验证（RT PC 就绪后）
 
-1. 标定相机: `python scripts/calibrate_camera.py`
+1. 标定相机: `python scripts/tools/calibrate_cam_to_robot.py`（SVD 点对齐）
 2. 验证 HandDetector 精度: 手部位置误差 < 4cm
-3. 部署 S1 checkpoint，人手进入 → 验证主动闪避
-4. 验证策略切换: Task → Backup → Task 流畅过渡
+3. 部署 V2 checkpoint（`checkpoints/backup_policy_s1_v2_newgeom_35k` 或 `_145k`），人手进入 → 验证主动闪避
+4. 验证策略切换: Task → Backup → Homing → Task 流畅过渡（详见 `docs/backup_policy_deployment.md`）

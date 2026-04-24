@@ -67,7 +67,7 @@ frrl/teleoperators/spacemouse/
 ├── spacemouse_expert.py               # 多进程后台读取 → 共享内存
 └── teleop_spacemouse.py               # Teleoperator 抽象实现（给 RL 用）
 
-scripts/
+scripts/hw_check/
 ├── test_spacemouse.py                 # 独立驱动自检（不碰机器人）
 └── test_rtpc_link.py                  # 包含 --teleop 模式
 ```

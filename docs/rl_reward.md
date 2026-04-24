@@ -157,10 +157,48 @@ if truncated: reward += 5.0                    # 存活 bonus
 
 ---
 
+## V4: 旋转预算软惩罚（防"扭腕作弊"）
+
+**时间**：2026-04-21
+
+**修改原因**：V2 新几何（`ARM_SPHERE_RADIUS=0.10`，wrist+hand 单球）下，策略学会用**剧烈转腕**让末端避开移动障碍物、同时腕部仍与手接触但因为 Minkowski 球半径不够大而没被判定碰撞。原本的旋转**硬预算终止**（`max_rotation=0.5 rad`）过于激进，导致 eval 方差大，训练不稳定。
+
+**V4 改法**：把旋转硬上限改软惩罚，和 `DISPLACEMENT_COEFF` 对称。
+
+```python
+# V3 继承（不变）
+if collision:                reward = -10.0
+if displacement > MAX_DISPLACEMENT:  reward = -10.0
+
+reward = 0.5                                      # 存活基础
+       - DISPLACEMENT_COEFF * ||tcp - tcp_start|| # 0.5，位移软惩罚
+       - ROTATION_COEFF     * ||axis_angle(quat_rel)|| # V4 新增
+       - ACTION_NORM_COEFF  * ||action||          # 0.01
+       - ACTION_SMOOTH_COEFF * ||action - action_prev|| # 0.01
+
+# V4 旋转预算关键参数
+ROTATION_COEFF = 0.2       # 从早期的 0.5 降下来，保留"能不转就不转"偏置
+MAX_ROTATION   = π         # 约 180°，等效关闭硬终止
+```
+
+**为什么降到 0.2**：与 `DISPLACEMENT_COEFF=0.5` 作用半径不同——位移量级 0.1m、旋转量级 0.5-1 rad。系数 0.2 让两项惩罚在典型轨迹上的贡献大致相当（≈ 0.05/step）。
+
+**为什么 `MAX_ROTATION=π`**：硬终止导致 eval 不稳定（策略在硬上限边缘摆动），等效关闭后让软惩罚的梯度平滑引导策略"能不转就不转"。
+
+**实验结果（Backup S1 V2 newgeom）**：
+- 35k ckpt（真机首选）：训练早期就稳定，旋转幅度明显下降
+- 145k ckpt（训练峰值）：真机备用
+- 训练曲线对比：硬终止版本 50k 左右会出现 eval 崩溃，软惩罚版本无崩溃
+
+完整实验数据见 `docs/sim_exp_data.md` 的 Backup S1 V2 段落。
+
+---
+
 ## 设计原则总结
 
 1. **每步奖励必须非负**：保证存活永远优于碰撞终止
 2. **碰撞惩罚远大于存活总回报**：`|终止惩罚|` >> `存活总正回报`
-3. **位移需要硬约束**：软惩罚无法阻止极端行为，硬上限 + 终止才能真正约束
+3. **位移需要硬约束**：软惩罚无法阻止极端行为，硬上限 + 终止才能真正约束（但**旋转**这种方向模糊的量改用软惩罚，见 V4）
 4. **discount = 1.0**：短 episode 中每步安全等价重要
 5. **不使用 proximity reward**：我们的目标是"原地微调"不是"远离障碍物"
+6. **硬 vs 软惩罚选择原则**：约束量越"方向明确、越界 = 任务失败"越适合硬终止（位移）；越"连续、量级不固定"越适合软惩罚（旋转）

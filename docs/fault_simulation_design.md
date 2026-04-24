@@ -1,5 +1,9 @@
 # 编码器偏差仿真设计：原理、实现与合理性分析
 
+> **适用范围**：本文讨论 **[sim]** MuJoCo 仿真侧的偏差注入原理与实现（`frrl/envs/sim/base.py`）。
+> **[real]** 真机 B+D 双注入点实现见 [`fault_injection_realhw.md`](fault_injection_realhw.md)，架构决策见 [`fault_injection_architecture.md`](fault_injection_architecture.md)。
+> 两端都共享同一套 `EncoderBiasConfig`（`frrl/fault_injection.py`），配置字段 `target_joints` / `bias_mode` / `bias_range` 语义完全一致。
+
 ## 1. 真实场景：编码器偏差是怎么产生的
 
 工业机器人的关节编码器负责测量关节角度。偏差来源：
@@ -155,7 +159,7 @@ if bias is not None:
     tcp_pos = self._get_biased_tcp_pos(bias)       # biased FK
 else:
     qpos_measured = qpos_true
-    tcp_pos = self._data.sensor("2f85/pinch_pos").data
+    tcp_pos = self._data.sensor("panda_hand/pinch_pos").data
 
 return np.concatenate([qpos_measured, qvel, gripper_pose, tcp_pos])
 ```
