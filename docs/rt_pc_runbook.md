@@ -21,7 +21,7 @@
 | libfranka | 0.9.1 (本地源码编译, `/home/yuliang/libfranka/build`) |
 | franka_ros | 0.9.1 (源码编译, `~/serl_ws/src/franka_ros`) |
 | serl_franka_controllers | 源码编译, `~/serl_ws/src/serl_franka_controllers` |
-| franka_server.py | `~/FR-RL-lerobot/frrl/robot_servers/franka_server.py` |
+| franka_server.py | `~/FR-RL-lerobot/frrl/robots/franka_real/servers/franka_server.py` |
 | Conda env | `frankaserver` (Python 3.8) |
 
 固件要求：Panda system version ≥ 4.2.1
@@ -177,7 +177,7 @@ ping -c 3 172.16.0.2
 | Server URL | `http://192.168.100.1:5000` |
 | 启动脚本 | `~/start_franka_server.sh` |
 | 清场脚本 | `~/kill_franka_server.sh` |
-| franka_server 源码 | `~/FR-RL-lerobot/frrl/robot_servers/` |
+| franka_server 源码 | `~/FR-RL-lerobot/frrl/robots/franka_real/servers/` |
 | catkin workspace | `~/serl_ws` |
 | Conda env | `frankaserver` (Python 3.8) |
 

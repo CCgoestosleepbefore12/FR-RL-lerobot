@@ -612,7 +612,7 @@ DR 训练时策略看到的观测长这样：
 
 ### 关于姿态：为什么 Homing 只做 3D 位置
 
-仔细读 `frrl/envs/base.py::apply_action` 后发现，仿真 env 只用动作前 3 维 (dx, dy, dz)，`rx/ry/rz` 被完全忽略：mocap_quat 仅在 reset 时设一次，整个 episode 不变。因此 backup policy 不会扰动姿态，homing 无需恢复姿态，只做 3D 位置 P 控制即可。
+仔细读 `frrl/envs/sim/base.py::apply_action` 后发现，仿真 env 只用动作前 3 维 (dx, dy, dz)，`rx/ry/rz` 被完全忽略：mocap_quat 仅在 reset 时设一次，整个 episode 不变。因此 backup policy 不会扰动姿态，homing 无需恢复姿态，只做 3D 位置 P 控制即可。
 
 真机部署时若末端姿态会变（controller 接受完整 6D 增量），需要把 HomingController 升级为 6D（位置+姿态）。当前实现留了扩展空间（参考 `frrl/rl/supervisor/homing.py` docstring）。
 
@@ -621,7 +621,7 @@ DR 训练时策略看到的观测长这样：
 - `frrl/rl/supervisor/hierarchical.py` — 三态 FSM
 - `frrl/rl/supervisor/homing.py` — 3D 位置 P 控制
 - `tests/test_hierarchical_supervisor.py` / `test_homing_controller.py` — 单测
-- `frrl/envs/panda_backup_policy_env.py` — TRACKING-only 改造
+- `frrl/envs/sim/panda_backup_policy_env.py` — TRACKING-only 改造
 - `tests/test_backup_env_tracking.py` — Backup env 单测
 
 真机版参考：`docs/real_robot_deployment_plan.md §5.4`。
@@ -706,7 +706,7 @@ bash scripts/real/train_hil_sac.sh backup_tracking_combo actor
 
 ### 关联改动
 
-- `frrl/envs/panda_backup_policy_env.py`：`__init__` 新增 `max_displacement` / `survival_bonus` 参数，`step()` 使用实例变量而非模块常量
+- `frrl/envs/sim/panda_backup_policy_env.py`：`__init__` 新增 `max_displacement` / `survival_bonus` 参数，`step()` 使用实例变量而非模块常量
 - `frrl/envs/__init__.py`：新增 `PandaBackupPolicyS1Relaxed-v0` / `S1Combo-v0`
 - `configs/train_hil_sac_backup_s1_tracking_relaxed.json` / `..._combo.json`：新建
 - `scripts/real/train_hil_sac.sh`：新增两个变体分支
@@ -759,7 +759,7 @@ python scripts/sim/eval_backup_policy.py \
 
 ### 关联改动
 
-- `frrl/envs/panda_backup_policy_env.py`：`__init__` 新增 V2 三个参数；`_check_multi_safety` 按 `use_arm_sphere_collision` 分支；`step()` 追加旋转预算 + 旋转惩罚；新增 `_compute_rotation_angle` / `_quat_conjugate`；`info["rotation"]` 导出
+- `frrl/envs/sim/panda_backup_policy_env.py`：`__init__` 新增 V2 三个参数；`_check_multi_safety` 按 `use_arm_sphere_collision` 分支；`step()` 追加旋转预算 + 旋转惩罚；新增 `_compute_rotation_angle` / `_quat_conjugate`；`info["rotation"]` 导出
 - `frrl/envs/__init__.py`：新增 `PandaBackupPolicyS1V2-v0`
 - `configs/train_hil_sac_backup_s1_v2.json`：新建（端口 50054, seed 1003, 300k）
 - `scripts/real/train_hil_sac.sh`：新增 `backup_v2` 变体

@@ -256,7 +256,7 @@ obs_pos = pos_history[-(1 + delay)]
 ### 已完成（仿真侧）
 
 ```
-frrl/envs/panda_backup_policy_env.py          ✓ 已重构
+frrl/envs/sim/panda_backup_policy_env.py          ✓ 已重构
   - S1/S2 场景，28D/38D 观测
   - 4 种运动模式（LINEAR/ARC/STOP_GO/PASSING）
   - 位移 + 动作幅度 + 平滑惩罚
@@ -276,17 +276,17 @@ scripts/real/train_hil_sac.sh                       ✓ 已更新（backup/backu
 ### 待实现（真机侧，需要硬件）
 
 ```
-frrl/vision/__init__.py
+frrl/robots/franka_real/vision/__init__.py
   - 视觉模块入口
 
-frrl/vision/hand_detector.py
+frrl/robots/franka_real/vision/hand_detector.py
   - HandDetector 类
   - 输入: RGB + Depth (D455)
   - 内部: MediaPipe Hands (CPU 推理, ~5-10ms)
   - 输出: hand_active(bool), hand_pos_robot(3D), hand_confidence(float)
   - 依赖: T_cam_to_robot (标定矩阵, .npy 文件)
 
-frrl/vision/camera_calibration.py
+frrl/robots/franka_real/vision/camera_calibration.py
   - CameraCalibrator 类
   - AprilTag 标定: 多组 (末端位姿, 像素检测) → T_cam_to_robot (4×4)
   - 保存/加载 .npy

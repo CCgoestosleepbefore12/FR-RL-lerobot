@@ -74,8 +74,8 @@
 
 | 位置 | 文件 | 性质 | 版本控制 |
 |---|---|---|---|
-| `~/FR-RL-lerobot/frrl/robot_servers/` | `franka_server.py` | **新增（从 hil-serl 搬入）** + B+D 改动 | ✅ git |
-| `~/FR-RL-lerobot/frrl/robot_servers/` | `franka_gripper_server.py` / `robotiq_gripper_server.py` / `gripper_server.py` / `__init__.py` | **新增（从 hil-serl 搬入）** | ✅ git |
+| `~/FR-RL-lerobot/frrl/robots/franka_real/servers/` | `franka_server.py` | **新增（从 hil-serl 搬入）** + B+D 改动 | ✅ git |
+| `~/FR-RL-lerobot/frrl/robots/franka_real/servers/` | `franka_gripper_server.py` / `robotiq_gripper_server.py` / `gripper_server.py` / `__init__.py` | **新增（从 hil-serl 搬入）** | ✅ git |
 | `~/FR-RL-lerobot/patches/` | `serl_franka_controllers_bias_injection.patch` | **新增 patch 文件** | ✅ git |
 | `~/FR-RL-lerobot/frrl/envs/` | `franka_real_env.py` / `franka_real_config.py` / `fault_injection.py` | 无改动（hook 已有） | ✅ git |
 | `~/serl_ws/src/serl_franka_controllers/` | `msg/BiasedState.msg` | **新增**（patch 内） | ⚠️ 本地 |
@@ -87,7 +87,7 @@
 
 `franka_server.py` 是纯 Python，只在 RT PC 上跑，逻辑上就是本项目的一部分；
 以前在 `hil-serl` 下纯粹是历史遗留（项目最早只移植了 `franka_env.py` 这一侧）。
-搬进 `frrl/robot_servers/` 之后 hil-serl 完全不再参与运行时，调用路径走
+搬进 `frrl/robots/franka_real/servers/` 之后 hil-serl 完全不再参与运行时，调用路径走
 `python -m frrl.robots.franka_real.servers.franka_server`，相对导入正常工作。
 
 `serl_franka_controllers` 是 **catkin ROS 包**，必须住在 ROS workspace 里才能被
@@ -180,7 +180,7 @@ void CartesianImpedanceController::encoderBiasCallback(
 
 ### 2.3 franka_server.py（注入点 D）
 
-`frrl/robot_servers/franka_server.py` 相比搬入前的 hil-serl 版本新增：
+`frrl/robots/franka_real/servers/franka_server.py` 相比搬入前的 hil-serl 版本新增：
 
 - 新 import：`from serl_franka_controllers.msg import BiasedState`、
   `from std_msgs.msg import Float64MultiArray`

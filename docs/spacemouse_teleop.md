@@ -201,7 +201,7 @@ python scripts/hw_check/test_rtpc_link.py --teleop  # 2) 进入遥操作
 ```
 SpaceMouseTeleop (frrl/teleoperators/spacemouse/teleop_spacemouse.py)
     ↓ get_action() -> 7D ndarray
-Actor (frrl/rl/actor.py)
+Actor (frrl/rl/core/actor.py)
     ↓ 结合策略动作，干预时覆盖
 FrankaRealEnv (待实现)
     ↓ apply_action() -> HTTP POST /pose

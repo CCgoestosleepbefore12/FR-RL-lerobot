@@ -212,9 +212,9 @@ franka_hw
 
 ## 5. 参考
 
-- 仿真中的 bias 注入实现：`frrl/envs/base.py` (`FrankaGymEnv.apply_action`)
+- 仿真中的 bias 注入实现：`frrl/envs/sim/base.py` (`FrankaGymEnv.apply_action`)
 - `EncoderBiasInjector`：`frrl/fault_injection.py`
-- 真机 Flask Server：`frrl/robot_servers/franka_server.py`
+- 真机 Flask Server：`frrl/robots/franka_real/servers/franka_server.py`
   （从 hil-serl 移植并加入 D 注入点，2026-04-15 搬入本仓库）
 - 真机 C++ 阻抗控制器 B 注入点：`patches/serl_franka_controllers_bias_injection.patch`
   （upstream: `rail-berkeley/serl_franka_controllers`，见 `patches/README.md`）

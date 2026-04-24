@@ -14,6 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Operational Space Control (OSC) for MuJoCo。
+
+当前唯一消费方是 `frrl/envs/sim/base.py::FrankaGymEnv.apply_action`，因此归入
+`envs/sim/` 子包内聚管理；若未来真机侧也需要 OSC，再抽出独立 `frrl/controllers/`
+子包（2026-04 refactor 时因只有 sim 用到，按最少结构原则暂不提前拆分）。
+"""
+
 from typing import Optional, Tuple, Union
 
 import mujoco

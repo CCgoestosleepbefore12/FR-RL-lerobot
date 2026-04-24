@@ -6,7 +6,7 @@ package. The changes live here as patch files so they remain under version
 control and can be reapplied if the upstream checkout is ever wiped or refreshed.
 
 **Server-side Python (`franka_server.py` and the gripper servers) was vendored
-into [`frrl/robot_servers/`](../frrl/robot_servers/) — no patch needed for that.**
+into [`frrl/robots/franka_real/servers/`](../frrl/robots/franka_real/servers/) — no patch needed for that.**
 Only the C++ impedance controller still requires patching.
 
 ---

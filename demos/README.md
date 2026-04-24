@@ -3,8 +3,8 @@
 Four **非-RL**、纯脚本化的 `PandaPickPlaceEnv` 演示程序。它们在项目早期用于验证
 仿真环境 + OSC 控制器 + 轨迹执行器的基础链路是否正常，目前主要作为：
 
-1. **环境冒烟测试** —— 改了 `frrl/envs/panda_pick_place_env.py` 或
-   `frrl/controllers/opspace.py` 之后，快速验证仿真还能跑、抓取逻辑还正常
+1. **环境冒烟测试** —— 改了 `frrl/envs/sim/panda_pick_place_env.py` 或
+   `frrl/envs/sim/opspace.py` 之后，快速验证仿真还能跑、抓取逻辑还正常
 2. **对比基线** —— 需要一个"非 RL 但能完成任务"的对照时使用
 
 训练用的是 `scripts/real/train_hil_sac.sh`，评估用的是 `scripts/sim/eval_policy.py` /

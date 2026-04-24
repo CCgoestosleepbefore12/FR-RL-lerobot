@@ -8,8 +8,13 @@
 > [`task_policy_training.md`](task_policy_training.md)**（2026-04-23 阶段 1–5 完结）。
 >
 > 本文保留作为**设计决策与原始规划**的历史记录，里面的"从 ~/hil-serl/ 移植 ..."
-> 等描述反映的是**计划**，对应代码现在都已进入 `frrl/robot_servers/` /
-> `frrl/envs/franka_real_*.py` / `frrl/cameras/` / `frrl/teleoperators/` 等正式位置。
+> 等描述反映的是**计划**，对应代码现在都已进入 `frrl/robots/franka_real/servers/` /
+> `frrl/envs/real.py` + `real_config.py` / `frrl/robots/franka_real/cameras/` /
+> `frrl/teleoperators/` 等正式位置。
+>
+> **注**：文中提到的 `frrl/{robot_servers, cameras, vision}/` 与 `frrl/envs/franka_real_*.py`
+> 等路径在 2026-04 refactor（Stage 2a/2b/2c）后已变更；最新目录结构以仓库当前状态
+> 和 [`project_progress.md`](project_progress.md) 为准。下文保留原路径以还原规划脉络。
 > 真机启动/验证流程请看 [`rt_pc_runbook.md`](rt_pc_runbook.md) 和
 > [`fault_injection_realhw.md`](fault_injection_realhw.md)。
 

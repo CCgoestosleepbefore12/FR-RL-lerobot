@@ -44,7 +44,7 @@
 | `front` | 640×480 @ 15fps RGB | **128×128×3** | 中心正方形 crop（ArUco 4 角校准待做）|
 | `wrist` | 640×480 @ 15fps RGB | **128×128×3** | 中心正方形 crop |
 
-两路相机**必须同尺寸**（SAC 架构限制，`modeling_sac.py:586` 硬编码 `torch.cat` 所有相机）。硬件 serial 固定：`234222303420=front`、`318122303303=wrist`（见 `frrl/envs/franka_real_config.py`）。
+两路相机**必须同尺寸**（SAC 架构限制，`modeling_sac.py:586` 硬编码 `torch.cat` 所有相机）。硬件 serial 固定：`234222303420=front`、`318122303303=wrist`（见 `frrl/envs/real_config.py`）。
 
 ### Action (7D)
 
@@ -151,7 +151,7 @@ python scripts/tools/inspect_demo_pickle.py demos/task_policy/*.pkl
 
 ## Offline Pretrain
 
-基于 hil-serl `train_rlpd.py` 的 demo-in-offline-buffer 模式。复用 `frrl/rl/learner.py` 的 `offline_warmup_steps` 作为 pretrain loop，跑 N 步 critic + actor + temperature 梯度更新，然后保存 checkpoint 退出。
+基于 hil-serl `train_rlpd.py` 的 demo-in-offline-buffer 模式。复用 `frrl/rl/core/learner.py` 的 `offline_warmup_steps` 作为 pretrain loop，跑 N 步 critic + actor + temperature 梯度更新，然后保存 checkpoint 退出。
 
 **核心改动**：`offline_only_mode=True` 时：
 1. 跳过 gRPC actor server 启动
@@ -246,19 +246,19 @@ num_total_params ≈ 8.47M
 A: `{output_dir}/checkpoints/last/pretrained_model/` 和 `training_state/`，格式和 online 训练一致，可直接 `--resume`。
 
 **Q: 相机 serial 变了怎么办？**
-A: 编辑 `frrl/envs/franka_real_config.py` 的 `cameras` dict 里对应 `serial_number`，或设为占位符 `"000000000000"` 让 `_resolve_camera_serials()` 按枚举顺序自动分配。
+A: 编辑 `frrl/envs/real_config.py` 的 `cameras` dict 里对应 `serial_number`，或设为占位符 `"000000000000"` 让 `_resolve_camera_serials()` 按枚举顺序自动分配。
 
 **Q: 为什么图像两路都 128²？能不能把 front 调回 224²？**
 A: SAC `SACObservationEncoder` (`modeling_sac.py:586`) 硬编码把所有相机 `torch.cat` 到同一个 encoder forward，要求同尺寸。要支持不同分辨率得 refactor 成 per-key encoder（tech debt backlog）。
 
 **Q: `info["teleop_action"]` 是什么时候被 actor 读的？**
-A: `frrl/rl/actor.py:323-326`，每步 step 后从 info 拿出来作为 `executed_action`（代替 policy 的 action），进 replay buffer。HIL-SERL 的 "H" 就靠这个通路实现 intervention replay。
+A: `frrl/rl/core/actor.py:323-326`，每步 step 后从 info 拿出来作为 `executed_action`（代替 policy 的 action），进 replay buffer。HIL-SERL 的 "H" 就靠这个通路实现 intervention replay。
 
 **Q: dataset_stats 的 29D state min/max 怎么估？**
 A: 跑 `scripts/tools/compute_dataset_stats.py --demos "demos/task_policy/*.pkl"` 自动从真实 demo 算。也可以保留 config 里现有的理论边界（Franka 关节极限、workspace bounding box 等）。
 
 **Q: 想要 ArUco workspace ROI crop？**
-A: 还没做。`frrl/envs/franka_real_config.py` 的 `workspace_roi_crop_placeholder` 当前是 center crop 占位，待未来 `scripts/define_workspace_crop.py`（4 个 marker 四角）实现。
+A: 还没做。`frrl/envs/real_config.py` 的 `workspace_roi_crop_placeholder` 当前是 center crop 占位，待未来 `scripts/define_workspace_crop.py`（4 个 marker 四角）实现。
 
 ---
 
@@ -266,11 +266,11 @@ A: 还没做。`frrl/envs/franka_real_config.py` 的 `workspace_roi_crop_placeho
 
 | 用途 | 文件 |
 |------|------|
-| Env 类 | `frrl/envs/franka_real_env.py`, `franka_real_config.py` |
+| Env 类 | `frrl/envs/real.py`, `franka_real_config.py` |
 | Reward | `frrl/rewards/keyboard_reward.py` |
-| Buffer 适配器 | `frrl/rl/buffer.py::ReplayBuffer.from_pickle_transitions` |
-| Actor discard hook | `frrl/rl/actor_utils.py` + `actor.py` |
-| Learner pretrain | `frrl/rl/learner.py::add_actor_information_and_train` (offline_only_mode 分支) |
+| Buffer 适配器 | `frrl/rl/core/buffer.py::ReplayBuffer.from_pickle_transitions` |
+| Actor discard hook | `frrl/rl/infra/actor_utils.py` + `actor.py` |
+| Learner pretrain | `frrl/rl/core/learner.py::add_actor_information_and_train` (offline_only_mode 分支) |
 | 配置 | `configs/train_task_policy_franka.json` |
 | 脚本 | `scripts/{collect_demo_task_policy,inspect_demo_pickle,pretrain_task_policy,compute_dataset_stats,test_dual_camera}.py` |
 | 测试 | `tests/test_*.py`（115 cases 覆盖 pickle adapter / 键盘状态机 / 观测布局 / config 字段等）|

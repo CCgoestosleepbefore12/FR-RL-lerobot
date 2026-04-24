@@ -91,7 +91,7 @@ frrl/
   存成 [`patches/serl_franka_controllers_bias_injection.patch`](../patches/serl_franka_controllers_bias_injection.patch)
   入库
 - `franka_server.py` + 依赖的 gripper server 从 `~/hil-serl/` 搬进
-  `frrl/robot_servers/`，彻底结束"代码分散在 hil-serl 和本仓库两边"的历史债；
+  `frrl/robots/franka_real/servers/`，彻底结束"代码分散在 hil-serl 和本仓库两边"的历史债；
   启动方式从 `python franka_server.py` 改为 `python -m frrl.robots.franka_real.servers.franka_server`
 - 新增 `/set_encoder_bias` / `/clear_encoder_bias` / `/get_encoder_bias` 三个 HTTP
   路由，`/getstate` 返回的 `q`/`pose` 是 biased 值
@@ -394,11 +394,11 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 
 | 文件 | 用途 |
 |------|------|
-| `frrl/envs/base.py` | 环境基类 + 偏差注入 |
-| `frrl/envs/panda_pick_cube_env.py` | PickCube 环境（24D观测）|
-| `frrl/rl/learner.py` | Learner（训练循环 + warmup）|
-| `frrl/rl/actor.py` | Actor（环境交互）|
-| `frrl/rl/env_factory.py` | 环境+处理器工厂 |
+| `frrl/envs/sim/base.py` | 环境基类 + 偏差注入 |
+| `frrl/envs/sim/panda_pick_cube_env.py` | PickCube 环境（24D观测）|
+| `frrl/rl/core/learner.py` | Learner（训练循环 + warmup）|
+| `frrl/rl/core/actor.py` | Actor（环境交互）|
+| `frrl/rl/core/env_factory.py` | 环境+处理器工厂 |
 | `frrl/policies/sac/modeling_sac.py` | SAC 网络结构 |
 | `configs/train_hil_sac_base.json` | 训练配置 |
 | `scripts/real/train_hil_sac.sh` | 训练启动脚本 |
@@ -432,7 +432,7 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 |------|------|------|
 | **阶段 1** | `FrankaRealEnv` 29D 观测 + 双相机 | `joint_pos_biased(7) + joint_vel(7) + gripper(1) + tcp_biased(7) + tcp_true(7)`；`tcp_true` 为 privileged 作弊通道；双路相机 128×128 共享 encoder |
 | **阶段 2** | Keyboard reward + `go_home` | S/Enter/Space/Backspace 四键协议；`KeyboardRewardListener` 状态机；`env.go_home()` 收尾安全复位 |
-| **阶段 3** | Actor discard hook | `frrl/rl/actor_utils.py::should_discard_episode` 在 episode 结束时按 `info["discard"]` 丢整条 rollout |
+| **阶段 3** | Actor discard hook | `frrl/rl/infra/actor_utils.py::should_discard_episode` 在 episode 结束时按 `info["discard"]` 丢整条 rollout |
 | **阶段 4** | SpaceMouse demo 采集 + pickle adapter | `scripts/real/collect_demo_task_policy.py` 输出 hil-serl schema pickle；`ReplayBuffer.from_pickle_transitions` 适配器（key_map + HWC→CHW + resize + /255 normalize） |
 | **阶段 5** | Offline-only pretrain | `SACConfig.offline_only_mode=True` 跳过 gRPC actor，从 pickle 加载到 `offline_replay_buffer` 跑 N 步 warmup loop 保存 checkpoint；`scripts/tools/pretrain_task_policy.py` 薄 CLI |
 

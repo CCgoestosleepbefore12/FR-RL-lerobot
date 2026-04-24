@@ -593,7 +593,7 @@ python scripts/real/debug_aruco.py  # 保存一帧原图 + 尝试所有字典
 ### 仿真侧（已完成）
 
 ```
-frrl/envs/panda_backup_policy_env.py   ← S1/S2 训练环境
+frrl/envs/sim/panda_backup_policy_env.py   ← S1/S2 训练环境
 configs/train_hil_sac_backup_s1.json   ← 训练配置
 checkpoints/backup_policy_s1/          ← 训练好的 checkpoint
 ```
@@ -601,7 +601,7 @@ checkpoints/backup_policy_s1/          ← 训练好的 checkpoint
 ### 真机侧（本次部署）
 
 ```
-frrl/vision/hand_detector.py           ← WiLoR + D455 手部检测
+frrl/robots/franka_real/vision/hand_detector.py           ← WiLoR + D455 手部检测
 scripts/real/calibrate_cam_to_robot.py      ← 相机标定（SpaceMouse 驱动）
 scripts/real/deploy_backup_policy.py        ← 主部署脚本
 scripts/hw_check/test_d455.py                   ← 相机 smoke test
@@ -614,7 +614,7 @@ calibration_data/T_cam_to_robot.npy    ← 标定结果
 ### RT PC 侧
 
 ```
-frrl/robot_servers/franka_server.py    ← Flask server（加了 bias 端点和 /getstate_true）
+frrl/robots/franka_real/servers/franka_server.py    ← Flask server（加了 bias 端点和 /getstate_true）
 patches/serl_franka_controllers_bias_injection.patch ← C++ 阻抗控制器的 bias 补丁
 ```
 
