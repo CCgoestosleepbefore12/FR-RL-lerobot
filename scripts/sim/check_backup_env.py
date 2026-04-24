@@ -1,9 +1,9 @@
 """可视化检查 Backup Policy 环境（S1/S2 + TRACKING-only, 20step/ep, 6D 动作）。
 
 Usage:
-    python scripts/check_backup_env.py --episodes 10
-    python scripts/check_backup_env.py --episodes 10 --num_obstacles 2
-    python scripts/check_backup_env.py --episodes 10 --action_mode zero --no_dr
+    python scripts/sim/check_backup_env.py --episodes 10
+    python scripts/sim/check_backup_env.py --episodes 10 --num_obstacles 2
+    python scripts/sim/check_backup_env.py --episodes 10 --action_mode zero --no_dr
 """
 import argparse
 import time

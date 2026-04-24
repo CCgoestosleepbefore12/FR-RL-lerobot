@@ -50,7 +50,7 @@ pip install pyspacemouse easyhid
 
 | 库 | 用途 | 被谁用 |
 |---|---|---|
-| `pyspacemouse`（pip 新版，device-object API）| 独立驱动烟雾测试 | `scripts/test_spacemouse.py` |
+| `pyspacemouse`（pip 新版，device-object API）| 独立驱动烟雾测试 | `scripts/hw_check/test_spacemouse.py` |
 | `easyhid` | 项目内 bundled `frrl/teleoperators/spacemouse/pyspacemouse.py` 的后端 | `frrl.teleoperators.spacemouse.SpaceMouseExpert`，实际 teleop 用这个 |
 
 实际遥操作用的是项目内的 `SpaceMouseExpert`（多进程后台轮询 + 统一轴映射），pip 的 `pyspacemouse` 仅用于驱动自检。
@@ -81,7 +81,7 @@ scripts/
 ```bash
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/test_spacemouse.py
+python scripts/hw_check/test_spacemouse.py
 ```
 
 期望输出：连续打印 6 个浮点 + buttons 数组。推动/旋转 SpaceMouse 球头应看到数值变化，按钮状态在 `[0,0]` 和 `[1,0]`/`[0,1]` 之间切换。
@@ -107,7 +107,7 @@ tmux new -s franka
 ```bash
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/test_rtpc_link.py
+python scripts/hw_check/test_rtpc_link.py
 ```
 
 期望看到一段 JSON，包含 `q`、`dq`、`pose`、`gripper_pos` 等字段。
@@ -122,7 +122,7 @@ python scripts/test_rtpc_link.py
 ```bash
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/test_rtpc_link.py --teleop
+python scripts/hw_check/test_rtpc_link.py --teleop
 ```
 
 默认参数（已调好的手感）：
@@ -137,9 +137,9 @@ python scripts/test_rtpc_link.py --teleop
 
 ```bash
 # 更快
-python scripts/test_rtpc_link.py --teleop --action-scale 0.020 --rotation-scale 0.045
+python scripts/hw_check/test_rtpc_link.py --teleop --action-scale 0.020 --rotation-scale 0.045
 # 更慢
-python scripts/test_rtpc_link.py --teleop --action-scale 0.010 --rotation-scale 0.025
+python scripts/hw_check/test_rtpc_link.py --teleop --action-scale 0.010 --rotation-scale 0.025
 ```
 
 ### 6.2 按键映射
@@ -159,7 +159,7 @@ python scripts/test_rtpc_link.py --teleop --action-scale 0.010 --rotation-scale 
 - **没有 safety clip**：当前脚本不做笛卡尔边界裁剪，推久了会把 TCP 推出工作区或撞桌面。手始终放在急停按钮上。
 - **启动瞬间无跳变**：脚本第一步 `getstate` 读当前位姿作为累加起点，所以启动时不会跳。
 - **旋转会累积漂移**：长时间扭动后姿态会偏离初始值，松手不会回正，这是预期行为。
-- **退出不会回 home**：Ctrl-C 只是停止循环，机器人停在最后的目标位姿。需要复位就单独跑 `python scripts/test_rtpc_link.py --reset`（会走 `/jointreset`）。
+- **退出不会回 home**：Ctrl-C 只是停止循环，机器人停在最后的目标位姿。需要复位就单独跑 `python scripts/hw_check/test_rtpc_link.py --reset`（会走 `/jointreset`）。
 
 ---
 
@@ -174,8 +174,8 @@ tmux attach -t franka   # 或确认它还活着
 # GPU 工作站上
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/test_rtpc_link.py           # 1) 网络自检
-python scripts/test_rtpc_link.py --teleop  # 2) 进入遥操作
+python scripts/hw_check/test_rtpc_link.py           # 1) 网络自检
+python scripts/hw_check/test_rtpc_link.py --teleop  # 2) 进入遥操作
 ```
 
 ---

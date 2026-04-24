@@ -6,9 +6,9 @@ At each pose, press Enter to capture T_target2cam (ArUco) and T_gripper2base (FK
 Solve T_cam2base using cv2.calibrateRobotWorldHandEye().
 
 Usage:
-    python scripts/calibrate_cam_to_robot.py
-    python scripts/calibrate_cam_to_robot.py --marker-id 55 --marker-size 0.15
-    python scripts/calibrate_cam_to_robot.py --load  # re-solve from saved data
+    python scripts/real/calibrate_cam_to_robot.py
+    python scripts/real/calibrate_cam_to_robot.py --marker-id 55 --marker-size 0.15
+    python scripts/real/calibrate_cam_to_robot.py --load  # re-solve from saved data
 """
 import argparse
 import json

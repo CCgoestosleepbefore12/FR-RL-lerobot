@@ -8,10 +8,10 @@ Opens all detected D455s in parallel threads, streams for N seconds, reports:
   - lsusb -t (USB controller topology)
 
 Usage:
-    python scripts/test_dual_camera.py                   # 30s, 640x480 @ 15fps, color only
-    python scripts/test_dual_camera.py --duration 60     # 60s run
-    python scripts/test_dual_camera.py --depth           # also stream depth
-    python scripts/test_dual_camera.py --fps 30          # test higher fps
+    python scripts/hw_check/test_dual_camera.py                   # 30s, 640x480 @ 15fps, color only
+    python scripts/hw_check/test_dual_camera.py --duration 60     # 60s run
+    python scripts/hw_check/test_dual_camera.py --depth           # also stream depth
+    python scripts/hw_check/test_dual_camera.py --fps 30          # test higher fps
 """
 import argparse
 import subprocess

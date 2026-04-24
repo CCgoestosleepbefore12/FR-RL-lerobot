@@ -10,16 +10,16 @@ Backup Policy 评估脚本
 
 用法:
   # S1 评估
-  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model
+  python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model
 
   # S2 评估
-  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS2-v0
+  python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS2-v0
 
   # 可视化
-  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --render --n_episodes 10
+  python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --render --n_episodes 10
 
   # 无 DR 对比（测试策略在精确观测下的表现）
-  python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS1NoDR-v0
+  python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS1NoDR-v0
 """
 
 import argparse

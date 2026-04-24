@@ -7,9 +7,9 @@
   4. N_HOMING 步由 HomingController 驱动 → 测量每步 pos_err / rot_err 收敛
 
 用法:
-  python scripts/test_homing_integration.py                 # 默认 20 个 episode
-  python scripts/test_homing_integration.py --render        # 可视化
-  python scripts/test_homing_integration.py --n_episodes 5 --render
+  python scripts/sim/run_homing_integration.py                 # 默认 20 个 episode
+  python scripts/sim/run_homing_integration.py --render        # 可视化
+  python scripts/sim/run_homing_integration.py --n_episodes 5 --render
 """
 import argparse
 import time
@@ -34,7 +34,7 @@ from frrl.processor import (
 )
 from frrl.processor.converters import identity_transition
 from frrl.processor.core import TransitionKey
-from frrl.rl.homing_controller import HomingController
+from frrl.rl.supervisor import HomingController
 from frrl.envs.panda_backup_policy_env import HIDDEN_POS
 
 
@@ -166,7 +166,7 @@ def run(ckpt: str, n_episodes: int, n_backup: int, n_homing: int,
 
 def _aa_err(q_cur: np.ndarray, q_target: np.ndarray) -> np.ndarray:
     """复用 HomingController 的局部系误差公式（避免要 target 实例）。"""
-    from frrl.rl.homing_controller import quat_conjugate, quat_multiply, quat_to_axis_angle
+    from frrl.rl.supervisor import quat_conjugate, quat_multiply, quat_to_axis_angle
     q_cur = q_cur / (np.linalg.norm(q_cur) + 1e-12)
     q_target = q_target / (np.linalg.norm(q_target) + 1e-12)
     q_err = quat_multiply(quat_conjugate(q_cur), q_target)

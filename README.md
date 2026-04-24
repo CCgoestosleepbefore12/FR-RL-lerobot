@@ -37,7 +37,7 @@ conda activate lerobot
 python demos/demo_continuous_loop.py --episodes 10
 
 # 训练（带编码器偏差的 RLPD）
-bash scripts/train_hil_sac.sh        # 具体任务/配置见脚本内部
+bash scripts/real/train_hil_sac.sh        # 具体任务/配置见脚本内部
 ```
 
 ## 快速开始（真机）

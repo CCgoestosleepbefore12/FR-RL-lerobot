@@ -3,10 +3,10 @@
 # FR-RL HIL-SERL 训练启动脚本
 #
 # 完整流程:
-#   1. 录制Demo:  bash scripts/train_hil_sac.sh baseline record
+#   1. 录制Demo:  bash scripts/real/train_hil_sac.sh baseline record
 #   2. 启动训练:
-#      终端1: bash scripts/train_hil_sac.sh baseline learner
-#      终端2: bash scripts/train_hil_sac.sh baseline actor
+#      终端1: bash scripts/real/train_hil_sac.sh baseline learner
+#      终端2: bash scripts/real/train_hil_sac.sh baseline actor
 #
 # 键盘操作（录制/Actor模式）:
 #   方向键↑↓    : delta_x (前/后)
@@ -22,7 +22,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# scripts/real/ → scripts/ → project root（阶段 1 重组后下移一层）
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 CONFIG="$PROJECT_DIR/configs/train_hil_sac_base.json"
 
 VARIANT="${1:-baseline}"
@@ -181,11 +182,11 @@ case "$ROLE" in
         echo "完整训练流程:"
         echo ""
         echo "  步骤1 — 录制Demo（30个episode）:"
-        echo "    bash scripts/train_hil_sac.sh $VARIANT record"
+        echo "    bash scripts/real/train_hil_sac.sh $VARIANT record"
         echo ""
         echo "  步骤2 — 启动训练:"
-        echo "    终端1: bash scripts/train_hil_sac.sh $VARIANT learner"
-        echo "    终端2: bash scripts/train_hil_sac.sh $VARIANT actor"
+        echo "    终端1: bash scripts/real/train_hil_sac.sh $VARIANT learner"
+        echo "    终端2: bash scripts/real/train_hil_sac.sh $VARIANT actor"
         echo ""
         ;;
 esac

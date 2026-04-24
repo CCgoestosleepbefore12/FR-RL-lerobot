@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from frrl.rl.homing_controller import HomingController
+from frrl.rl.supervisor.homing import HomingController
 
 
 class Mode(Enum):

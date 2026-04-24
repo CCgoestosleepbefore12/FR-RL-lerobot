@@ -268,9 +268,9 @@ frrl/envs/__init__.py                          ✓ 已更新
 
 configs/train_hil_sac_backup_s1.json           ✓ 已创建（28D 输入）
 configs/train_hil_sac_backup_s2.json           ✓ 已创建（38D 输入）
-scripts/eval_backup_policy.py                  ✓ 已更新（运动模式+奖励统计）
-scripts/check_backup_env.py                    ✓ 已更新（S1/S2 选择+DR 开关）
-scripts/train_hil_sac.sh                       ✓ 已更新（backup/backup_s2 分支）
+scripts/sim/eval_backup_policy.py                  ✓ 已更新（运动模式+奖励统计）
+scripts/sim/check_backup_env.py                    ✓ 已更新（S1/S2 选择+DR 开关）
+scripts/real/train_hil_sac.sh                       ✓ 已更新（backup/backup_s2 分支）
 ```
 
 ### 待实现（真机侧，需要硬件）
@@ -305,31 +305,31 @@ scripts/calibrate_camera.py
 ```bash
 # 1. S1 训练（两个终端）
 # 终端 1:
-bash scripts/train_hil_sac.sh backup learner
+bash scripts/real/train_hil_sac.sh backup learner
 # 终端 2:
-bash scripts/train_hil_sac.sh backup actor
+bash scripts/real/train_hil_sac.sh backup actor
 
 # 2. S1 评估（200 步存活率 > 90%）
-python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
+python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
     --n_episodes 100 --env_task PandaBackupPolicyS1-v0
 
 # 3. 无 DR 对比（测试 DR 带来的鲁棒性提升）
-python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
+python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
     --env_task PandaBackupPolicyS1NoDR-v0
 
 # 4. S2 训练
 # 终端 1:
-bash scripts/train_hil_sac.sh backup_s2 learner
+bash scripts/real/train_hil_sac.sh backup_s2 learner
 # 终端 2:
-bash scripts/train_hil_sac.sh backup_s2 actor
+bash scripts/real/train_hil_sac.sh backup_s2 actor
 
 # 5. S2 评估
-python scripts/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
+python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model \
     --n_episodes 100 --env_task PandaBackupPolicyS2-v0
 
 # 6. 可视化环境（调试用）
-python scripts/check_backup_env.py --num_obstacles 1
-python scripts/check_backup_env.py --num_obstacles 2 --no_dr
+python scripts/sim/check_backup_env.py --num_obstacles 1
+python scripts/sim/check_backup_env.py --num_obstacles 2 --no_dr
 ```
 
 ### 真机验证（RT PC 就绪后）

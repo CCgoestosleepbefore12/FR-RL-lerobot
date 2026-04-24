@@ -7,10 +7,10 @@ Shows real-time D455 feed with:
   - Debug window: skin+depth mask (shows what the detector "sees")
 
 Usage:
-    python scripts/test_hand_detector.py
-    python scripts/test_hand_detector.py --no-aruco     # skip ArUco, hand only
-    python scripts/test_hand_detector.py --no-robot      # skip /getstate, camera only
-    python scripts/test_hand_detector.py --debug          # show skin mask window
+    python scripts/hw_check/test_hand_detector.py
+    python scripts/hw_check/test_hand_detector.py --no-aruco     # skip ArUco, hand only
+    python scripts/hw_check/test_hand_detector.py --no-robot      # skip /getstate, camera only
+    python scripts/hw_check/test_hand_detector.py --debug          # show skin mask window
 """
 import argparse
 import time

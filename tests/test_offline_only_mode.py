@@ -1,7 +1,7 @@
 """Tests for the offline_only_mode pretraining path — config + contract.
 
 We don't run a full learner training here (needs policy + optimizer +
-multiprocessing) — that's validated by running scripts/pretrain_task_policy.py
+multiprocessing) — that's validated by running scripts/tools/pretrain_task_policy.py
 against real demos. These tests pin down the public contract:
 
   * SACConfig exposes the three new fields with sensible defaults

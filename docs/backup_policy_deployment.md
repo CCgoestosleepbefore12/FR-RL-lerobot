@@ -97,7 +97,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```bash
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/calibrate_cam_to_robot.py --marker-id 55 --marker-size 0.15
+python scripts/real/calibrate_cam_to_robot.py --marker-id 55 --marker-size 0.15
 ```
 
 ### 1.3 采集流程
@@ -156,7 +156,7 @@ wget -q https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_
 ```bash
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/test_hand_detector.py
+python scripts/hw_check/test_hand_detector.py
 ```
 
 期望看到：
@@ -183,12 +183,12 @@ hand_pos（机器人基座系）
 ### 3.1 部署脚本
 
 ```bash
-python scripts/deploy_backup_policy.py
+python scripts/real/deploy_backup_policy.py
 ```
 
 ### 3.2 状态机（HierarchicalSupervisor 三态 FSM）
 
-由 `frrl/rl/hierarchical_supervisor.py` 驱动，**三态**：
+由 `frrl/rl/supervisor/hierarchical.py` 驱动，**三态**：
 
 ```
   ┌─────────────────────────────────────────┐
@@ -215,7 +215,7 @@ python scripts/deploy_backup_policy.py
                           └──────────┘
 ```
 
-**关键参数**（scripts/deploy_backup_policy.py 顶部）：
+**关键参数**（scripts/real/deploy_backup_policy.py 顶部）：
 - `D_SAFE = 0.15m` — surface-to-surface 距离，触发 BACKUP
 - `D_CLEAR = 0.20m` — 允许 BACKUP → HOMING 的阈值（滞回）
 - `CLEAR_N_STEPS = 3` — 连续 3 帧 `dist > d_clear` 才切 HOMING（防抖动）
@@ -228,7 +228,7 @@ python scripts/deploy_backup_policy.py
 
 ### 3.2.1 HomingController（6D 位姿回归）
 
-`frrl/rl/homing_controller.py` 的 6D clipped-P 控制器：
+`frrl/rl/supervisor/homing.py` 的 6D clipped-P 控制器：
 
 ```
 position error = tcp_start_pos - tcp_current_pos
@@ -350,7 +350,7 @@ penalty 的梯度天然偏好沿 `-hand_dir` 直线退让；部署侧再加 clam
 
 **`--no-workspace-clamp` 标志**：临时关闭 clip 用于调试/测量可达空间。**使用时手放急停**：
 ```bash
-python scripts/deploy_backup_policy.py --no-workspace-clamp ...
+python scripts/real/deploy_backup_policy.py --no-workspace-clamp ...
 ```
 启动时会打印 `!! WORKSPACE CLAMP DISABLED` 提醒。
 
@@ -383,7 +383,7 @@ pkill -9 -f franka ; pkill -9 -f roslaunch ; pkill -9 -f roscore ; sleep 2
 # 3. GPU 站启动 deployer
 conda activate lerobot
 cd ~/FR-RL-lerobot
-python scripts/deploy_backup_policy.py
+python scripts/real/deploy_backup_policy.py
 ```
 
 Deployer 会自动：
@@ -395,11 +395,11 @@ Deployer 会自动：
 
 ```
 阶段 1 — Dry run（不发 /pose，零风险）
-python scripts/deploy_backup_policy.py --dry-run
+python scripts/real/deploy_backup_policy.py --dry-run
 确认：策略加载 OK、观测维度正确、推理不报错
 
 阶段 2 — 纯触发测试（SpaceMouse 别动）
-python scripts/deploy_backup_policy.py
+python scripts/real/deploy_backup_policy.py
 手伸近 TCP → 机械臂应主动后退 → 手离开 → 静止
 观察 MODE 颜色切换、backup_step 计数、避让方向
 
@@ -430,13 +430,13 @@ C++ 阻抗控制器内部加 bias：
 
 ```bash
 # 无 bias 基线（启动时强制清零）
-python scripts/deploy_backup_policy.py --clear-bias
+python scripts/real/deploy_backup_policy.py --clear-bias
 
 # Joint 1 注入 0.1 rad（≈5.7°）
-python scripts/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"
+python scripts/real/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"
 
 # Joint 4 注入 0.2 rad（末端偏移 ~13cm，大幅偏差）
-python scripts/deploy_backup_policy.py --bias "0,0,0,0.2,0,0,0"
+python scripts/real/deploy_backup_policy.py --bias "0,0,0,0.2,0,0,0"
 
 # 手动清除（脚本正常退出或 Ctrl-C 会自动清，这条只在崩溃遗留 bias 时需要）
 curl -X POST http://192.168.100.1:5000/clear_encoder_bias
@@ -549,7 +549,7 @@ curl -X POST http://192.168.100.1:5000/startimp
 
 **调试**：
 ```bash
-python scripts/debug_aruco.py  # 保存一帧原图 + 尝试所有字典
+python scripts/real/debug_aruco.py  # 保存一帧原图 + 尝试所有字典
 ```
 
 ---
@@ -602,12 +602,12 @@ checkpoints/backup_policy_s1/          ← 训练好的 checkpoint
 
 ```
 frrl/vision/hand_detector.py           ← WiLoR + D455 手部检测
-scripts/calibrate_cam_to_robot.py      ← 相机标定（SpaceMouse 驱动）
-scripts/deploy_backup_policy.py        ← 主部署脚本
-scripts/test_d455.py                   ← 相机 smoke test
-scripts/test_hand_detector.py          ← 手部检测 smoke test
-scripts/test_rtpc_link.py              ← RT PC 网络 + 基础端点 smoke test
-scripts/test_spacemouse.py             ← SpaceMouse 驱动 smoke test
+scripts/real/calibrate_cam_to_robot.py      ← 相机标定（SpaceMouse 驱动）
+scripts/real/deploy_backup_policy.py        ← 主部署脚本
+scripts/hw_check/test_d455.py                   ← 相机 smoke test
+scripts/hw_check/test_hand_detector.py          ← 手部检测 smoke test
+scripts/hw_check/test_rtpc_link.py              ← RT PC 网络 + 基础端点 smoke test
+scripts/hw_check/test_spacemouse.py             ← SpaceMouse 驱动 smoke test
 calibration_data/T_cam_to_robot.npy    ← 标定结果
 ```
 
@@ -634,12 +634,12 @@ conda activate lerobot
 cd ~/FR-RL-lerobot
 
 # 验证链路（一次性）
-python scripts/test_rtpc_link.py
-python scripts/test_d455.py
-python scripts/test_hand_detector.py
+python scripts/hw_check/test_rtpc_link.py
+python scripts/hw_check/test_d455.py
+python scripts/hw_check/test_hand_detector.py
 
 # 部署
-python scripts/deploy_backup_policy.py
+python scripts/real/deploy_backup_policy.py
 
 # 做完清理
 curl -X POST http://192.168.100.1:5000/clear_encoder_bias

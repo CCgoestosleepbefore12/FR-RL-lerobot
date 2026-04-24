@@ -3,9 +3,9 @@
 Auto-detects all connected D455 cameras. Falls back to single camera if only one is found.
 
 Usage:
-    python scripts/test_d455.py              # print stats only (headless OK)
-    python scripts/test_d455.py --show       # display live RGB+Depth per camera (needs GUI)
-    python scripts/test_d455.py --save       # save one RGB + Depth frame per camera
+    python scripts/hw_check/test_d455.py              # print stats only (headless OK)
+    python scripts/hw_check/test_d455.py --show       # display live RGB+Depth per camera (needs GUI)
+    python scripts/hw_check/test_d455.py --save       # save one RGB + Depth frame per camera
 """
 import argparse
 import time

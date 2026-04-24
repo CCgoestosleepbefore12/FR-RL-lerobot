@@ -1,12 +1,12 @@
 """HierarchicalSupervisor 三态 FSM 单测（6D）。
 
 Usage:
-    python scripts/test_hierarchical_supervisor.py
+    pytest tests/test_hierarchical_supervisor.py
 """
 import sys
 import numpy as np
 
-from frrl.rl.hierarchical_supervisor import HierarchicalSupervisor, Mode
+from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 
 
 Q_I = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)  # 单位四元数

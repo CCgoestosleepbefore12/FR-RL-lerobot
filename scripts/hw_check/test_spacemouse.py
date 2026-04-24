@@ -1,7 +1,7 @@
 """Standalone SpaceMouse smoke test — prints 6D state + buttons.
 
 Run:
-    python scripts/test_spacemouse.py
+    python scripts/hw_check/test_spacemouse.py
 
 Move the SpaceMouse; values should update. Press buttons; flags should flip.
 Ctrl-C to exit.

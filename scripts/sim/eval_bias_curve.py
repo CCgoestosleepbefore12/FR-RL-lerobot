@@ -4,7 +4,7 @@
 测试策略在不同固定偏差值下的成功率，输出完整的对比表。
 
 用法:
-  python scripts/eval_bias_curve.py --checkpoint outputs/train/.../pretrained_model --n_episodes 50
+  python scripts/sim/eval_bias_curve.py --checkpoint outputs/train/.../pretrained_model --n_episodes 50
 """
 
 import argparse

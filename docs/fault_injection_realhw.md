@@ -283,12 +283,12 @@ curl -s -X POST http://127.0.0.1:5000/clear_encoder_bias
 
 ### 4.2 Random 模式（交互式脚本）
 
-仓库提供 `scripts/test_bias_random_realhw.py`，从 `[0.1, 0.25]` rad 范围均匀
+仓库提供 `scripts/real/test_bias_random_realhw.py`，从 `[0.1, 0.25]` rad 范围均匀
 采样若干 episode，每次注入前暂停让操作者决定是否继续，脚本退出（含 Ctrl+C）
 时**总会**清 bias。
 
 ```bash
-python3 scripts/test_bias_random_realhw.py
+python3 scripts/real/test_bias_random_realhw.py
 ```
 
 主要参数在脚本顶部：
@@ -432,7 +432,7 @@ EncoderBiasConfig(
 )
 ```
 每个点跑 N 个 episode，统计 success rate。仿真版已有
-`scripts/eval_bias_curve.py`，真机版需要 fork 一份把 env 换成
+`scripts/sim/eval_bias_curve.py`，真机版需要 fork 一份把 env 换成
 `FrankaRealEnv`。
 
 **（c）正式部署：不注入**
@@ -512,5 +512,5 @@ bias_cfg = EncoderBiasConfig.from_yaml("configs/bias_j1_random.yaml")
 - [`real_robot_deployment_plan.md`](real_robot_deployment_plan.md) — 两机系统
   整体拓扑和分工
 - `frrl/fault_injection.py` — `EncoderBiasInjector` 实现和 YAML schema
-- `scripts/test_bias_random_realhw.py` — 本文 §4.2 引用的交互式 random 验证脚本
-- `scripts/eval_bias_curve.py` — 仿真版鲁棒性曲线评估（真机版待 fork）
+- `scripts/real/test_bias_random_realhw.py` — 本文 §4.2 引用的交互式 random 验证脚本
+- `scripts/sim/eval_bias_curve.py` — 仿真版鲁棒性曲线评估（真机版待 fork）

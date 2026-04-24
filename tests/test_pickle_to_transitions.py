@@ -1,6 +1,6 @@
 """Tests for ReplayBuffer.from_pickle_transitions and helpers.
 
-Goal: verify that a pickle written by scripts/collect_demo_task_policy.py (which
+Goal: verify that a pickle written by scripts/real/collect_demo_task_policy.py (which
 uses hil-serl's transition schema) can be loaded into a ReplayBuffer that
 behaves identically to one populated by the online actor loop.
 """
@@ -235,7 +235,7 @@ class TestFromPickleTransitions:
 
 
 class TestCollectedDemoCompatibility:
-    """Round-trip through the actual scripts/collect_demo_task_policy.py helper."""
+    """Round-trip through the actual scripts/real/collect_demo_task_policy.py helper."""
 
     def test_build_transition_dict_output_is_loadable(self, tmp_path):
         import sys

@@ -25,8 +25,8 @@ obs27 布局（obs_mode="obs27"）:
   src=27, obs21 = 去 block/plate      → keep [0..17, 24..26]   (21D)
 
 用法:
-  python scripts/slice_safe_demo.py --src-dim 31 --mode obs28
-  python scripts/slice_safe_demo.py --src-dim 27 --mode obs24 --force
+  python scripts/tools/slice_safe_demo.py --src-dim 31 --mode obs28
+  python scripts/tools/slice_safe_demo.py --src-dim 27 --mode obs24 --force
 
 依赖: pyarrow, numpy（lerobot 环境自带）。
 """

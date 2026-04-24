@@ -1,6 +1,6 @@
 """Real-robot backup policy deployment via HierarchicalSupervisor.
 
-Three-state FSM (driven by frrl.rl.hierarchical_supervisor):
+Three-state FSM (driven by frrl.rl.supervisor):
   TASK     — SpaceMouse controls the arm (task policy placeholder)
   BACKUP   — Backup policy actively dodges a detected hand
   HOMING   — Returns TCP to the 6D pose recorded when TASK was interrupted,
@@ -18,10 +18,10 @@ Observation for BACKUP policy (per frame, 28D × 3 stack = 84D):
                     hand_pos is Minkowski-inflated for box-vs-box avoidance.
 
 Usage:
-    python scripts/deploy_backup_policy.py
-    python scripts/deploy_backup_policy.py --checkpoint checkpoints/backup_policy_s1_v2_newgeom_145k
-    python scripts/deploy_backup_policy.py --dry-run   # no /pose commands, test obs/inference only
-    python scripts/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"  # inject J1 bias
+    python scripts/real/deploy_backup_policy.py
+    python scripts/real/deploy_backup_policy.py --checkpoint checkpoints/backup_policy_s1_v2_newgeom_145k
+    python scripts/real/deploy_backup_policy.py --dry-run   # no /pose commands, test obs/inference only
+    python scripts/real/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"  # inject J1 bias
 """
 import argparse
 import time
@@ -39,7 +39,7 @@ import frrl.policies.sac.configuration_sac  # noqa: F401
 from frrl.configs.policies import PreTrainedConfig
 from frrl.fault_injection import BiasMonitor
 from frrl.policies.sac.modeling_sac import SACPolicy
-from frrl.rl.hierarchical_supervisor import HierarchicalSupervisor, Mode
+from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
 from frrl.vision.hand_detector import HandDetector
 
@@ -55,7 +55,9 @@ HOMING_ROT_TOL = 0.05  # rad (~2.9°)
 # Action scales — apply LOOKAHEAD multiplier to all modes to compensate for
 # impedance controller lag under "target = actual + delta" scheme.
 BACKUP_ACTION_SCALE = 0.025    # m/step at full deflection
-BACKUP_ROTATION_SCALE = 0.020
+# × LOOKAHEAD=2.0 = 0.1 rad/step，与 sim ROT_ACTION_SCALE 对齐；
+# 旋转刚度只有平动的 7.5%，阻抗跟踪滞后会把实际增量削弱到 ~0.05 rad。
+BACKUP_ROTATION_SCALE = 0.05
 TASK_ACTION_SCALE = 0.025      # same scale as backup (SpaceMouse feels responsive)
 TASK_ROTATION_SCALE = 0.040
 

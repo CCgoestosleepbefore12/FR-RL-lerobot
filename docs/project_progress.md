@@ -401,9 +401,9 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 | `frrl/rl/env_factory.py` | 环境+处理器工厂 |
 | `frrl/policies/sac/modeling_sac.py` | SAC 网络结构 |
 | `configs/train_hil_sac_base.json` | 训练配置 |
-| `scripts/train_hil_sac.sh` | 训练启动脚本 |
-| `scripts/eval_policy.py` | 单环境评估 |
-| `scripts/eval_bias_curve.py` | 偏差曲线评估 |
+| `scripts/real/train_hil_sac.sh` | 训练启动脚本 |
+| `scripts/sim/eval_policy.py` | 单环境评估 |
+| `scripts/sim/eval_bias_curve.py` | 偏差曲线评估 |
 | `docs/data_flow.md` | 完整数据流文档 |
 | `docs/fault_simulation_design.md` | 仿真设计文档 |
 
@@ -433,8 +433,8 @@ H3: RLPD + 外部定位观测 + 随机偏差训练           ✅ 已验证
 | **阶段 1** | `FrankaRealEnv` 29D 观测 + 双相机 | `joint_pos_biased(7) + joint_vel(7) + gripper(1) + tcp_biased(7) + tcp_true(7)`；`tcp_true` 为 privileged 作弊通道；双路相机 128×128 共享 encoder |
 | **阶段 2** | Keyboard reward + `go_home` | S/Enter/Space/Backspace 四键协议；`KeyboardRewardListener` 状态机；`env.go_home()` 收尾安全复位 |
 | **阶段 3** | Actor discard hook | `frrl/rl/actor_utils.py::should_discard_episode` 在 episode 结束时按 `info["discard"]` 丢整条 rollout |
-| **阶段 4** | SpaceMouse demo 采集 + pickle adapter | `scripts/collect_demo_task_policy.py` 输出 hil-serl schema pickle；`ReplayBuffer.from_pickle_transitions` 适配器（key_map + HWC→CHW + resize + /255 normalize） |
-| **阶段 5** | Offline-only pretrain | `SACConfig.offline_only_mode=True` 跳过 gRPC actor，从 pickle 加载到 `offline_replay_buffer` 跑 N 步 warmup loop 保存 checkpoint；`scripts/pretrain_task_policy.py` 薄 CLI |
+| **阶段 4** | SpaceMouse demo 采集 + pickle adapter | `scripts/real/collect_demo_task_policy.py` 输出 hil-serl schema pickle；`ReplayBuffer.from_pickle_transitions` 适配器（key_map + HWC→CHW + resize + /255 normalize） |
+| **阶段 5** | Offline-only pretrain | `SACConfig.offline_only_mode=True` 跳过 gRPC actor，从 pickle 加载到 `offline_replay_buffer` 跑 N 步 warmup loop 保存 checkpoint；`scripts/tools/pretrain_task_policy.py` 薄 CLI |
 
 ### 4-agent 代码 Review + P0/P1/P2/P3 修复集合
 
@@ -451,7 +451,7 @@ session 末 4 agent（独立 review / vs 仿真 / vs hil-serl 原仓库 / meta-r
 - `wait_for_start` 接 `shutdown_event`
 - pynput 缺失在 `required=True` 时抛错
 - Pickle 路径 `optimize_memory=False`（避免最后一条 next_state bug）
-- dataset_stats 合理默认值 + `scripts/compute_dataset_stats.py` 工具
+- dataset_stats 合理默认值 + `scripts/tools/compute_dataset_stats.py` 工具
 
 **P2/P3**：reward `int→float`、`close()` 幂等、去重双重 deepcopy、RealSense reader sleep、`wandb.finish()`、rewards `__init__` re-export、resize_map 长度校验。
 
@@ -469,7 +469,7 @@ session 末 4 agent（独立 review / vs 仿真 / vs hil-serl 原仓库 / meta-r
 ### 下一步（阶段 6 待做）
 
 1. **ArUco 4 角 workspace 校准**：`scripts/define_workspace_crop.py`，替换 `workspace_roi_crop_placeholder`
-2. **50 条真实 demo + 真 dataset_stats**：用 `scripts/compute_dataset_stats.py` 算完填回 config
+2. **50 条真实 demo + 真 dataset_stats**：用 `scripts/tools/compute_dataset_stats.py` 算完填回 config
 3. **5000 步真 pretrain + wandb**：观察 critic_loss 收敛
 4. **Online HIL 训练接通**：`InterventionWrapper` 包 FrankaRealEnv + SpaceMouse override；actor resume from pretrain checkpoint
 5. **GripperPenaltyWrapper port**（P1 剩项）：对齐 sim 的 `-0.05` 夹爪频繁切换惩罚

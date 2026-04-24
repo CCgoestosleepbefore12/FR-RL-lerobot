@@ -1,4 +1,4 @@
-"""Tests for pure helpers in scripts/collect_demo_task_policy.py.
+"""Tests for pure helpers in scripts/real/collect_demo_task_policy.py.
 
 Heavy I/O (SpaceMouse HID, Franka HTTP, pickle writes) is not exercised —
 only the stateless conversion functions.

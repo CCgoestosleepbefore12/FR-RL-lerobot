@@ -1,7 +1,7 @@
 """Backup Env TRACKING-only 改造冒烟测试。
 
 Usage:
-    python scripts/test_backup_env_tracking.py
+    pytest tests/test_backup_env_tracking.py
 """
 import sys
 import numpy as np

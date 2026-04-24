@@ -589,7 +589,7 @@ python -m frrl.rl.env_factory \
     --mode record
 
 # 步骤2：从 demo 数据计算 dataset_stats
-python scripts/compute_dataset_stats.py \
+python scripts/tools/compute_dataset_stats.py \
     --repo_id frrl/franka_pick_place_demo
 
 # 步骤3：用 dataset_stats 更新训练配置
@@ -829,7 +829,7 @@ class FrankaRealSafeEnv(FrankaRealEnv):
         return super().step(full_action)
 ```
 
-**对应仿真侧模块**：`frrl/rl/hierarchical_supervisor.py`（待建），真机直接复用该 supervisor。
+**对应仿真侧模块**：`frrl/rl/supervisor/hierarchical.py`（待建），真机直接复用该 supervisor。
 
 ### 5.5 新增文件
 
@@ -850,8 +850,8 @@ class FrankaRealSafeEnv(FrankaRealEnv):
 | `frrl/envs/__init__.py` | S1/S2/NoDR/BiasJ1 共 6 个 gym 注册 |
 | `configs/train_hil_sac_backup_s1.json` | S1 训练配置（28D 输入） |
 | `configs/train_hil_sac_backup_s2.json` | S2 训练配置（38D 输入） |
-| `scripts/eval_backup_policy.py` | 评估脚本：运动模式统计 + 奖励统计 |
-| `scripts/check_backup_env.py` | 可视化调试脚本 |
+| `scripts/sim/eval_backup_policy.py` | 评估脚本：运动模式统计 + 奖励统计 |
+| `scripts/sim/check_backup_env.py` | 可视化调试脚本 |
 
 ### 5.7 部署步骤
 

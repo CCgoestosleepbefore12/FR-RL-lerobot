@@ -14,7 +14,7 @@ with demos only; the difference is that we reuse the full
 what the online phase will pick up.
 
 Usage:
-    python scripts/pretrain_task_policy.py \\
+    python scripts/tools/pretrain_task_policy.py \\
         --config configs/train_task_policy_franka.json \\
         --demo-paths "demos/task_policy/*.pkl" \\
         --steps 5000 \\

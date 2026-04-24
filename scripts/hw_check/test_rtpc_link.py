@@ -1,13 +1,13 @@
 """Minimal link test: GPU station <-> RT PC Flask server.
 
 Usage:
-    python scripts/test_rtpc_link.py                 # getstate only (safe)
-    python scripts/test_rtpc_link.py --dry-pose      # build pose payload, print it
-    python scripts/test_rtpc_link.py --send-pose     # POST /pose (no motion: target=current)
-    python scripts/test_rtpc_link.py --move-down     # TCP -10cm z, then back to start
-    python scripts/test_rtpc_link.py --gripper       # open -> close -> open (safe)
-    python scripts/test_rtpc_link.py --reset         # /jointreset — WILL MOVE TO JOINT HOME
-    python scripts/test_rtpc_link.py --teleop        # SpaceMouse -> /pose, 10 Hz loop
+    python scripts/hw_check/test_rtpc_link.py                 # getstate only (safe)
+    python scripts/hw_check/test_rtpc_link.py --dry-pose      # build pose payload, print it
+    python scripts/hw_check/test_rtpc_link.py --send-pose     # POST /pose (no motion: target=current)
+    python scripts/hw_check/test_rtpc_link.py --move-down     # TCP -10cm z, then back to start
+    python scripts/hw_check/test_rtpc_link.py --gripper       # open -> close -> open (safe)
+    python scripts/hw_check/test_rtpc_link.py --reset         # /jointreset — WILL MOVE TO JOINT HOME
+    python scripts/hw_check/test_rtpc_link.py --teleop        # SpaceMouse -> /pose, 10 Hz loop
 """
 import argparse
 import json

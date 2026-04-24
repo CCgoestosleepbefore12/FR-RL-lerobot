@@ -25,9 +25,9 @@ Operator protocol during collection:
 Output: demos/task_policy/task_policy_demos_{N}_{complete|aborted}_{timestamp}.pkl
 
 Usage:
-    python scripts/collect_demo_task_policy.py                 # default 50 successes, bias on
-    python scripts/collect_demo_task_policy.py -n 20           # 20 successes
-    python scripts/collect_demo_task_policy.py --no-bias       # no bias (clean demos)
+    python scripts/real/collect_demo_task_policy.py                 # default 50 successes, bias on
+    python scripts/real/collect_demo_task_policy.py -n 20           # 20 successes
+    python scripts/real/collect_demo_task_policy.py --no-bias       # no bias (clean demos)
 """
 
 import argparse

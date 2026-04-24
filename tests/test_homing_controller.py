@@ -1,12 +1,12 @@
 """HomingController 6D 单测。
 
 Usage:
-    python scripts/test_homing_controller.py
+    pytest tests/test_homing_controller.py
 """
 import sys
 import numpy as np
 
-from frrl.rl.homing_controller import (
+from frrl.rl.supervisor import (
     HomingController,
     quat_conjugate,
     quat_multiply,

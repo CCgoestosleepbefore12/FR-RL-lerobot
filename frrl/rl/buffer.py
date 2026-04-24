@@ -538,7 +538,7 @@ class ReplayBuffer:
         """Load HIL-SERL-format demo pickles into a ReplayBuffer.
 
         Expected pickle layout (matches `rail-berkeley/hil-serl`
-        `examples/record_demos.py` and our own `scripts/collect_demo_task_policy.py`):
+        `examples/record_demos.py` and our own `scripts/real/collect_demo_task_policy.py`):
 
             [
               {

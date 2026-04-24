@@ -7,9 +7,9 @@ Shows:
   - ArUco-FK error: calibration sanity check (when no bias is injected)
 
 Usage:
-    python scripts/test_tcp_tracker.py
-    python scripts/test_tcp_tracker.py --marker-size 0.07
-    python scripts/test_tcp_tracker.py --no-noise   # disable 5mm noise for clean test
+    python scripts/hw_check/test_tcp_tracker.py
+    python scripts/hw_check/test_tcp_tracker.py --marker-size 0.07
+    python scripts/hw_check/test_tcp_tracker.py --no-noise   # disable 5mm noise for clean test
 """
 import argparse
 import time
