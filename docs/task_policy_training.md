@@ -13,9 +13,10 @@
 3. [Keyboard Reward 协议](#keyboard-reward-协议)
 4. [Demo 采集](#demo-采集)
 5. [Offline Pretrain](#offline-pretrain)
-6. [Online HIL 训练（阶段 6，待完成）](#online-hil-训练)
+6. [Online HIL 训练](#online-hil-训练)
 7. [配置文件参考](#配置文件参考)
 8. [常见问题](#常见问题)
+9. [相关文件](#相关文件)
 
 ---
 
@@ -49,11 +50,11 @@
 ### Action (7D)
 
 `[dx, dy, dz, rx, ry, rz, gripper]`，归一化到 `[-1, 1]`，在 env 内通过：
-- `action_scale[0] = 0.04` m/step（xyz delta）
+- `action_scale[0] = 0.03` m/step（xyz delta；P0-3 后从 0.04 调整）
 - `action_scale[1] = 0.2` rad/step（rotvec）
 - `action_scale[2] = 1.0`（gripper 二值阈值）
 
-**安全网**：`max_cart_speed = 0.30 m/s`，超过则自动裁剪 xyz 步长到 `max_cart_speed / hz = 0.03m/step`。保护硬件，防止 policy 输出极端 action 时末端飞出。
+**安全网**：`max_cart_speed = 0.30 m/s`。`action_scale[0] × hz = 0.03 × 10 = 0.30 m/s`，恰好等于 cap，保证极限动作不会被 `clip_safety_box` 非线性压缩，policy 学到的动作幅度与执行幅度一致。**调大 action_scale[0] 必须同步调 max_cart_speed**，否则会触发 sim2real 行为漂移。
 
 ### Bias 注入
 
@@ -158,6 +159,30 @@ python scripts/tools/inspect_demo_pickle.py data/task_policy_demos/*.pkl
 2. 用 `ReplayBuffer.from_pickle_transitions` 从 pickle 加载 demos 到 `offline_replay_buffer`
 3. warmup loop 跑 `offline_pretrain_steps`（默认 5000）
 4. 保存 checkpoint + wandb.finish() + return，不进 online 主循环
+
+**HIL-SERL 混合模式（S6 方案 A 放开）**：`offline_only_mode=False + demo_pickle_paths=[...]` 时：
+1. Learner 启动仍起 gRPC actor server（走正常 HIL 通路）
+2. 同样用 `from_pickle_transitions` 把 demos 灌进 `offline_replay_buffer`
+3. `offline_warmup_steps` 做 warmup（默认 500；resume 时跳过，pretrain 已经做过）
+4. 进 online 主循环，RLPD 50/50 mix offline buffer + online buffer
+
+这条路径支撑 `train_hil_sac_task_real.json`：先用 pretrain ckpt `--resume`，再带着 demos 进 online，避免冷启动。如果 `demo_pickle_paths=[]` 且 `dataset=None` 但 `offline_warmup_steps>0`，learner 直接 ValueError（避免静默退化成冷启动）。
+
+### Phase 2：真机 critic-only warmup（actor 冻结）
+
+从 pretrain ckpt 恢复后进真机，actor 已经是预训练过的 policy，但 critic 面对的是真机新分布。直接放开 actor + critic 联合更新会让两者同时被稀疏 online 数据冲击。解法：**前 N 真机 step 内冻结 actor/temperature，只训 critic**（50/50 mix 让 critic 渐进适配真机分布），N 步后解冻。
+
+`SACConfig.critic_only_online_steps`（默认 0 = 关闭）控制这个窗口。配合 `online_step_before_learning`（buffer 至少要够一个 online batch 才能开训）使用：
+
+| 真机交互步 | 阶段 | Critic | Actor/Temperature |
+|-----------|-----|--------|---|
+| 0 ~ `online_step_before_learning` | 冷启动 | ❌ | ❌ |
+| `online_step_before_learning` ~ `critic_only_online_steps` | Phase 2 | ✅ 50/50 mix | ❌ 冻结 |
+| `critic_only_online_steps` 之后 | Phase 3 | ✅ | ✅ |
+
+`train_hil_sac_task_real.json` 的默认配置：`online_step_before_learning=500, critic_only_online_steps=2000`，即真机 500~1999 步 critic-only（约 2.5 分钟 @ 10 FPS），2000 步后 actor 解冻。这个窗口在 P0-6 真机风险审查后从 100/500 上调，原因：(a) 等 online buffer 够 1 个独立 batch 再开训，避免 batch shrink 把同一 transition 反复梯度踩；(b) 真机 6+ episode 让 critic 在 RLPD 50/50 下充分适配 online 分布后再解冻 actor。
+
+关键契约：`critic_only_online_steps > online_step_before_learning`，否则 Phase 2 窗口为空。
 
 ### 运行
 

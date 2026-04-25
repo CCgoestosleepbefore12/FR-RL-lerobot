@@ -219,14 +219,14 @@ Checkpoints：
 | batch_size | 256 |
 | utd_ratio | 2（sim backup S1/S2 单独用 4） |
 | discount | 0.97（backup 用 1.0） |
-| temperature_init | 0.01 |
+| temperature_init | 0.01（sim） / 0.1（real，P0-2 防坍塌） |
 | critic_lr / actor_lr / temp_lr | 3e-4 |
 | critic_target_update_weight | 0.005 |
 | num_critics | 2 |
 | num_discrete_actions | 3（夹爪：开/关/保持） |
 | online_buffer_capacity | 100,000 |
 | offline_buffer_capacity | 100,000 |
-| online_step_before_learning | 100 |
+| online_step_before_learning | 100（sim） / 500（real，P0-6） |
 | warmup_steps | 500（真机 pretrain 目标 5000） |
 | save_freq | 2,000 |
 | vision_encoder | frozen ResNet10（shared） |
@@ -242,7 +242,7 @@ Checkpoints：
 | substeps | 50 | — |
 | max_episode_steps | 200（task）/ 10（backup S1）/ 20（backup S1 V2）| 200 |
 | action 空间 | 7D（`[dx,dy,dz,rx,ry,rz,gripper]`，历史 4D 已升级）| 7D |
-| EE step size | 0.025 m/step（task）/ 0.03 m（backup） | `action_scale=0.04`，`max_cart_speed=0.30` |
+| EE step size | 0.025 m/step（task）/ 0.03 m（backup） | `action_scale=0.03`，`max_cart_speed=0.30`（P0-3 后对齐：0.03×10Hz=0.30 m/s）|
 | 旋转 scale | `ROT_ACTION_SCALE=0.1` | `BACKUP_ROTATION_SCALE=0.05 × LOOKAHEAD=2.0 = 0.10` |
 | 偏差目标关节 | J5（PickCube 历史） / J1（PickPlace + Backup） | J1 |
 | 偏差范围 | [0, 0.25] rad（J5） / [-0.15, 0.15] rad（J1） | [-0.15, 0.15] rad |
@@ -327,7 +327,8 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 - [ ] 真机端到端首跑（硬件到位后跑 `bash scripts/real/train_hil_sac.sh task_real {learner,actor}` 联调）
 - [ ] 真机训练首跑（`random_uniform(-0.15, 0.15)` J1 bias）
 - [ ] 真机版 `eval_bias_curve_realhw.py`
-- [x] GripperPenaltyWrapper 激活（`train_hil_sac_task_real.json` 里 `gripper_penalty=-0.05`，`GripperPenaltyProcessorStep` 早已接线）
+- [x] Gripper penalty 激活（`train_hil_sac_task_real.json` 里 `gripper_penalty=-0.05`，新增 `FrankaGripperPenaltyProcessorStep` 对齐 sim 语义 action∈[-1,1]/state∈[0,1]，阈值 ±0.5/0.1/0.9；`step_env_and_process_transition` 把 `env.get_raw_joint_positions()` 塞进 `complementary_data["raw_joint_positions"]` 供 processor 读）
+- [x] Learner offline_warmup/pretrain 防呆：`demo_pickle_paths=[]` + `dataset=null` + 非 resume 时直接 ValueError（避免 warmup 静默跳过）
 
 ### [sim] 优先级高
 - [ ] 加 `bias_signal` 显式偏差信号 + UTD=4 重训
@@ -433,7 +434,7 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 - **tcp_true 作弊通道**：真机无噪声（和 sim 的 `noisy_real_tcp` σ=5mm 不同），简化训练信号；future 消融可验证"无作弊"版本
 - **双相机 128²**：来自 `modeling_sac.py::586` 硬编码同尺寸约束；future refactor 支持异构
 - **shared_encoder=true**：frozen ResNet10 无梯度，三副本浪费（15.6M → 8.47M 总参）
-- **action_scale 0.04 保留**：和 demo 采集 scale 一致避免分布漂移；`max_cart_speed=0.30` 做硬件 safety net
+- **action_scale 0.03（P0-3 后调整）**：原 0.04 × 10Hz = 0.40 m/s 会被 `max_cart_speed=0.30` 非线性压缩 0.75x，policy 学到的动作幅度与执行幅度不一致。改 0.03 后正好 0.30 m/s 触顶不削减；现阶段尚无 0.04 demo，安全切换
 
 ### 阶段 6 交付（2026-04-25 软件侧完结）
 
@@ -444,6 +445,8 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 | SpaceMouse 干预检测（迟滞） | ✅ 软件 | `SpaceMouseTeleop` enter=0.05 / exit=0.02 / persist=3 |
 | Task Policy 真机 HIL config + shell | ✅ 软件 | `train_hil_sac_task_real.json` + `train_hil_sac.sh task_real` variant |
 | GripperPenalty 激活 | ✅ 软件 | `gripper_penalty=-0.05` 对齐 sim |
+| Phase 2 critic-only warmup（actor 冻结） | ✅ 软件 | `SACConfig.critic_only_online_steps` + `learner._should_freeze_actor` / `_should_run_actor_optimization`，配合 `__post_init__._validate_phase2()` 锁契约 |
+| Resume 白名单超参覆盖 | ✅ 软件 | `learner.RESUMABLE_POLICY_OVERRIDES` + 覆盖后 `_validate_phase2()` 重校验 |
 | ArUco 4 角 workspace 校准**执行** | ⏳ 硬件 | 跑脚本 → 填回 `real_config.py::image_crop["front"]` |
 | `abs_pose_limit` 手动引导采样 | ⏳ 硬件 | 需要真机引导 |
 | 50 条真机 demo 采集 | ⏳ 硬件 | `python scripts/real/collect_demo_task_policy.py -n 50` |
@@ -451,3 +454,16 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 | 5000 步真 pretrain + wandb | ⏳ 硬件 | demo 就位后 learner 启动即自动执行 |
 | 真机端到端首跑 | ⏳ 硬件 | `task_real learner` + `task_real actor` 双终端 |
 | `eval_bias_curve_realhw.py` | ⏳ 硬件 | 训完 ckpt 后再搭，现在搭无价值 |
+
+### 阶段 6 后续 P0 风险审查（2026-04-25 round 4 修复）
+
+经 3-reviewer + meta consolidator 审查，定位 6 个真机 blocker，已全部修复：
+
+| ID | 议题 | 修复 |
+|---|---|---|
+| P0-1 | `demo_resize_images` 缺 wrist key 导致两路相机 cat shape 静默不一致 | JSON 加 `observation.images.wrist`；`get_cached_image_features` 加 spatial shape assert |
+| P0-2 | `temperature_init=0.01` 起点过低 + pretrain 热身 α 漂移导致后续坍塌 | `temperature_init=0.1`；新增 `freeze_temperature_in_pretrain=True` gate；`target_entropy=-3.5`；`discrete_penalty` 进 continuous critic td_target |
+| P0-3 | `action_scale[0]=0.04` × 10Hz = 0.40 m/s 被 `max_cart_speed=0.30` 非线性压缩 | `action_scale[0]→0.03`，policy 学到/执行幅度一致 |
+| P0-4 | frozen ResNet10 BN 在 train mode 下 running_mean 仍漂移；shared encoder 中 state/env path 未对 actor detach | `freeze_image_encoder` 加 `.eval()`；`SACPolicy.train` override 强制 image encoder 永远 eval；`SACObservationEncoder.forward(detach=...)` 对 state/env 也加 detach 分支 |
+| P0-5 | 真机 HTTP 单次失败直接 raise 中断 episode；reset 直线插值有撞撞风险 | 新增 `_http_post` 指数退避重试（pose/getstate/clearerr 等幂等端点）；`jointreset` 单次硬失败；`_go_to_reset` 加 z-lift 抬升避免工件下卡住（**round 4：升级为 lift→horizontal transit→descend 三段路径**）|
+| P0-6 | NaN transition silent skip 让 critic 梯度污染；online buffer 起步过早导致 batch shrink | `check_nan_in_transition` 改 `if NaN: continue`（外层补 `optimization_step += 1` 避免 save_freq 卡死）；`online_step_before_learning=500`、`critic_only_online_steps=2000` |
