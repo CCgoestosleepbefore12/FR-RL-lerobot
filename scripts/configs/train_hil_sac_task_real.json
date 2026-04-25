@@ -21,6 +21,7 @@
         "franka_config": {
             "reward_backend": "keyboard",
             "enable_bias_monitor": true,
+            "display_image": false,
             "encoder_bias_config": {
                 "enable": true,
                 "error_probability": 1.0,
@@ -67,6 +68,7 @@
         "online_buffer_capacity": 50000,
         "offline_buffer_capacity": 50000,
         "online_step_before_learning": 500,
+        "critic_only_online_steps": 2000,
         "offline_warmup_steps": 500,
         "offline_only_mode": false,
         "offline_pretrain_steps": 5000,
@@ -81,7 +83,8 @@
             "observation.images.wrist"
         ],
         "demo_resize_images": {
-            "observation.images.front": [128, 128]
+            "observation.images.front": [128, 128],
+            "observation.images.wrist": [128, 128]
         },
         "demo_normalize_to_unit": [
             "observation.images.front",
@@ -100,7 +103,8 @@
             }
         },
         "discount": 0.97,
-        "temperature_init": 0.01,
+        "temperature_init": 0.1,
+        "target_entropy": -3.5,
         "num_critics": 2,
         "critic_lr": 3e-4,
         "actor_lr": 3e-4,

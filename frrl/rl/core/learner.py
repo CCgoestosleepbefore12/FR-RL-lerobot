@@ -351,18 +351,35 @@ def add_actor_information_and_train(
     batch_size = cfg.batch_size
     offline_replay_buffer = None
 
-    # Initialize offline buffer when either a dataset is configured OR we're in
-    # pretrain-only mode with demo pickles (the latter doesn't need a dataset).
-    needs_offline_buffer = cfg.dataset is not None or (
-        cfg.policy.offline_only_mode and cfg.policy.demo_pickle_paths
+    # Initialize offline buffer whenever there's an offline data source:
+    #   - cfg.dataset 非空 → 走 LeRobotDataset 路径
+    #   - cfg.policy.demo_pickle_paths 非空 → 走 pickle adapter 路径（两种模式共用）
+    # 注意 demo_pickle_paths 对两种模式都生效：
+    #   * offline_only_mode=True  → 跑 pretrain 后退出
+    #   * offline_only_mode=False → warmup 后进入 online 主循环，RLPD 50/50 mix
+    needs_offline_buffer = cfg.dataset is not None or bool(cfg.policy.demo_pickle_paths)
+    # 防呆：warmup 需要跑但没有数据源时直接报错，避免静默跳过 warmup 浪费真机 run。
+    # 有效 warmup_steps 取决于 offline_only_mode：True→pretrain_steps，False→warmup_steps。
+    effective_warmup_steps = (
+        cfg.policy.offline_pretrain_steps
+        if cfg.policy.offline_only_mode
+        else cfg.policy.offline_warmup_steps
     )
+    if effective_warmup_steps > 0 and not needs_offline_buffer and not cfg.resume:
+        raise ValueError(
+            f"warmup_steps={effective_warmup_steps}>0 but no offline source: "
+            f"offline_only_mode={cfg.policy.offline_only_mode}, "
+            f"demo_pickle_paths={cfg.policy.demo_pickle_paths}, dataset={cfg.dataset}. "
+            "Set cfg.dataset or fill cfg.policy.demo_pickle_paths."
+        )
     if needs_offline_buffer:
         offline_replay_buffer = initialize_offline_replay_buffer(
             cfg=cfg,
             device=device,
             storage_device=storage_device,
         )
-        batch_size: int = batch_size // 2  # We will sample from both replay buffer
+        # RLPD 50/50 混合：online/offline 各采一半，batch 保持不变。
+        batch_size: int = batch_size // 2
 
     logging.info("Starting learner thread")
     interaction_message = None
@@ -433,10 +450,15 @@ def add_actor_information_and_train(
                 torch.nn.utils.clip_grad_norm_(policy.actor.parameters(), max_norm=clip_grad_norm_value)
                 optimizers["actor"].step()
 
-                loss_temp = policy.compute_loss_temperature(observations, observation_features)
-                optimizers["temperature"].zero_grad()
-                loss_temp.backward()
-                optimizers["temperature"].step()
+                # P0-2: pretrain 期默认冻 log_alpha。demo 上 actor 很快高似然，
+                # log_probs+target_entropy 大概率 > 0 → log_alpha 被推向 -∞，
+                # α 坍塌到 1e-3 以下后 entropy bonus 消失、真机零探索。
+                if not policy.config.freeze_temperature_in_pretrain:
+                    loss_temp = policy.compute_loss_temperature(observations, observation_features)
+                    optimizers["temperature"].zero_grad()
+                    loss_temp.backward()
+                    optimizers["temperature"].step()
+                    policy.update_temperature()
 
             policy.update_target_networks()
             optimization_step += 1
@@ -579,7 +601,12 @@ def add_actor_information_and_train(
             observations = batch["state"]
             next_observations = batch["next_state"]
             done = batch["done"]
-            check_nan_in_transition(observations=observations, actions=actions, next_state=next_observations)
+            # P0-6: NaN 不能 silent skip。一条污染 transition 的梯度会把整个 critic
+            # backward 出 NaN 权重，后面所有 update 都成 NaN。检测到立刻跳过这条 batch。
+            if check_nan_in_transition(
+                observations=observations, actions=actions, next_state=next_observations
+            ):
+                continue
 
             observation_features, next_observation_features = get_observation_features(
                 policy=policy, observations=observations, next_observations=next_observations
@@ -640,7 +667,17 @@ def add_actor_information_and_train(
         next_observations = batch["next_state"]
         done = batch["done"]
 
-        check_nan_in_transition(observations=observations, actions=actions, next_state=next_observations)
+        # P0-6: 与 UTD-loop 内分支保持一致语义；最后一次 update 撞 NaN 则跳过整步。
+        # 必须在 continue 前 ++step：否则连续 NaN 会让 step 卡住，save_freq 永远
+        # 触发不到，wandb 进度条也停滞，违反 fail-loud 期望。
+        if check_nan_in_transition(
+            observations=observations, actions=actions, next_state=next_observations
+        ):
+            logging.warning(
+                f"[LEARNER] NaN in transition at step {optimization_step}; skipping update."
+            )
+            optimization_step += 1
+            continue
 
         observation_features, next_observation_features = get_observation_features(
             policy=policy, observations=observations, next_observations=next_observations
@@ -693,8 +730,15 @@ def add_actor_information_and_train(
             training_infos["loss_discrete_critic"] = loss_discrete_critic.item()
             training_infos["discrete_critic_grad_norm"] = discrete_critic_grad_norm
 
-        # Actor and temperature optimization (at specified frequency)
-        if optimization_step % policy_update_freq == 0:
+        # Actor and temperature optimization (at specified frequency).
+        # Phase 2 (critic-only warmup on real env)：_should_freeze_actor 为 True
+        # 时跳过 actor/temperature 梯度更新，critic 继续训、target network 继续
+        # 同步；actor 参数保持 pretrain 出来的状态。
+        freeze_actor = _should_freeze_actor(cfg, len(replay_buffer))
+        training_infos["freeze_actor"] = int(freeze_actor)
+        if _should_run_actor_optimization(
+            cfg, len(replay_buffer), optimization_step, policy_update_freq
+        ):
             for _ in range(policy_update_freq):
                 # Actor optimization
                 actor_output = policy.forward(forward_batch, model="actor")
@@ -728,7 +772,10 @@ def add_actor_information_and_train(
                 # Update temperature
                 policy.update_temperature()
 
-        # Push policy to actors if needed
+        # Push policy to actors if needed.
+        # Phase 2 期间 actor 参数不变（被 _should_freeze_actor 冻结），但 critic
+        # target 每步都在更新；push 的 state_dict 是整个 policy，所以仍然正常发
+        # 送——actor 侧拿到的 actor 参数和上一次一致，不会影响真机采样行为。
         if time.time() - last_time_policy_pushed > policy_parameters_push_frequency:
             push_actor_policy_to_queue(parameters_queue=parameters_queue, policy=policy)
             last_time_policy_pushed = time.time()
@@ -997,6 +1044,19 @@ def make_optimizers_and_scheduler(cfg: TrainRLServerPipelineConfig, policy: nn.M
 # Training setup functions
 
 
+# Resume 时允许从新 JSON 覆盖的白名单字段。
+# 动机：checkpoint 里冻结的 Phase 2 超参常常需要在 resume 后调整（比如把 critic_only
+# 窗口从 500 调到 1000），但默认 from_pretrained 会把这些字段也覆盖回旧值。
+# 只放训练阶段相关超参，不放模型 / 网络结构，避免 resume 加载 optimizer state 时错位。
+# Phase 2 / cold-start 阈值：resume 时允许从命令行 / JSON 覆盖 ckpt 里的旧值。
+# 注意：warmup-only 字段（如 freeze_temperature_in_pretrain）不进白名单——resume
+# 路径在 learner.py 顶部就 bypass 了 warmup 分支，这类字段值不会被读到。
+RESUMABLE_POLICY_OVERRIDES = (
+    "critic_only_online_steps",
+    "online_step_before_learning",
+)
+
+
 def handle_resume_logic(cfg: TrainRLServerPipelineConfig) -> TrainRLServerPipelineConfig:
     """
     Handle the resume logic for training.
@@ -1004,6 +1064,7 @@ def handle_resume_logic(cfg: TrainRLServerPipelineConfig) -> TrainRLServerPipeli
     If resume is True:
     - Verifies that a checkpoint exists
     - Loads the checkpoint configuration
+    - Applies whitelisted overrides from the current cfg (Phase 2 knobs)
     - Logs resumption details
     - Returns the checkpoint configuration
 
@@ -1048,6 +1109,46 @@ def handle_resume_logic(cfg: TrainRLServerPipelineConfig) -> TrainRLServerPipeli
     # Load config using Draccus
     checkpoint_cfg_path = os.path.join(checkpoint_dir, PRETRAINED_MODEL_DIR, "train_config.json")
     checkpoint_cfg = TrainRLServerPipelineConfig.from_pretrained(checkpoint_cfg_path)
+
+    # 白名单覆盖：把当前命令行/JSON 里的 Phase 2 超参写回 checkpoint cfg。
+    # 只在值真的变化时打日志，避免 resume 正常路径刷屏。
+    # 旧 ckpt 可能完全没有这些字段（Phase 2 引入之前的版本），用 sentinel default
+    # 防 AttributeError，并强制落成新 cfg 提供的值。
+    _MISSING = object()
+    for field in RESUMABLE_POLICY_OVERRIDES:
+        new_val = getattr(cfg.policy, field)
+        old_val = getattr(checkpoint_cfg.policy, field, _MISSING)
+        if old_val is _MISSING or new_val != old_val:
+            shown_old = "<missing in ckpt>" if old_val is _MISSING else old_val
+            logging.info(
+                colored(
+                    f"Resume override: policy.{field} {shown_old} -> {new_val}",
+                    color="yellow",
+                    attrs=["bold"],
+                )
+            )
+            setattr(checkpoint_cfg.policy, field, new_val)
+
+    # setattr 绕过了 __post_init__，必须再跑一次 Phase 2 契约校验：防止覆盖后
+    # critic_only_online_steps <= online_step_before_learning 却没被捕获，导致
+    # Phase 2 窗口被 cold-start 阈值吃空、wandb 显示 critic_only>0 却形同未启用。
+    if hasattr(checkpoint_cfg.policy, "_validate_phase2"):
+        checkpoint_cfg.policy._validate_phase2()
+
+    # P1-5：resume 时 online buffer 内容不持久化（save_training_checkpoint 默认不存
+    # online_replay_buffer 真机数据），所以 buffer 从 0 重填。`_should_freeze_actor`
+    # 用 buffer 大小判断 Phase 2，故 resume 后会从头再走一次 critic-only warmup。
+    # 这是预期行为（重新冷启动 + Phase 2 适配），但 wandb 上看像"为什么 critic_only
+    # 又重新跑了"——明确写出避免操作者排查浪费时间。
+    logging.info(
+        colored(
+            "Resume note: online buffer 不持久化、resume 后从 0 重填。"
+            f" _should_freeze_actor 用 buffer 大小判断，"
+            f" Phase 2（critic_only_online_steps={checkpoint_cfg.policy.critic_only_online_steps}）"
+            " 会重新进入直到真机交互填满阈值。",
+            color="cyan",
+        )
+    )
 
     # Ensure resume flag is set in returned config
     checkpoint_cfg.resume = True
@@ -1160,6 +1261,37 @@ def initialize_replay_buffer(
         )
 
 
+def _should_freeze_actor(cfg: TrainRLServerPipelineConfig, replay_buffer_size: int) -> bool:
+    """HIL-SERL critic-only 阶段判断。
+
+    `critic_only_online_steps > 0` 时，online buffer 真机 transition 数还不够阈值，
+    就冻结 actor / temperature（只训 critic）。进 Phase 3 后 actor 解冻，恢复
+    正常 SAC 联合更新。0 或负数都视为关闭（SACConfig.__post_init__ 已把负数
+    规范化到 0），此处的 `n > 0` 只是兜底。
+    """
+    n = cfg.policy.critic_only_online_steps
+    return n > 0 and replay_buffer_size < n
+
+
+def _should_run_actor_optimization(
+    cfg: TrainRLServerPipelineConfig,
+    replay_buffer_size: int,
+    optimization_step: int,
+    policy_update_freq: int,
+) -> bool:
+    """主循环 actor/temperature 本步是否跑。
+
+    两件事同时满足：
+      1. 不在 Phase 2 critic-only 冻结窗口内
+      2. 到 policy_update_freq 整周期
+    抽成 helper 是为了让 freeze_actor 的守卫有一个可直接 mock 测的接口，
+    防止主循环被重构时误把 Phase 2 冻结逻辑绕过去。
+    """
+    if _should_freeze_actor(cfg, replay_buffer_size):
+        return False
+    return optimization_step % policy_update_freq == 0
+
+
 def _validate_resize_map(raw: dict) -> dict:
     """Coerce demo_resize_images list→tuple + validate every value is [H, W]."""
     out = {}
@@ -1180,10 +1312,11 @@ def initialize_offline_replay_buffer(
     """
     Initialize an offline replay buffer from a dataset or from demo pickles.
 
-    When `cfg.policy.offline_only_mode` is True and `cfg.policy.demo_pickle_paths`
-    is non-empty, the buffer is populated directly from hil-serl-format pickle
-    files (see ReplayBuffer.from_pickle_transitions). Otherwise the regular
-    LeRobotDataset path is used.
+    When `cfg.policy.demo_pickle_paths` is non-empty, the buffer is populated
+    directly from hil-serl-format pickle files (see
+    ReplayBuffer.from_pickle_transitions)。对 `offline_only_mode=True`（纯
+    pretrain）和 `False`（HIL-SERL 混合模式，warmup 后 RLPD 50/50 mix）都适用。
+    否则走常规 LeRobotDataset 路径。
 
     Args:
         cfg (TrainRLServerPipelineConfig): Training configuration
@@ -1193,10 +1326,11 @@ def initialize_offline_replay_buffer(
     Returns:
         ReplayBuffer: Initialized offline replay buffer
     """
-    # Pretrain-only path: load directly from pickle demos (no LeRobotDataset).
-    if cfg.policy.offline_only_mode and cfg.policy.demo_pickle_paths:
+    # Pickle path: 两种模式都走这里，只要 demo_pickle_paths 非空。
+    if cfg.policy.demo_pickle_paths:
+        mode = "pretrain-only" if cfg.policy.offline_only_mode else "hil-serl mixed"
         logging.info(
-            f"[LEARNER] offline_only_mode: loading demos from "
+            f"[LEARNER] {mode}: loading demos from "
             f"{len(cfg.policy.demo_pickle_paths)} pickle(s)"
         )
         state_keys = None

@@ -13,20 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def _get_franka_branch(cfg_dict):
-    """把 env_factory.make_robot_env 的 franka dict-parse 段落抠出来复现，
-    避免真正调用 FrankaRealEnv / teleop.connect。返回构造出的 FrankaRealConfig。
-    """
-    from frrl.envs.real_config import FrankaRealConfig
-    from frrl.fault_injection import EncoderBiasConfig
-
-    fc_dict = dict(cfg_dict)
-    bias_dict = fc_dict.get("encoder_bias_config")
-    if isinstance(bias_dict, dict):
-        bias_dict = dict(bias_dict)
-        if "bias_range" in bias_dict:
-            bias_dict["bias_range"] = tuple(bias_dict["bias_range"])
-        fc_dict["encoder_bias_config"] = EncoderBiasConfig(**bias_dict)
-    return FrankaRealConfig(**fc_dict)
+    """调用 env_factory 内部 helper，避免真正构造 FrankaRealEnv（会连 RT PC HTTP）。"""
+    from frrl.rl.core.env_factory import _build_franka_config_from_dict
+    return _build_franka_config_from_dict(cfg_dict)
 
 
 class TestDictParse:
@@ -82,6 +71,31 @@ class TestDictParse:
         assert set(cfg.image_crop.keys()) == set(default.image_crop.keys())
 
 
+class TestFriendlyErrors:
+    """P1 清理：解析失败时把底层 TypeError 包成 ValueError + 上下文，避免晦涩堆栈。"""
+
+    def test_unknown_top_level_field(self):
+        try:
+            _get_franka_branch({"nonexistent_field": 123})
+            raise AssertionError("should have raised")
+        except ValueError as e:
+            assert "franka_config 解析失败" in str(e)
+            assert "nonexistent_field" in str(e)
+
+    def test_unknown_bias_field(self):
+        try:
+            _get_franka_branch({
+                "encoder_bias_config": {
+                    "enable": True,
+                    "nonexistent_bias_field": 42,
+                },
+            })
+            raise AssertionError("should have raised")
+        except ValueError as e:
+            assert "encoder_bias_config 解析失败" in str(e)
+            assert "nonexistent_bias_field" in str(e)
+
+
 class TestConfigFileIntegrity:
     def test_task_real_config_parses(self):
         """scripts/configs/train_hil_sac_task_real.json 的 franka_config 段落可解析。"""
@@ -117,6 +131,19 @@ class TestConfigFileIntegrity:
         assert policy["offline_pretrain_steps"] == 5000
         assert policy["offline_warmup_steps"] == 500
         assert policy["online_steps"] == 50000
+        # Phase 2 配置（真机风险审查 P0-6 后调整）：
+        #   online_step_before_learning=500：等 online buffer 够 1 个独立 batch
+        #     再开训，避免 batch shrink 把同一 transition 反复梯度踩。
+        #   critic_only_online_steps=2000：真机 ~3.5min / 6+ episode，让 critic
+        #     在 RLPD 50/50 下充分适配 online 分布后再解冻 actor。
+        # 必须 critic_only > online_before（SACConfig._validate_phase2 校验）。
         assert policy["online_step_before_learning"] == 500
+        assert policy["critic_only_online_steps"] == 2000
         # gripper penalty 对齐 sim 的 -0.05（S6 review 决定激活）
         assert cfg["env"]["processor"]["gripper"]["gripper_penalty"] == -0.05
+        # P0-2 真机风险审查：α 防坍塌 + 探索温度抬升
+        assert policy["temperature_init"] == 0.1
+        assert policy["target_entropy"] == -3.5
+        # P0-1: 两路相机都必须配 demo_resize 防 cat shape 静默不一致
+        assert "observation.images.front" in policy["demo_resize_images"]
+        assert "observation.images.wrist" in policy["demo_resize_images"]

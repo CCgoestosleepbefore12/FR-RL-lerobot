@@ -75,6 +75,20 @@ class SACPolicy(
         """Reset the policy"""
         pass
 
+    def train(self, mode: bool = True):
+        """Override train() so frozen image encoders stay in eval mode.
+
+        P0-4: 默认 nn.Module.train(True) 会把所有子 module 切到 train，
+        让 BN running stats 漂移。这里在 super().train() 后强制把 frozen
+        image encoder 拉回 eval。actor 与 critic 各持一个 encoder（shared 或独立）。
+        """
+        super().train(mode)
+        if self.config.freeze_vision_encoder:
+            for enc in (self.encoder_critic, self.encoder_actor):
+                if enc is not None and getattr(enc, "image_encoder", None) is not None:
+                    enc.image_encoder.eval()
+        return self
+
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
         """Predict a chunk of actions given environment observations."""
@@ -177,6 +191,7 @@ class SACPolicy(
                 done=done,
                 observation_features=observation_features,
                 next_observation_features=next_observation_features,
+                complementary_info=batch.get("complementary_info"),
             )
 
             return {"loss_critic": loss_critic}
@@ -251,7 +266,18 @@ class SACPolicy(
         done,
         observation_features: Tensor | None = None,
         next_observation_features: Tensor | None = None,
+        complementary_info: dict[str, Tensor] | None = None,
     ) -> Tensor:
+        # P0-2: 当 num_discrete_actions=None（纯连续策略），discrete_penalty 不会被
+        # discrete critic 消费。这里把它加进 reward，保证 gripper 不当操作的负反馈
+        # 经由 continuous critic 的 td_target 传到 actor。
+        if (
+            self.config.num_discrete_actions is None
+            and complementary_info is not None
+            and complementary_info.get("discrete_penalty") is not None
+        ):
+            rewards = rewards + complementary_info["discrete_penalty"]
+
         with torch.no_grad():
             next_action_preds, next_log_probs, _ = self.actor(next_observations, next_observation_features)
 
@@ -549,10 +575,16 @@ class SACObservationEncoder(nn.Module):
             if cache is None:
                 cache = self.get_cached_image_features(obs)
             parts.append(self._encode_images(cache, detach))
+        # P0-4: shared encoder + actor 路径下，state/env_encoder 也必须 detach。
+        # 否则 actor.backward 会把梯度回传到 state/env_encoder，与 critic.backward
+        # 在同一参数上互相拉扯（SAC 假设 encoder 只由 critic 更新），导致 actor/critic
+        # loss 互震荡、log_alpha 疯涨。
         if self.has_env:
-            parts.append(self.env_encoder(obs[OBS_ENV_STATE]))
+            x = self.env_encoder(obs[OBS_ENV_STATE])
+            parts.append(x.detach() if detach else x)
         if self.has_state:
-            parts.append(self.state_encoder(obs[OBS_STATE]))
+            x = self.state_encoder(obs[OBS_STATE])
+            parts.append(x.detach() if detach else x)
         if parts:
             return torch.cat(parts, dim=-1)
 
@@ -583,6 +615,12 @@ class SACObservationEncoder(nn.Module):
         Returns:
             Dictionary mapping image keys to their corresponding encoded features
         """
+        # P0-1: 防 demo_resize_images 漏配导致 wrist 与 front spatial 不一致 → torch.cat 静默崩。
+        shapes = {k: tuple(obs[k].shape) for k in self.image_keys}
+        first = next(iter(shapes.values()))
+        assert all(s[1:] == first[1:] for s in shapes.values()), (
+            f"image_keys spatial mismatch: {shapes}. 检查 demo_resize_images 是否覆盖所有相机."
+        )
         batched = torch.cat([obs[k] for k in self.image_keys], dim=0)
         out = self.image_encoder(batched)
         chunks = torch.chunk(out, len(self.image_keys), dim=0)
@@ -923,9 +961,16 @@ class DefaultImageEncoder(nn.Module):
 
 
 def freeze_image_encoder(image_encoder: nn.Module):
-    """Freeze all parameters in the encoder"""
+    """Freeze all parameters AND switch encoder to eval mode.
+
+    P0-4: 仅设 requires_grad=False 不够。policy.train() 会把整个 module 切到
+    train 模式，BatchNorm 在每次 forward 时仍会更新 running_mean/var，导致
+    frozen weight + 漂移 stats 的不一致：cached image features 与下一步 forward
+    出来的特征慢慢偏离，critic loss 出周期性 spike。
+    """
     for param in image_encoder.parameters():
         param.requires_grad = False
+    image_encoder.eval()
 
 
 class PretrainedImageEncoder(nn.Module):

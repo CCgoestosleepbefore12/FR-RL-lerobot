@@ -147,6 +147,12 @@ class SACConfig(PreTrainedConfig):
     async_prefetch: bool = False
     # Number of steps before learning starts
     online_step_before_learning: int = 100
+    # HIL-SERL offline→online 过渡：进 online 主循环后，在真机 interaction step
+    # 数 < critic_only_online_steps 期间，只训 critic，冻结 actor + temperature。
+    # 目的：pretrain 过的 policy 先采数据，让 critic 适配真机分布，等 critic
+    # 稳定后再解冻 actor，避免冷启动时 critic/actor 同时被稀疏 online 数据冲击。
+    # 设 0 关闭（等价于一进主循环 actor+critic 同步更新的原行为）。
+    critic_only_online_steps: int = 0
     # Offline-demo warmup: number of gradient steps on offline buffer before
     # switching to online interaction. Set to 0 to disable warmup.
     offline_warmup_steps: int = 500
@@ -159,8 +165,12 @@ class SACConfig(PreTrainedConfig):
     # Number of gradient steps to run in offline_only_mode. Ignored unless
     # offline_only_mode == True.
     offline_pretrain_steps: int = 5000
-    # Pickle paths for demo transitions (hil-serl schema). Only used when
-    # offline_only_mode == True; populates offline_replay_buffer at startup.
+    # Pickle paths for demo transitions (hil-serl schema). 非空时会在 learner
+    # 启动时由 `initialize_offline_replay_buffer` 加载成 offline_replay_buffer。
+    # 对两种模式都适用：
+    #   * offline_only_mode=True  → pretrain-only，跑完 offline_pretrain_steps 退出
+    #   * offline_only_mode=False → HIL-SERL 混合模式，先 offline_warmup_steps
+    #     warmup，再进 online 主循环，RLPD 50/50 mix offline/online buffer
     demo_pickle_paths: list[str] = field(default_factory=list)
     # Pickle → buffer state-key rename map. Used by from_pickle_transitions to
     # turn collect-time schema (e.g. "pixels.front", "agent_pos") into the
@@ -209,6 +219,10 @@ class SACConfig(PreTrainedConfig):
     target_entropy: float | None = None
     # Whether to use backup entropy for the SAC algorithm
     use_backup_entropy: bool = True
+    # P0-2: pretrain 阶段冻结 log_alpha，防止 demo 高似然把 α 拉到 1e-3 以下导致
+    # entropy bonus 消失、policy 在真机零探索。只在 offline warmup/pretrain 期间冻，
+    # 进入 online phase 后正常学。
+    freeze_temperature_in_pretrain: bool = True
     # Gradient clipping norm for the SAC algorithm
     grad_clip_norm: float = 40.0
 
@@ -235,7 +249,32 @@ class SACConfig(PreTrainedConfig):
 
     def __post_init__(self):
         super().__post_init__()
-        # Any validation specific to SAC configuration
+        # Phase 2 契约：critic_only_online_steps 允许负数但语义等同 0（关闭），
+        # 这里规范化一次避免下游每个使用点都防御判断。
+        if self.critic_only_online_steps < 0:
+            self.critic_only_online_steps = 0
+        self._validate_phase2()
+
+    def _validate_phase2(self) -> None:
+        """Phase 2 critic-only warmup 窗口合法性校验。
+
+        抽出成独立方法是为了让 resume 路径（handle_resume_logic 白名单 setattr
+        覆盖后）也能复用同一套校验，避免 setattr 绕过 __post_init__ 导致契约
+        drift（"前端显示 Phase 2，实际窗口被 cold-start 吃光"）。
+        """
+        # online_step_before_learning 是 cold-start 冷启动阈值（buffer 不够就不训）；
+        # critic_only_online_steps 是 Phase 2 窗口结束点。要 Phase 2 真正生效，
+        # 必须 critic_only_online_steps > online_step_before_learning，否则 Phase 2
+        # 窗口被 cold-start 完全吃掉，actor 一解冻就立刻被允许训——等于没启用。
+        if (
+            self.critic_only_online_steps > 0
+            and self.critic_only_online_steps <= self.online_step_before_learning
+        ):
+            raise ValueError(
+                f"critic_only_online_steps ({self.critic_only_online_steps}) must be > "
+                f"online_step_before_learning ({self.online_step_before_learning}) "
+                "to enable Phase 2 critic-only warmup on real env."
+            )
 
     def get_optimizer_preset(self) -> MultiAdamConfig:
         return MultiAdamConfig(
