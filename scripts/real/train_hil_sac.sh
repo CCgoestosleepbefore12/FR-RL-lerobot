@@ -124,7 +124,8 @@ case "$VARIANT" in
     task_real)
         CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_task_real.json"
         echo "=== Task Policy 真机 HIL 训练: Franka + SpaceMouse + keyboard reward + J1 bias ==="
-        echo "    流程: offline pretrain 5k → online HIL 50k（~1.4h @ 10Hz）"
+        echo "    流程: offline warmup（依赖 demo_pickle_paths 非空）→ online HIL 50k（~1.4h @ 10Hz）"
+        echo "    注意: demo_pickle_paths=[] 时 learner 会直接报错，先跑 collect_demo_task_policy.py 并回填路径"
         TASK_ID=""  # 真机不走 gymnasium 注册，env_factory 从 franka_config 分支建 env
         EXTRA_ARGS="--job_name frrl_task_policy_real"
         ;;
@@ -160,7 +161,9 @@ case "$ROLE" in
             echo "  python scripts/real/collect_demo_task_policy.py -n 50"
             echo "采集完成后把输出 pickle 路径填进 scripts/configs/train_hil_sac_task_real.json 的"
             echo "policy.demo_pickle_paths 字段，再启动 learner + actor。"
-            exit 0
+            # exit 1：调用本分支本身是误用（shell record 不支持 task_real），
+            # 避免 CI / 脚本链把 exit 0 当作成功继续。
+            exit 1
         fi
         # safe变体用专用的录制config和cache路径
         case "$VARIANT" in

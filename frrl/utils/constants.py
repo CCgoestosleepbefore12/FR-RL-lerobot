@@ -35,6 +35,11 @@ DONE = "next.done"
 ROBOTS = "robots"
 TELEOPERATORS = "teleoperators"
 
+# raw_joint_positions 是 complementary_data 里给 gripper penalty processor
+# 用的原始状态字典（绕过 normalization / batching）。gripper 键名在三处独立
+# 代码里被 hard-code 过 —— env 写入、processor 读取、测试构造 —— 抽常量锁死。
+RAW_JOINT_POSITION_GRIPPER_KEY = "gripper"
+
 # files & directories
 CHECKPOINTS_DIR = "checkpoints"
 LAST_CHECKPOINT_LINK = "last"

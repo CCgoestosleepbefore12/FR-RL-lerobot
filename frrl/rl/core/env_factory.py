@@ -312,6 +312,39 @@ class RobotEnv(gym.Env):
         return self._raw_joint_positions
 
 
+def _build_franka_config_from_dict(franka_dict: dict) -> "FrankaRealConfig":
+    """把 JSON 反序列化后的 franka_config dict 构造成 FrankaRealConfig。
+
+    只处理 scalar + 嵌套 encoder_bias_config dict；带 numpy / callable 的字段
+    （cameras, image_crop, abs_pose_limit_*）走 Python 默认值。bias_range 从
+    list 转成 Tuple 以匹配 dataclass 类型声明。
+
+    失败时 re-raise ValueError 并附上字段信息，比原生 TypeError 易读。
+    """
+    import copy
+    from frrl.envs.real_config import FrankaRealConfig
+    from frrl.fault_injection import EncoderBiasConfig
+
+    fc_dict = copy.deepcopy(franka_dict)
+    bias_dict = fc_dict.get("encoder_bias_config")
+    if isinstance(bias_dict, dict):
+        if "bias_range" in bias_dict:
+            bias_dict["bias_range"] = tuple(bias_dict["bias_range"])
+        try:
+            fc_dict["encoder_bias_config"] = EncoderBiasConfig(**bias_dict)
+        except TypeError as e:
+            raise ValueError(
+                f"franka_config.encoder_bias_config 解析失败：{e}. 配置 dict={bias_dict}"
+            ) from e
+    try:
+        return FrankaRealConfig(**fc_dict)
+    except TypeError as e:
+        raise ValueError(
+            f"franka_config 解析失败：{e}. 支持字段请见 FrankaRealConfig（"
+            f"numpy/callable 字段不能通过 JSON 覆盖）。传入 keys={list(fc_dict.keys())}"
+        ) from e
+
+
 def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
     """Create robot environment from configuration.
 
@@ -326,20 +359,8 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
         from frrl.envs.real import FrankaRealEnv
         from frrl.envs.real_config import FrankaRealConfig
 
-        # JSON config 传进来是 dict：用默认值 + override 构造 FrankaRealConfig。
-        # 只支持 scalar 和 encoder_bias_config 嵌套 dict；带 numpy / callable
-        # 的字段（cameras, image_crop, abs_pose_limit_*）走 Python 默认值。
         if isinstance(cfg.franka_config, dict):
-            from frrl.fault_injection import EncoderBiasConfig
-            fc_dict = dict(cfg.franka_config)
-            bias_dict = fc_dict.get("encoder_bias_config")
-            if isinstance(bias_dict, dict):
-                # JSON 里 bias_range 是 list，EncoderBiasConfig 字段类型是 Tuple
-                bias_dict = dict(bias_dict)
-                if "bias_range" in bias_dict:
-                    bias_dict["bias_range"] = tuple(bias_dict["bias_range"])
-                fc_dict["encoder_bias_config"] = EncoderBiasConfig(**bias_dict)
-            cfg.franka_config = FrankaRealConfig(**fc_dict)
+            cfg.franka_config = _build_franka_config_from_dict(cfg.franka_config)
 
         env = FrankaRealEnv(config=cfg.franka_config)
 
@@ -433,9 +454,21 @@ def make_processors(
         env_pipeline_steps = [
             Numpy2TorchActionProcessorStep(),
             VanillaObservationProcessorStep(),
+        ]
+        # Franka-specific gripper penalty（sim 语义：action∈[-1,1], state∈[0,1]）
+        # 必须放在 AddBatchDimension 之前：此时 action 还是未 batch 化的 1D tensor，
+        # action[-1] 取出的是 scalar 而不是 batch 尾的 row。
+        if cfg.processor.gripper is not None and cfg.processor.gripper.use_gripper:
+            from frrl.processor import FrankaGripperPenaltyProcessorStep
+            env_pipeline_steps.append(
+                FrankaGripperPenaltyProcessorStep(
+                    penalty=cfg.processor.gripper.gripper_penalty,
+                )
+            )
+        env_pipeline_steps.extend([
             AddBatchDimensionProcessorStep(),
             DeviceProcessorStep(device=device),
-        ]
+        ])
 
         return DataProcessorPipeline(
             steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
@@ -615,9 +648,10 @@ def step_env_and_process_transition(
     transition[TransitionKey.REWARD] = 0.0
     transition[TransitionKey.DONE] = False
     transition[TransitionKey.TRUNCATED] = False
-    transition[TransitionKey.OBSERVATION] = (
+    raw_joint_positions = (
         env.get_raw_joint_positions() if hasattr(env, "get_raw_joint_positions") else {}
     )
+    transition[TransitionKey.OBSERVATION] = raw_joint_positions
     processed_action_transition = action_processor(transition)
     processed_action = processed_action_transition[TransitionKey.ACTION]
 
@@ -627,6 +661,10 @@ def step_env_and_process_transition(
     terminated = terminated or processed_action_transition[TransitionKey.DONE]
     truncated = truncated or processed_action_transition[TransitionKey.TRUNCATED]
     complementary_data = processed_action_transition[TransitionKey.COMPLEMENTARY_DATA].copy()
+    # 把执行前采到的 raw joint state 塞进 complementary_data，供 env_processor 里的
+    # GripperPenalty 类 step 读取（execution 之前的位置 + 本步 action 组成判断依据）。
+    if raw_joint_positions:
+        complementary_data["raw_joint_positions"] = raw_joint_positions
     new_info = processed_action_transition[TransitionKey.INFO].copy()
     new_info.update(info)
 

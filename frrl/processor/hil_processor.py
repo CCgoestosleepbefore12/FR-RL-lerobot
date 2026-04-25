@@ -26,6 +26,7 @@ import torchvision.transforms.functional as F  # noqa: N812
 from frrl.configs.types import PipelineFeatureType, PolicyFeature
 from frrl.teleoperators.teleoperator import Teleoperator
 from frrl.teleoperators.utils import TeleopEvents
+from frrl.utils.constants import RAW_JOINT_POSITION_GRIPPER_KEY
 
 from .core import EnvTransition, PolicyAction, TransitionKey
 from .pipeline import (
@@ -37,7 +38,12 @@ from .pipeline import (
     TruncatedProcessorStep,
 )
 
-GRIPPER_KEY = "gripper"
+# GRIPPER_KEY 在本文件历史上同时承担两个语义：
+#   1) raw_joint_positions 字典的 gripper 状态键（→ 真源 RAW_JOINT_POSITION_GRIPPER_KEY）
+#   2) teleop action 字典里 SpaceMouse 输出的 gripper 轴键（teleop 自定义协议）
+# 两个 namespace 字面恰好都是 "gripper"，但耦合到同一个常量会让"修改一边
+# 影响另一边"——对外仍以 RAW_JOINT_POSITION_GRIPPER_KEY 作为权威。
+GRIPPER_KEY = RAW_JOINT_POSITION_GRIPPER_KEY  # 兼容老代码 import；新代码用 constants 真源
 DISCRETE_PENALTY_KEY = "discrete_penalty"
 TELEOP_ACTION_KEY = "teleop_action"
 
@@ -387,6 +393,62 @@ class GripperPenaltyProcessorStep(ComplementaryDataProcessorStep):
 
     def reset(self) -> None:
         """Resets the processor's internal state."""
+        pass
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+@dataclass
+@ProcessorStepRegistry.register("franka_gripper_penalty_processor")
+class FrankaGripperPenaltyProcessorStep(ComplementaryDataProcessorStep):
+    """Franka 专用 gripper penalty（action 在 [-1,1]，state 在 [0,1]）。
+
+    与 `GripperPenaltyProcessorStep`（SO100 语义：action/state 同量纲、阈值 0.5/0.75）
+    的区别：Franka policy action 范围是 [-1,1]，末端 gripper_pos 已归一化到
+    [0,1]（0=关，1=开）。逻辑对齐 `frrl.envs.wrappers.hil_wrappers.GripperPenaltyWrapper`：
+      - action[-1] < -0.5 且 pos < 0.1：关得太紧还在关
+      - action[-1] >  0.5 且 pos > 0.9：开到头还在开
+    """
+
+    penalty: float = -0.05
+
+    def complementary_data(self, complementary_data: dict) -> dict:
+        action = self.transition.get(TransitionKey.ACTION)
+        raw = complementary_data.get("raw_joint_positions")
+        if raw is None:
+            return complementary_data
+        gripper_pos = raw.get(GRIPPER_KEY)
+        if gripper_pos is None:
+            return complementary_data
+
+        # Franka action 语义是 unbatched [7]（[dx, dy, dz, rx, ry, rz, gripper]）；
+        # 如果被 AddBatchDimensionProcessorStep 提前 batched 或者 action dim 漂移，
+        # action[-1] 会取错值并静默污染 penalty 信号。早 assert 早崩。
+        # tensor / ndarray 都有 .shape；list 走 np.asarray 兜底。
+        shape = tuple(action.shape) if hasattr(action, "shape") else np.asarray(action).shape
+        assert len(shape) == 1 and shape[0] == 7, (
+            f"FrankaGripperPenaltyProcessorStep expects unbatched 7D action, "
+            f"got shape {shape}"
+        )
+
+        gripper_action = float(action[-1])
+        penalty = 0.0
+        if (gripper_action < -0.5 and gripper_pos < 0.1) or (
+            gripper_action > 0.5 and gripper_pos > 0.9
+        ):
+            penalty = self.penalty
+
+        new_data = dict(complementary_data)
+        new_data[DISCRETE_PENALTY_KEY] = penalty
+        return new_data
+
+    def get_config(self) -> dict[str, Any]:
+        return {"penalty": self.penalty}
+
+    def reset(self) -> None:
         pass
 
     def transform_features(

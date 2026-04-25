@@ -43,6 +43,7 @@ from .gym_action_processor import (
 from .hil_processor import (
     AddTeleopActionAsComplimentaryDataStep,
     AddTeleopEventsAsInfoStep,
+    FrankaGripperPenaltyProcessorStep,
     GripperPenaltyProcessorStep,
     ImageCropResizeProcessorStep,
     InterventionActionProcessorStep,
@@ -88,6 +89,7 @@ __all__ = [
     "DoneProcessorStep",
     "EnvAction",
     "EnvTransition",
+    "FrankaGripperPenaltyProcessorStep",
     "GripperPenaltyProcessorStep",
     "hotswap_stats",
     "IdentityProcessorStep",
