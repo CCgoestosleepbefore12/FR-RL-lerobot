@@ -75,7 +75,9 @@ class FrankaRealConfig:
     })
 
     # 动作缩放: (xyz_m/step, rotation_rad/step, gripper_scale)
-    action_scale: Tuple[float, float, float] = (0.04, 0.2, 1.0)
+    # P0-3: 0.03 × 10Hz = 0.30 m/s 正好等于 max_cart_speed，避免 0.04 时极限动作
+    # 被 clip_safety 0.75x 非线性压缩、policy 学错动作幅度信念。
+    action_scale: Tuple[float, float, float] = (0.03, 0.2, 1.0)
 
     # 笛卡尔安全边界 (6D: x,y,z,rx,ry,rz)
     abs_pose_limit_low: np.ndarray = field(
@@ -138,9 +140,9 @@ class FrankaRealConfig:
     # Episode 控制
     max_episode_length: int = 300   # 30s @ 10Hz; 20s (200) 不够做 pick-place
     hz: int = 10
-    # 末端直线速度安全上限 (m/s)。在线训练期 policy 可能输出极限 action
-    # (action_scale[0]=0.04 × 10Hz = 0.4 m/s)，超过该值会被裁剪以保护硬件。
-    # 标定后根据任务可调；deploy_backup_policy.py 同样采用 0.30 m/s。
+    # 末端直线速度安全上限 (m/s)。配合 action_scale[0]=0.03 × 10Hz = 0.30 m/s，
+    # 极限动作刚好不会被 clip → policy 学到的动作幅度与执行幅度一致。
+    # 若 action_scale 调大，runtime clip 会非线性压缩，建议同步调 max_cart_speed。
     max_cart_speed: float = 0.30
     gripper_sleep: float = 0.6
     joint_reset_period: int = 0  # N episode 做一次关节重置，0=不做

@@ -21,13 +21,15 @@ from scipy.spatial.transform import Rotation
 
 from frrl.envs.real_config import FrankaRealConfig
 from frrl.fault_injection import EncoderBiasConfig, EncoderBiasInjector
+from frrl.utils.constants import RAW_JOINT_POSITION_GRIPPER_KEY
 
 logging.basicConfig(level=logging.INFO)
 
-# HTTP request default timeout (seconds). Flask server on RT PC responds in
-# milliseconds; anything >100ms indicates a stuck C++ controller or USB issue.
-# 2 second ceiling prevents the training loop from hanging forever.
-_HTTP_TIMEOUT_S: float = 2.0
+# HTTP 默认 timeout（秒）。RT PC 上 Flask server 实测 RTT < 5ms；>100ms 即说明
+# C++ 控制器卡住或 USB 抖动。0.5s 足够覆盖偶发 GC stall + libfranka 1kHz 周期，
+# 配合 retry=3 总预算 ~1.6s（含指数退避），已不会破坏 10Hz 控制周期。
+# 长动作端点（jointreset）单独传 timeout=15s。
+_HTTP_TIMEOUT_S: float = 0.5
 
 
 def euler_2_quat(euler: np.ndarray) -> np.ndarray:
@@ -99,6 +101,16 @@ class FrankaRealEnv(gym.Env):
             config.reset_pose[:3],
             euler_2_quat(config.reset_pose[3:]),
         ])
+
+        # P0-C：reset 路径会从 reset_pose.z 上抬 0.1m。abs_pose_limit_high[2] 必须
+        # 留出至少 0.1m 抬升预算，否则 lift 被 clip_safety_box 截短，3 段 reset 退
+        # 化成无效抬升（撞撞风险回归）。配置防呆 assert，避免未来调参静默破坏。
+        z_headroom = float(config.abs_pose_limit_high[2] - config.reset_pose[2])
+        assert z_headroom >= 0.1, (
+            f"abs_pose_limit_high[2]={config.abs_pose_limit_high[2]:.3f} 与 "
+            f"reset_pose[2]={config.reset_pose[2]:.3f} 仅留 {z_headroom:.3f}m 抬升预算，"
+            "需 >= 0.1m 才能保证 _go_to_reset 三段路径有效。请检查 FrankaRealConfig 的 z 上限。"
+        )
 
         # 安全边界
         self.xyz_bounding_box = spaces.Box(
@@ -386,6 +398,16 @@ class FrankaRealEnv(gym.Env):
             self.currpos_true[3:].astype(np.float32),             # [25:29]
         ])
 
+    def get_raw_joint_positions(self) -> Dict[str, float]:
+        """供 GripperPenalty 等 processor 读取的原始状态。
+
+        键名用 `RAW_JOINT_POSITION_GRIPPER_KEY`（= "gripper"）锁死，和
+        `FrankaGripperPenaltyProcessorStep` 读取侧共用同一常量。penalty 由
+        processor 根据这个值 + action[-1] 在 [0,1] 范围内用 sim 阈值
+        （state<0.1 / >0.9）判断。
+        """
+        return {RAW_JOINT_POSITION_GRIPPER_KEY: float(self.curr_gripper_pos)}
+
     def get_environment_state(self) -> np.ndarray:
         """6D 环境状态: block_pos(3) + plate_pos(3)。
 
@@ -555,20 +577,27 @@ class FrankaRealEnv(gym.Env):
         self._update_currpos()
 
     def _go_to_reset(self, joint_reset: bool = False):
-        """执行环境重置：precision 模式 → 移动到 reset 位姿 → compliance 模式。"""
-        import requests
-
+        """执行环境重置：precision 模式 → 抬升 → 移动到 reset 位姿 → compliance 模式。"""
         self._update_currpos()
         self._send_pos_command(self.currpos)
         time.sleep(0.3)
-        requests.post(self.url + "update_param", json=self.config.precision_param, timeout=_HTTP_TIMEOUT_S)
+        self._http_post("update_param", json=self.config.precision_param)
         time.sleep(0.5)
 
         if joint_reset:
             logging.info("JOINT RESET")
-            # joint reset can take >1s on hardware, use longer timeout
-            requests.post(self.url + "jointreset", timeout=15.0)
-            time.sleep(0.5)
+            # joint reset can take >1s on hardware, use longer timeout, no retry
+            # P1-2：jointreset 失败不能让 actor 线程死。先 fail-soft：clearerr 后退化
+            # 走纯笛卡尔 reset（_go_to_reset 末尾的 readback assert 仍会兜底真撞机时停训）。
+            try:
+                self._http_post("jointreset", timeout=15.0, retries=1)
+                time.sleep(0.5)
+            except Exception as e:
+                logging.error(
+                    f"[FrankaRealEnv] jointreset 失败：{e}。退化为笛卡尔 reset；"
+                    "**操作者请手动检查关节状态**，必要时停训。"
+                )
+                self._recover()
 
         # 笛卡尔重置
         reset_pose = self.resetpos.copy()
@@ -585,20 +614,71 @@ class FrankaRealEnv(gym.Env):
             )
             reset_pose[3:] = euler_2_quat(euler)
 
+        # P0-A (round 4)：直线插值到 reset_pose 会让 EE 在中等高度横穿任意障碍（相
+        # 机支架/示教盒/夹具），单段 lift→reset 第二段仍是斜线下降，无法覆盖中高架
+        # 障碍。改为三段：
+        #   1. lift   ：原地抬升到 lift_z（保留当前 rotation，避免低空旋转扫到障碍）
+        #   2. transit：在 lift_z 高度横移到 reset.xy，并旋转到 reset_rot（高空操作）
+        #   3. descend：垂直下降到 reset.xyz（rotation 已对齐，纯 z 移动）
+        # 这样保证整条 reset 路径在 lift_z 之上横移，仅在工作区上空垂直下降。
+        self._update_currpos()
+        lift_z = max(self.currpos[2] + 0.1, reset_pose[2])
+
+        # 段 1：保 xy/rotation，仅抬升 z
+        lift_pose = self.currpos.copy()
+        lift_pose[2] = lift_z
+
+        # 段 2：横移到 reset.xy，旋转到 reset.rot，z 维持 lift_z
+        transit_pose = reset_pose.copy()
+        transit_pose[2] = lift_z
+
+        self.interpolate_move(lift_pose, timeout=0.5)
+        self.interpolate_move(transit_pose, timeout=1.5)
         self.interpolate_move(reset_pose, timeout=1.0)
 
+        # P0-B：reset 完毕回读 currpos 校验真到位。clearerr 假成功 / server-side
+        # libfranka 拒绝 reset 时，currpos 仍卡在上一 episode 终点，policy 会以为
+        # 自己回到 reset 然后发更大 action。容差 5cm（线性插值 + 阻抗 0.01 clip）。
+        self._update_currpos()
+        xyz_err = float(np.linalg.norm(self.currpos[:3] - reset_pose[:3]))
+        if xyz_err > 0.05:
+            raise RuntimeError(
+                f"[FrankaRealEnv] reset 失败：currpos.xyz={self.currpos[:3]} 与 "
+                f"reset.xyz={reset_pose[:3]} 偏差 {xyz_err:.3f}m > 0.05m。"
+                " server clearerr 可能假成功 / interpolate 被 server 拦截。停训人工检查。"
+            )
+
         # 切换到 compliance 模式
-        requests.post(self.url + "update_param", json=self.config.compliance_param, timeout=_HTTP_TIMEOUT_S)
+        self._http_post("update_param", json=self.config.compliance_param)
 
     # ================================================================
     # HTTP 通信
     # ================================================================
 
-    def _update_currpos(self):
-        """通过 HTTP 获取机器人完整状态（biased：含 J1 bias）。"""
+    def _http_post(self, endpoint: str, *, json: dict | None = None, timeout: float = _HTTP_TIMEOUT_S,
+                   retries: int = 3) -> "requests.Response":
+        """POST 到 RT PC Flask server，带指数退避 retry。
+
+        P0-5: 关键端点裸 requests.post 抛 ConnectionError/Timeout 会冒泡到 actor
+        线程，learner 静默死锁。retry 预算 ~30+60+120=210ms，覆盖单次 RT 卡顿
+        和 USB 重新枚举；超过 3 次仍失败时抛出，由上层决定继续还是停训。
+        """
         import requests
 
-        ps = requests.post(self.url + "getstate", timeout=_HTTP_TIMEOUT_S).json()
+        last_err: Exception | None = None
+        for attempt in range(retries):
+            try:
+                return requests.post(self.url + endpoint, json=json, timeout=timeout)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_err = e
+                if attempt < retries - 1:
+                    time.sleep(0.03 * (2 ** attempt))
+        logging.error(f"[FrankaRealEnv] HTTP {endpoint} 重试 {retries} 次仍失败: {last_err}")
+        raise last_err  # type: ignore[misc]
+
+    def _update_currpos(self):
+        """通过 HTTP 获取机器人完整状态（biased：含 J1 bias）。"""
+        ps = self._http_post("getstate").json()
         self.currpos = np.array(ps["pose"])         # 7D: xyz + quat (biased FK)
         self.currvel = np.array(ps["vel"])           # 6D
         self.currforce = np.array(ps["force"])       # 3D
@@ -612,24 +692,18 @@ class FrankaRealEnv(gym.Env):
 
         Fails loud: 如果 server 层出错，宁可崩溃也不要静默给出 biased 值伪装成 true。
         """
-        import requests
-
-        ps = requests.post(self.url + "getstate_true", timeout=_HTTP_TIMEOUT_S).json()
+        ps = self._http_post("getstate_true").json()
         self.currpos_true = np.array(ps["pose"])     # 7D: xyz + quat (true FK)
         self.q_true = np.array(ps["q"])              # 7D (unbiased)
 
     def _send_pos_command(self, pos: np.ndarray):
         """发送笛卡尔位姿命令 (7D: xyz + quat)。"""
-        import requests
-
         self._recover()
         data = {"arr": np.array(pos, dtype=np.float32).tolist()}
-        requests.post(self.url + "pose", json=data, timeout=_HTTP_TIMEOUT_S)
+        self._http_post("pose", json=data)
 
     def _send_gripper_command(self, pos: float, mode: str = "binary"):
         """发送夹爪命令。二值模式：>0.5 开, <-0.5 关。"""
-        import requests
-
         if mode != "binary":
             raise NotImplementedError("仅支持 binary 夹爪控制")
 
@@ -639,7 +713,7 @@ class FrankaRealEnv(gym.Env):
             and self.curr_gripper_pos > 0.85
             and now - self.last_gripper_act > self.config.gripper_sleep
         ):
-            requests.post(self.url + "close_gripper", timeout=_HTTP_TIMEOUT_S)
+            self._http_post("close_gripper")
             self.last_gripper_act = now
             time.sleep(self.config.gripper_sleep)
         elif (
@@ -647,14 +721,34 @@ class FrankaRealEnv(gym.Env):
             and self.curr_gripper_pos < 0.85
             and now - self.last_gripper_act > self.config.gripper_sleep
         ):
-            requests.post(self.url + "open_gripper", timeout=_HTTP_TIMEOUT_S)
+            self._http_post("open_gripper")
             self.last_gripper_act = now
             time.sleep(self.config.gripper_sleep)
 
     def _recover(self):
-        """清除机器人错误状态。"""
-        import requests
-        requests.post(self.url + "clearerr", timeout=_HTTP_TIMEOUT_S)
+        """清除机器人错误状态。
+
+        P0-B：clearerr HTTP 200 不等于 server 真清错（libfranka 可能拒绝 reset）。
+        若 server 在 response body 里给 `{"ok": false}` / `{"errs": [...]}`，立刻
+        fail-loud 而不是让 stale state 喂给 policy 引发动作放大。server 没加 ok
+        字段时退化为只看 HTTP status（与改动前一致）。
+        """
+        r = self._http_post("clearerr")
+        try:
+            r.raise_for_status()
+        except Exception as e:
+            logging.error(f"[FrankaRealEnv] clearerr HTTP {r.status_code}: {e}")
+            raise
+        try:
+            payload = r.json()
+        except ValueError:
+            return  # server 没返 JSON：兼容旧实现
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            errs = payload.get("errs", [])
+            raise RuntimeError(
+                f"[FrankaRealEnv] clearerr server 报失败：errs={errs}，libfranka 可能拒绝 reset。"
+                " 检查机器人物理状态后手动重启 server。"
+            )
 
     def _set_encoder_bias(self, bias: list):
         """设置编码器偏差（通过 Flask Server → /encoder_bias topic → C++ 控制器）。
