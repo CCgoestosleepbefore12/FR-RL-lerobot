@@ -21,6 +21,8 @@ import pyrealsense2 as rs
 import requests
 from scipy.spatial.transform import Rotation as R
 
+from frrl.envs.real_config import FRONT_CAMERA_SERIAL
+
 URL = "http://192.168.100.1:5000/"
 SAVE_DIR = Path("calibration_data")
 
@@ -29,9 +31,10 @@ ROTATION_SCALE = 0.035
 DEADZONE = 0.05
 
 
-def start_d455(width=640, height=480, fps=15):
+def start_d455(serial: str, width=640, height=480, fps=15):
     pipeline = rs.pipeline()
     config = rs.config()
+    config.enable_device(serial)
     config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
     config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
     profile = pipeline.start(config)
@@ -45,7 +48,7 @@ def start_d455(width=640, height=480, fps=15):
     ])
     dist_coeffs = np.array(intrinsics.coeffs[:5])
 
-    print(f"D455: {width}x{height}@{fps}fps")
+    print(f"D455 [{serial}]: {width}x{height}@{fps}fps")
     print(f"  fx={intrinsics.fx:.1f} fy={intrinsics.fy:.1f} cx={intrinsics.ppx:.1f} cy={intrinsics.ppy:.1f}")
 
     time.sleep(3)
@@ -108,8 +111,50 @@ def get_tcp_pose():
 def send_pose(pose7):
     try:
         requests.post(URL + "pose", json={"arr": list(pose7)}, timeout=0.5)
-    except requests.exceptions.Timeout:
+    except requests.exceptions.RequestException:
+        # Timeout / ConnectionError / network drop — non-fatal. Swallow so the
+        # main loop survives RT-PC server restarts; pairs already captured stay
+        # in memory and Ctrl+C can still trigger save+solve.
         pass
+
+
+def save_pairs(pairs_file, marker_id, marker_size, cam_matrix, dist_coeffs, data_pairs):
+    """Atomically write data_pairs to JSON. Called after every Enter capture so a
+    mid-run crash (RT-PC kill, network drop, OS signal) loses 0 poses instead of all."""
+    payload = {
+        "marker_id": marker_id,
+        "marker_size": marker_size,
+        "cam_matrix": cam_matrix.tolist(),
+        "dist_coeffs": dist_coeffs.tolist(),
+        "pairs": data_pairs,
+    }
+    tmp = pairs_file.with_suffix(pairs_file.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(pairs_file)
+
+
+def handle_gripper_buttons(buttons, prev_buttons):
+    """Edge-trigger /close_gripper on button[0], /open_gripper on button[1].
+
+    Convention matches frrl/teleoperators/spacemouse/teleop_spacemouse.py:
+        button[0] (left)  → close
+        button[1] (right) → open
+    Failures are swallowed — gripper is a convenience, not core to calibration.
+    """
+    if not buttons:
+        return
+    if buttons[0] and not prev_buttons[0]:
+        try:
+            requests.post(URL + "close_gripper", timeout=2.0)
+            print("  [gripper] close")
+        except Exception as e:
+            print(f"  [gripper] close failed: {e}")
+    elif len(buttons) > 1 and buttons[1] and not prev_buttons[1]:
+        try:
+            requests.post(URL + "open_gripper", timeout=2.0)
+            print("  [gripper] open")
+        except Exception as e:
+            print(f"  [gripper] open failed: {e}")
 
 
 def apply_spacemouse(target_xyz, target_quat, action6):
@@ -122,18 +167,20 @@ def apply_spacemouse(target_xyz, target_quat, action6):
     target_xyz[2] += dxyz[2]
 
     if abs(drpy[0]) + abs(drpy[1]) + abs(drpy[2]) > 1e-6:
-        new = R.from_quat(target_quat) * R.from_euler("xyz", drpy)
+        # Match FrankaRealEnv:249-252: left-mult + rotvec = world-frame, axis-angle.
+        # Right-mult + Euler is body-frame and diverges from env behavior, making
+        # SpaceMouse feel inconsistent between teleop and policy execution.
+        new = R.from_rotvec(np.array(drpy)) * R.from_quat(target_quat)
         target_quat[:] = list(new.as_quat())
 
     return target_xyz, target_quat
 
 
 def pose7_to_T(pose7):
-    """Convert [x, y, z, qw, qx, qy, qz] to 4x4 matrix."""
+    """Convert [x, y, z, qx, qy, qz, qw] (scipy xyzw, as returned by /getstate
+    and stored in handeye_pairs.json) to 4x4 matrix."""
     t = np.array(pose7[:3])
-    quat_wxyz = pose7[3:]
-    quat_xyzw = [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]]
-    rot = R.from_quat(quat_xyzw)
+    rot = R.from_quat(pose7[3:])
 
     T = np.eye(4)
     T[:3, :3] = rot.as_matrix()
@@ -272,6 +319,8 @@ def main():
     ap.add_argument("--marker-id", type=int, default=55)
     ap.add_argument("--marker-size", type=float, default=0.15, help="marker edge length in meters")
     ap.add_argument("--load", action="store_true", help="re-solve from saved data")
+    ap.add_argument("--serial", type=str, default=FRONT_CAMERA_SERIAL,
+                    help=f"D455 serial (default: front {FRONT_CAMERA_SERIAL})")
     args = ap.parse_args()
 
     SAVE_DIR.mkdir(exist_ok=True)
@@ -283,24 +332,54 @@ def main():
         T_cam2base = solve_and_save(data["pairs"])
         return
 
+    # If a previous run left pairs on disk, ask before clobbering.
+    data_pairs = []
+    if pairs_file.exists():
+        try:
+            existing = json.loads(pairs_file.read_text())
+            n_existing = len(existing.get("pairs", []))
+        except Exception:
+            n_existing = 0
+        if n_existing > 0:
+            choice = input(
+                f"\n{pairs_file} already has {n_existing} pose(s).\n"
+                f"  [a] append (continue from where last run left off)\n"
+                f"  [o] overwrite (start fresh)\n"
+                f"  [c] cancel\n"
+                f"choice [a/o/c, default=a]: "
+            ).strip().lower() or "a"
+            if choice == "c":
+                print("Cancelled.")
+                return
+            if choice == "a":
+                data_pairs = list(existing["pairs"])
+                print(f"Appending; starting at pose #{len(data_pairs)+1}")
+            elif choice == "o":
+                print("Overwriting on first new capture.")
+
     # Init hardware
-    pipeline, cam_matrix, dist_coeffs = start_d455()
+    pipeline, cam_matrix, dist_coeffs = start_d455(args.serial)
     expert = start_spacemouse()
 
-    # Init target pose from current robot state
+    # Init target pose from current robot state.
+    # franka_server.py /getstate returns pose[3:] = [qx, qy, qz, qw] (scipy xyzw,
+    # see r.as_quat() at franka_server.py:222). /pose endpoint also expects xyzw
+    # (see geom_msg.Quaternion(pose[3], pose[4], pose[5], pose[6]) at line 191).
+    # No swapping required.
     state = requests.post(URL + "getstate", timeout=2.0).json()
     target_xyz = list(state["pose"][:3])
-    # /getstate returns [w,x,y,z], scipy needs [x,y,z,w]
-    qw, qx, qy, qz = state["pose"][3:]
-    target_quat = [qx, qy, qz, qw]  # scipy convention
+    target_quat = list(state["pose"][3:])  # xyzw, scipy convention
 
-    data_pairs = []
+    prev_buttons = [0, 0, 0, 0]
 
     print(f"\nArUco: DICT_5X5_100, ID={args.marker_id}, size={args.marker_size}m")
     print("\n=== Eye-to-Hand Calibration (SpaceMouse) ===")
     print("  SpaceMouse: move robot to different poses")
-    print("  ENTER: capture current pose")
-    print("  Q: finish and solve (need >= 5 poses)")
+    print("  ENTER         : capture current pose (auto-saved to disk)")
+    print("  Q             : finish + solve (focus the OpenCV window first!)")
+    print("  Ctrl+C        : same as Q, works from terminal")
+    print("  Left button   : close gripper")
+    print("  Right button  : open gripper")
     print("  Tips: vary BOTH position and wrist rotation!\n")
 
     try:
@@ -309,11 +388,12 @@ def main():
 
             # SpaceMouse → move robot
             action6, buttons = expert.get_action()
+            handle_gripper_buttons(buttons, prev_buttons)
+            prev_buttons = list(buttons) if buttons else prev_buttons
             target_xyz, target_quat = apply_spacemouse(target_xyz, target_quat, action6)
 
-            # Convert back to [w,x,y,z] for /pose
-            qx, qy, qz, qw = target_quat
-            pose7 = [*target_xyz, qw, qx, qy, qz]
+            # /pose expects xyzw (matches scipy and what /getstate returned).
+            pose7 = [*target_xyz, *target_quat]
             send_pose(pose7)
 
             # Camera
@@ -357,8 +437,11 @@ def main():
                     "pose7": current_pose7,
                 }
                 data_pairs.append(pair)
+                save_pairs(pairs_file, args.marker_id, args.marker_size,
+                           cam_matrix, dist_coeffs, data_pairs)
                 print(f"  [{len(data_pairs):2d}] marker_z={tvec[2]:.3f}m  "
-                      f"tcp=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f})")
+                      f"tcp=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}) "
+                      f"[saved → {pairs_file.name}]")
 
             elif key == ord('q'):
                 break
@@ -369,27 +452,18 @@ def main():
                 time.sleep(dt_left)
 
     except KeyboardInterrupt:
-        pass
+        print("\n[Ctrl+C] stopping capture; will solve with what we have.")
     finally:
         cv2.destroyAllWindows()
         pipeline.stop()
         expert.close()
 
     if len(data_pairs) < 3:
-        print(f"\nOnly {len(data_pairs)} poses — need at least 3. Aborting.")
+        print(f"\nOnly {len(data_pairs)} poses — need at least 3. Aborting solve.")
+        print(f"(pairs preserved in {pairs_file}; rerun and choose [a]ppend to continue.)")
         return
 
-    # Save raw data
-    save_data = {
-        "marker_id": args.marker_id,
-        "marker_size": args.marker_size,
-        "cam_matrix": cam_matrix.tolist(),
-        "dist_coeffs": dist_coeffs.tolist(),
-        "pairs": data_pairs,
-    }
-    pairs_file.write_text(json.dumps(save_data, indent=2))
-    print(f"\nSaved {len(data_pairs)} poses to {pairs_file}")
-
+    print(f"\n{len(data_pairs)} poses already saved incrementally to {pairs_file}")
     solve_and_save(data_pairs)
 
 

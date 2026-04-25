@@ -31,6 +31,8 @@ import pyrealsense2 as rs
 import requests
 from scipy.spatial.transform import Rotation as R
 
+from frrl.envs.real_config import FRONT_CAMERA_SERIAL
+
 URL = "http://192.168.100.1:5000/"
 SAVE_DIR = Path("calibration_data")
 
@@ -45,9 +47,10 @@ DEADZONE = 0.05
 # ----------------------------------------------------------------------
 
 
-def start_d455(width=640, height=480, fps=15):
+def start_d455(serial: str, width=640, height=480, fps=15):
     pipeline = rs.pipeline()
     config = rs.config()
+    config.enable_device(serial)
     config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
     profile = pipeline.start(config)
 
@@ -58,7 +61,7 @@ def start_d455(width=640, height=480, fps=15):
         [0, 0, 1],
     ])
 
-    print(f"D455: {width}x{height}@{fps}fps")
+    print(f"D455 [{serial}]: {width}x{height}@{fps}fps")
     print(f"  fx={intrinsics.fx:.1f} fy={intrinsics.fy:.1f} "
           f"cx={intrinsics.ppx:.1f} cy={intrinsics.ppy:.1f}")
 
@@ -100,7 +103,9 @@ def apply_spacemouse(target_xyz, target_quat, action6):
     target_xyz[2] += dxyz[2]
 
     if abs(drpy[0]) + abs(drpy[1]) + abs(drpy[2]) > 1e-6:
-        new = R.from_quat(target_quat) * R.from_euler("xyz", drpy)
+        # Match FrankaRealEnv:249-252: left-mult + rotvec = world-frame, axis-angle.
+        # Right-mult + Euler is body-frame and diverges from env behavior.
+        new = R.from_rotvec(np.array(drpy)) * R.from_quat(target_quat)
         target_quat[:] = list(new.as_quat())
 
     return target_xyz, target_quat
@@ -183,6 +188,8 @@ def main():
                     help="ROI 投影平面高度 (m)。默认 = 采样 z 最低值（桌面）")
     ap.add_argument("--roi-shape", choices=["rect", "inscribed", "bounding"],
                     default="bounding", help="ROI 形状调整策略（默认 bounding）")
+    ap.add_argument("--serial", type=str, default=FRONT_CAMERA_SERIAL,
+                    help=f"D455 serial (default: front {FRONT_CAMERA_SERIAL})")
     args = ap.parse_args()
 
     if not args.calib.exists():
@@ -191,14 +198,14 @@ def main():
     T_cam_to_robot = np.load(args.calib)
     print(f"Loaded T_cam_to_robot from {args.calib}")
 
-    pipeline, cam_matrix = start_d455()
+    pipeline, cam_matrix = start_d455(args.serial)
     expert = start_spacemouse()
 
     state = requests.post(URL + "getstate", timeout=2.0).json()
     target_xyz = list(state["pose"][:3])
-    # /getstate 返回 [w,x,y,z]，scipy 用 [x,y,z,w]
-    qw, qx, qy, qz = state["pose"][3:]
-    target_quat = [qx, qy, qz, qw]
+    # franka_server.py 的 /getstate 返回 pose[3:] = [qx,qy,qz,qw]（scipy xyzw,
+    # 见 r.as_quat() at franka_server.py:222）。/pose endpoint 同样吃 xyzw。
+    target_quat = list(state["pose"][3:])  # xyzw, 不需要 swap
 
     sampled = []   # list of np.array([x, y, z])
 
@@ -215,8 +222,7 @@ def main():
             # SpaceMouse → robot
             action6, _ = expert.get_action()
             target_xyz, target_quat = apply_spacemouse(target_xyz, target_quat, action6)
-            qx, qy, qz, qw = target_quat
-            send_pose([*target_xyz, qw, qx, qy, qz])
+            send_pose([*target_xyz, *target_quat])  # /pose 吃 xyzw
 
             # Camera frame
             frames = pipeline.wait_for_frames(timeout_ms=1000)

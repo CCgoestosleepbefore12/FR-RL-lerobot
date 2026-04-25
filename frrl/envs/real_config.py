@@ -11,6 +11,13 @@ import numpy as np
 
 from frrl.fault_injection import EncoderBiasConfig
 
+# RealSense D455 物理 serial（hpc-old 工作站 2 台 D455，2026-04-23 物理确认）。
+# 单相机脚本（calibration / workspace / aruco / tcp tracker / hand detector）必须
+# 走 enable_device(FRONT_CAMERA_SERIAL)，否则双机插线后 pyrealsense 枚举顺序不可控，
+# 会随机抓到 wrist。换相机时改这两个常量 + FrankaRealConfig.cameras 即可。
+FRONT_CAMERA_SERIAL = "234222303420"
+WRIST_CAMERA_SERIAL = "318122303303"
+
 
 def center_square_crop(img: np.ndarray) -> np.ndarray:
     """对任意 H×W×C 图像做中心正方形裁剪：边长 = min(H, W)。"""
@@ -59,8 +66,8 @@ class FrankaRealConfig:
     # Serial numbers 对应 hpc-old 工作站上 2 台 D455（用户 2026-04-23 物理确认）。
     # 换机器时修改这里或传自定义 config。
     cameras: Dict[str, dict] = field(default_factory=lambda: {
-        "front": {"serial_number": "234222303420", "dim": (640, 480), "fps": 15, "exposure": 40000},
-        "wrist": {"serial_number": "318122303303", "dim": (640, 480), "fps": 15, "exposure": 40000},
+        "front": {"serial_number": FRONT_CAMERA_SERIAL, "dim": (640, 480), "fps": 15, "exposure": 40000},
+        "wrist": {"serial_number": WRIST_CAMERA_SERIAL, "dim": (640, 480), "fps": 15, "exposure": 40000},
     })
     image_crop: Dict[str, callable] = field(default_factory=lambda: {
         "front": workspace_roi_crop_placeholder,   # 阶段 3.5 切到真正 ROI

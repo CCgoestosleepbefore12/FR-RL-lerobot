@@ -1,15 +1,25 @@
 """Debug ArUco detection — save frame, try all dictionaries."""
+import argparse
 import time
 import cv2
 import numpy as np
 import pyrealsense2 as rs
 
+from frrl.envs.real_config import FRONT_CAMERA_SERIAL
+
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--serial", type=str, default=FRONT_CAMERA_SERIAL,
+                    help=f"D455 serial (default: front {FRONT_CAMERA_SERIAL})")
+    args = ap.parse_args()
+
     pipeline = rs.pipeline()
     config = rs.config()
+    config.enable_device(args.serial)
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 15)
     pipeline.start(config)
+    print(f"D455 [{args.serial}] started")
     time.sleep(3)
     for _ in range(10):
         pipeline.wait_for_frames(timeout_ms=10000)

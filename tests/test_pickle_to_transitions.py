@@ -239,7 +239,7 @@ class TestCollectedDemoCompatibility:
 
     def test_build_transition_dict_output_is_loadable(self, tmp_path):
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "real"))
         from collect_demo_task_policy import build_transition_dict
 
         obs = _make_fake_obs()

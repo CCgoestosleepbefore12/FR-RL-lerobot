@@ -19,6 +19,7 @@ import numpy as np
 import pyrealsense2 as rs
 import requests
 
+from frrl.envs.real_config import FRONT_CAMERA_SERIAL
 from frrl.robots.franka_real.vision.tcp_tracker import TCPTracker
 
 URL = "http://192.168.100.1:5000/"
@@ -39,6 +40,8 @@ def main():
     ap.add_argument("--marker-size", type=float, default=0.15)
     ap.add_argument("--no-noise", action="store_true", help="disable 5mm noise for clean test")
     ap.add_argument("--ema-alpha", type=float, default=0.3)
+    ap.add_argument("--serial", type=str, default=FRONT_CAMERA_SERIAL,
+                    help=f"D455 serial (default: front {FRONT_CAMERA_SERIAL})")
     args = ap.parse_args()
 
     T = np.load("calibration_data/T_cam_to_robot.npy")
@@ -47,6 +50,7 @@ def main():
     # Start D455
     pipeline = rs.pipeline()
     config = rs.config()
+    config.enable_device(args.serial)
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 15)
     config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 15)
     profile = pipeline.start(config)
@@ -58,7 +62,7 @@ def main():
     time.sleep(3)
     for _ in range(10):
         pipeline.wait_for_frames(timeout_ms=10000)
-    print(f"D455 ready: fx={intr.fx:.1f}")
+    print(f"D455 [{args.serial}] ready: fx={intr.fx:.1f}")
 
     tracker = TCPTracker(
         T_cam_to_robot=T,

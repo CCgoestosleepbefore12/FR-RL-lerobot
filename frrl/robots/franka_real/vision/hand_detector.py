@@ -29,6 +29,8 @@ torch.load = lambda *a, **kw: _orig_torch_load(*a, **{**kw, 'weights_only': Fals
 
 from ultralytics import YOLO
 
+from frrl.envs.real_config import FRONT_CAMERA_SERIAL
+
 WILOR_DETECTOR_PATH = Path("/home/lab1/WiLoR/pretrained_models/detector.pt")
 
 
@@ -57,6 +59,7 @@ class HandDetector:
         depth_max: float = 1.5,
         detection_conf: float = 0.3,
         detector_path: Optional[str] = None,
+        serial: Optional[str] = None,
     ):
         self.T_cam_to_robot = T_cam_to_robot
         self.width = width
@@ -65,6 +68,9 @@ class HandDetector:
         self.depth_min = depth_min
         self.depth_max = depth_max
         self.detection_conf = detection_conf
+        # 默认锁定 front 相机 serial：双相机插上时 pyrealsense 枚举顺序不可控，
+        # 必须 enable_device 显式选 front，否则会随机抓到 wrist。
+        self.serial = serial or FRONT_CAMERA_SERIAL
 
         path = detector_path or str(WILOR_DETECTOR_PATH)
         self._model = YOLO(path)
@@ -77,6 +83,7 @@ class HandDetector:
     def start(self):
         self._pipeline = rs.pipeline()
         config = rs.config()
+        config.enable_device(self.serial)
         config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
         config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
 

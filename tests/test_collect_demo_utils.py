@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 # scripts/ isn't a Python package; add it to path to import the module.
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts" / "real"
 sys.path.insert(0, str(SCRIPTS))
 
 from collect_demo_task_policy import (  # noqa: E402

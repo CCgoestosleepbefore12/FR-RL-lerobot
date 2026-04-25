@@ -83,6 +83,7 @@ def teleop_loop(action_scale=0.015, rotation_scale=0.035, rate_hz=10.0, deadzone
         button[0] = close_gripper  (press to close)
         button[1] = open_gripper   (press to open)
     """
+    import numpy as np
     from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
     from scipy.spatial.transform import Rotation as R
 
@@ -90,7 +91,9 @@ def teleop_loop(action_scale=0.015, rotation_scale=0.035, rate_hz=10.0, deadzone
 
     state = requests.post(URL + "getstate", timeout=2.0).json()
     target_xyz = list(state["pose"][:3])
-    target_quat = list(state["pose"][3:])  # xyzw
+    # franka_server.py /getstate returns pose[3:] = [qx, qy, qz, qw] (scipy xyzw,
+    # see r.as_quat() at franka_server.py:222). /pose expects same xyzw order.
+    target_quat = list(state["pose"][3:])
     gripper_state = "open"  # track current commanded state to avoid spam
 
     print(f"Teleop @ {rate_hz:.0f} Hz  (action_scale={action_scale} m  rotation_scale={rotation_scale} rad)")
@@ -113,7 +116,8 @@ def teleop_loop(action_scale=0.015, rotation_scale=0.035, rate_hz=10.0, deadzone
             target_xyz[2] += dxyz[2]
 
             if abs(drpy[0]) + abs(drpy[1]) + abs(drpy[2]) > 1e-6:
-                new = R.from_quat(target_quat) * R.from_euler("xyz", drpy)
+                # Match FrankaRealEnv:249-252: left-mult + rotvec = world-frame.
+                new = R.from_rotvec(np.array(drpy)) * R.from_quat(target_quat)
                 target_quat = list(new.as_quat())
 
             # gripper: button[0]=close, button[1]=open (held = repeat is OK)
@@ -127,10 +131,10 @@ def teleop_loop(action_scale=0.015, rotation_scale=0.035, rate_hz=10.0, deadzone
                     gripper_state = "open"
                     print("\n  gripper -> open")
 
-            pose7 = [*target_xyz, *target_quat]
+            pose7 = [*target_xyz, *target_quat]   # xyzw, matches /pose contract
             try:
                 requests.post(URL + "pose", json={"arr": pose7}, timeout=0.5)
-            except requests.exceptions.Timeout:
+            except requests.exceptions.RequestException:
                 pass
 
             print(
