@@ -87,16 +87,21 @@ class FrankaRealConfig:
     action_scale: Tuple[float, float, float] = (0.03, 0.2, 1.0)
 
     # 笛卡尔安全边界 (6D: x,y,z,rx,ry,rz)
+    # 来自 scripts/real/sample_workspace_bounds.py 16 点采样 (2026-04-25)，
+    # 用 tour_workspace_corners.py 实地巡过 8 角确认机械臂可达。
+    # z_low=0.175：桌面上方安全距离（实测 0.174 略往上+1mm 防夹爪撞桌面）。
     abs_pose_limit_low: np.ndarray = field(
-        default_factory=lambda: np.array([0.2, -0.4, 0.0, -np.pi, -0.2, -0.2])
+        default_factory=lambda: np.array([0.386, -0.213, 0.175, -np.pi, -0.2, -0.2])
     )
     abs_pose_limit_high: np.ndarray = field(
-        default_factory=lambda: np.array([0.7, 0.4, 0.5, np.pi, 0.2, 0.2])
+        default_factory=lambda: np.array([0.709, 0.198, 0.315, np.pi, 0.2, 0.2])
     )
 
     # 重置位姿 (6D: x,y,z,rx,ry,rz euler)
+    # z=0.21：abs_pose_limit_high[2]=0.315 - 0.21 = 0.105m headroom >= real.py:108
+    # 要求的 0.1m 抬升预算（reset 三段路径 lift→transit→descend 需要这个余量）。
     reset_pose: np.ndarray = field(
-        default_factory=lambda: np.array([0.4, 0.0, 0.3, np.pi, 0.0, 0.0])
+        default_factory=lambda: np.array([0.4, 0.0, 0.21, np.pi, 0.0, 0.0])
     )
     random_reset: bool = False
     random_xy_range: float = 0.02
