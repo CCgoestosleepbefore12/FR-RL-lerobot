@@ -83,6 +83,7 @@ class HomingController:
         action_scale: float = 0.03,
         rot_action_scale: float = 0.1,
         max_action: float = 1.0,
+        done_consecutive_n: int = 1,
     ):
         self._kp_pos = float(kp_pos)
         self._kp_rot = float(kp_rot)
@@ -91,6 +92,12 @@ class HomingController:
         self._action_scale = float(action_scale)
         self._rot_action_scale = float(rot_action_scale)
         self._max_action = float(max_action)
+        # 连续 N 帧 within tol 才判 done。阻抗收尾抖动 ±2-5mm 容易瞬时触发
+        # 单帧 done 然后被噪声打回，产生定格误差；N≥3 显著缓解。
+        n = int(done_consecutive_n)
+        assert n >= 1, f"done_consecutive_n must be >= 1, got {done_consecutive_n}"
+        self._done_consecutive_n = n
+        self._done_streak = 0
         self._tcp_start_pos: Optional[np.ndarray] = None       # shape: (3,)
         self._tcp_start_quat: Optional[np.ndarray] = None      # shape: (4,) [w,x,y,z]
 
@@ -102,6 +109,7 @@ class HomingController:
         q = np.asarray(tcp_start_quat, dtype=np.float64).reshape(4).copy()
         q /= np.linalg.norm(q) + 1e-12
         self._tcp_start_quat = q
+        self._done_streak = 0
 
     def _pos_error(self, cur_pos: np.ndarray) -> np.ndarray:
         """shape: (3,) m。"""
@@ -155,12 +163,23 @@ class HomingController:
         tcp_current_pos: np.ndarray,
         tcp_current_quat: np.ndarray,
     ) -> bool:
-        """位置 < pos_tol AND 姿态 < rot_tol 才算完成。"""
+        """位置 < pos_tol AND 姿态 < rot_tol 连续 N 帧才算完成。"""
         if self._tcp_start_pos is None or self._tcp_start_quat is None:
             return False
         pos_err = float(np.linalg.norm(self._pos_error(tcp_current_pos)))
         rot_err = float(np.linalg.norm(self._rot_error_axis_angle(tcp_current_quat)))
-        return pos_err < self._pos_tol and rot_err < self._rot_tol
+        in_tol = pos_err < self._pos_tol and rot_err < self._rot_tol
+        if in_tol:
+            self._done_streak += 1
+        else:
+            self._done_streak = 0
+        return self._done_streak >= self._done_consecutive_n
+
+    @property
+    def done_streak(self) -> int:
+        """当前连续 within-tol 的帧数（调试用）。N=1 时该值无诊断意义
+        （任意 in_tol 即触发 done，streak 立即被消费）；N>1 才有意义。"""
+        return self._done_streak
 
     @property
     def tcp_start_pos(self) -> Optional[np.ndarray]:

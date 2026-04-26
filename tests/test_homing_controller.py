@@ -152,6 +152,67 @@ def test_is_done_both_conditions():
     print("  [PASS] is_done requires pos AND rot within tol")
 
 
+def test_is_done_consecutive_n_requires_streak():
+    """N=3：连续 N-1 帧 in_tol 仍 False，第 N 帧才 True。"""
+    h = HomingController(pos_tol=0.02, rot_tol=0.05, done_consecutive_n=3)
+    h.reset(np.zeros(3), Q_I)
+    in_tol_pos = np.array([0.01, 0.0, 0.0])
+
+    # Frame 1, 2: in tol but streak < 3
+    assert h.is_done(in_tol_pos, Q_I) is False, "frame 1 should not be done"
+    assert h.done_streak == 1
+    assert h.is_done(in_tol_pos, Q_I) is False, "frame 2 should not be done"
+    assert h.done_streak == 2
+    # Frame 3: streak hits 3 → True
+    assert h.is_done(in_tol_pos, Q_I) is True, "frame 3 should be done"
+    assert h.done_streak == 3
+    print("  [PASS] N=3 streak gate works")
+
+
+def test_is_done_streak_resets_on_out_of_tol():
+    """中途 out-of-tol 重置 streak，必须重新积满 N 帧。"""
+    h = HomingController(pos_tol=0.02, rot_tol=0.05, done_consecutive_n=3)
+    h.reset(np.zeros(3), Q_I)
+    in_tol = np.array([0.01, 0.0, 0.0])
+    out_of_tol = np.array([0.05, 0.0, 0.0])  # 0.05 > 0.02
+
+    h.is_done(in_tol, Q_I)
+    h.is_done(in_tol, Q_I)
+    assert h.done_streak == 2
+    # 超限：streak 清零
+    assert h.is_done(out_of_tol, Q_I) is False
+    assert h.done_streak == 0
+    # 重新积满
+    assert h.is_done(in_tol, Q_I) is False  # 1
+    assert h.is_done(in_tol, Q_I) is False  # 2
+    assert h.is_done(in_tol, Q_I) is True   # 3
+    print("  [PASS] streak resets on out-of-tol and rebuilds")
+
+
+def test_is_done_streak_resets_on_reset():
+    """reset() 清零 streak，新 episode 从 0 重新积。"""
+    h = HomingController(pos_tol=0.02, rot_tol=0.05, done_consecutive_n=3)
+    h.reset(np.zeros(3), Q_I)
+    in_tol = np.array([0.01, 0.0, 0.0])
+
+    h.is_done(in_tol, Q_I)
+    h.is_done(in_tol, Q_I)
+    assert h.done_streak == 2
+    # 重置 — streak 应该清零
+    h.reset(np.zeros(3), Q_I)
+    assert h.done_streak == 0
+    assert h.is_done(in_tol, Q_I) is False  # streak=1 not 3
+    print("  [PASS] reset() clears streak")
+
+
+def test_is_done_default_n1_backward_compat():
+    """N=1 (默认) 等价旧行为：单帧 in_tol 立即返回 True。"""
+    h = HomingController(pos_tol=0.02, rot_tol=0.05)  # default n=1
+    h.reset(np.zeros(3), Q_I)
+    assert h.is_done(np.array([0.01, 0.0, 0.0]), Q_I) is True
+    print("  [PASS] N=1 default preserves old behavior")
+
+
 def test_pos_convergence_simulation():
     """纯位置收敛（姿态恒对齐）。"""
     h = HomingController(kp_pos=1.0, action_scale=0.03, pos_tol=0.02)

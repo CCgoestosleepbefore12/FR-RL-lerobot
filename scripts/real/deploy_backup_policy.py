@@ -311,13 +311,18 @@ def main():
         clear_n_steps=CLEAR_N_STEPS,
         homing_pos_tol=HOMING_POS_TOL,
         homing_rot_tol=HOMING_ROT_TOL,
-        # Homing controller's internal scale must match what we apply to /pose.
-        # We re-use BACKUP scales so the homing response rate matches the same
-        # feedback loop the impedance controller is tuned for.
-        homing_action_scale=BACKUP_ACTION_SCALE * LOOKAHEAD,
+        # P 控制器内部 scale = deploy 实际能发的单步距离 = MAX_CART_SPEED/CTRL_HZ
+        # = 0.03 m/step（也等于 deploy 顶部 rate limit `MAX_CART_SPEED * dt`）。
+        # 这样 kp=1 真正 deadbeat 不超调；若 scale 比 rate limit 大，等效 kp 被
+        # 隐式压缩 < 1 → 稳态误差大。
+        homing_action_scale=MAX_CART_SPEED / CTRL_HZ,
+        # rot 没有类似 max_cart_speed 的 rate limit，直接对齐 backup 旋转 scale。
         homing_rot_action_scale=BACKUP_ROTATION_SCALE * LOOKAHEAD,
         homing_kp_pos=1.0,
         homing_kp_rot=1.0,
+        # 阻抗收尾抖动 ±2-5mm 容易瞬时进 tol 单帧判 done 然后被噪声打回，留下
+        # 定格误差。N=3 帧（300ms）连续 within tol 才判 done。
+        homing_done_consecutive_n=3,
     )
     supervisor.reset()
 
@@ -376,12 +381,29 @@ def main():
                 time.sleep(0.1)
                 continue
 
-            color_img, depth_img = hand_detector.get_frames()
-            hand = hand_detector.detect(color_img, depth_img)
-
-            # True TCP + 5mm noise (matches training DR)
+            # True TCP + 5mm noise (matches training DR).
+            # ⚠️ hand_body_equiv / fk_tcp / hand_pos 三者都用 unbiased true pose
+            # （来自 state, 即 /getstate_true），FSM 距离判定一致地在 true 真坐标系
+            # 算 → bias 不影响。supervisor.step / send_pose 用 actual_xyz_biased
+            # （/getstate, biased FK），是 controller 跟踪坐标系，两者各司其职。
             fk_tcp = np.array(state["pose"][:3], dtype=np.float64)
             tcp_noisy = fk_tcp + rng.normal(0, TCP_NOISE_STD, 3)
+
+            # 已知的 franka hand 实际 3D 位置（flange = TCP - 10.34cm 沿 gripper +z）。
+            # 提到 detect() 之前算，用作 self-detection 的几何过滤参考点。
+            hand_body_equiv = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
+
+            color_img, depth_img = hand_detector.get_frames()
+            # 双参考点 self-detection 过滤：flange 10cm 球覆盖手掌+腕部，
+            # TCP 6cm 球覆盖 finger 末端。两个球比单一 12cm 球更贴 franka hand
+            # 几何，既不漏 finger 自检测，也不把贴近的人手误杀。
+            hand = hand_detector.detect(
+                color_img, depth_img,
+                exclude_near_flange=hand_body_equiv,
+                flange_radius=0.10,
+                exclude_near_tcp=fk_tcp,
+                tcp_radius=0.06,
+            )
 
             # Route A alignment: policy obs uses obstacle geometric center
             # (matches sim training's obstacle_pos semantics). FSM uses
@@ -399,7 +421,6 @@ def main():
                 # FSM trigger distance: center-to-center between flange-equiv
                 # (sim's arm sphere center) and the raw hand bbox center.
                 # Use true (unbiased) pose so distance reflects real geometry.
-                hand_body_equiv = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
                 hand_dist = float(np.linalg.norm(hand_body_equiv - bbox_center))
 
                 # Velocity from raw bbox center (physical motion of the hand)
@@ -558,8 +579,11 @@ def main():
             elif new_mode == Mode.HOMING and supervisor.tcp_start_pos is not None:
                 tsp = supervisor.tcp_start_pos
                 pos_err = float(np.linalg.norm(actual_xyz_biased - tsp)) * 1000
+                streak = supervisor.homing_done_streak
+                streak_n = supervisor.homing_done_consecutive_n
                 cv2.putText(vis,
-                            f"homing | pos_err={pos_err:.0f}mm tol={HOMING_POS_TOL*1000:.0f}mm",
+                            f"homing | pos_err={pos_err:.0f}mm tol={HOMING_POS_TOL*1000:.0f}mm "
+                            f"streak={streak}/{streak_n}",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
 
             cv2.putText(vis, f"TCP target: ({target_xyz[0]:.3f},{target_xyz[1]:.3f},{target_xyz[2]:.3f})",

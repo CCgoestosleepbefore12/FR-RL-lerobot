@@ -115,51 +115,97 @@ class HandDetector:
         depth_img = np.asanyarray(aligned.get_depth_frame().get_data())
         return color_img, depth_img
 
-    def detect(self, color_img: np.ndarray, depth_img: np.ndarray) -> HandDetection:
+    def detect(
+        self,
+        color_img: np.ndarray,
+        depth_img: np.ndarray,
+        exclude_near_flange: Optional[np.ndarray] = None,
+        flange_radius: float = 0.10,
+        exclude_near_tcp: Optional[np.ndarray] = None,
+        tcp_radius: float = 0.06,
+    ) -> HandDetection:
+        """Detect a hand and return its 3D position in robot base frame.
+
+        Self-detection 双参考点几何过滤：
+          - ``exclude_near_flange`` (= ``compute_hand_body_equiv``)：franka hand
+            主体中心，半径 ``flange_radius`` (默认 10cm) 覆盖手掌+腕部。
+          - ``exclude_near_tcp`` (= TCP/pinch_site 位置)：finger 末端，半径
+            ``tcp_radius`` (默认 6cm) 覆盖夹爪指尖区域。
+        任一球内的 detection 视为 self-detection 丢弃。两个独立球比单一 12cm
+        球更紧贴 franka hand 几何（手掌侧短、指尖侧长），既不漏过 finger 自检测，
+        也不把贴 gripper 旁的人手误杀。
+
+        ⚠️ 操作员安全约定：人手不能伸入 flange 10cm 球内 —— 进入后 detection
+        被滤，supervisor 看不到障碍 (sim 训练分布外盲区)。BACKUP 触发距 D_SAFE
+        通常 ≥ 30cm，正常人手作业不会撞此盲区。
+        """
         results = self._model.predict(color_img, verbose=False, conf=self.detection_conf)
         boxes = results[0].boxes
 
         if len(boxes) == 0:
             return HandDetection(active=False)
 
-        # Pick the detection closest to image center (most likely the hand near the robot)
-        best_idx = 0
-        best_dist = float('inf')
+        # 先把每个 box 转成 3D 候选，方便统一过滤 self-detection。
+        candidates = []  # list of dicts with bbox/3d/conf/cls
         cx_img, cy_img = self.width / 2, self.height / 2
         for i in range(len(boxes)):
-            x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy()
-            cx = (x1 + x2) / 2
-            cy = (y1 + y2) / 2
-            dist = (cx - cx_img)**2 + (cy - cy_img)**2
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = i
+            x1f, y1f, x2f, y2f = boxes.xyxy[i].cpu().numpy()
+            x1, y1, x2, y2 = int(x1f), int(y1f), int(x2f), int(y2f)
+            u = (x1 + x2) // 2
+            v = (y1 + y2) // 2
 
-        box = boxes[best_idx]
-        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+            depth_val = self._get_depth_at(depth_img, u, v, radius=5)
+            if depth_val <= self.depth_min or depth_val > self.depth_max:
+                continue
+
+            x_cam = (u - self._intrinsics.ppx) * depth_val / self._intrinsics.fx
+            y_cam = (v - self._intrinsics.ppy) * depth_val / self._intrinsics.fy
+            p_cam = np.array([x_cam, y_cam, depth_val])
+            p_robot = (self.T_cam_to_robot @ np.append(p_cam, 1.0))[:3]
+
+            # 几何过滤：双参考点。flange 球覆盖手掌+腕部 (10cm)，TCP 球覆盖
+            # finger 末端 (6cm)。两个球任一命中 → self-detection 丢弃。
+            if exclude_near_flange is not None:
+                d_flange = float(np.linalg.norm(
+                    p_robot - np.asarray(exclude_near_flange).reshape(3)
+                ))
+                if d_flange < flange_radius:
+                    continue
+            if exclude_near_tcp is not None:
+                d_tcp = float(np.linalg.norm(
+                    p_robot - np.asarray(exclude_near_tcp).reshape(3)
+                ))
+                if d_tcp < tcp_radius:
+                    continue
+
+            cx_box = (x1 + x2) / 2.0
+            cy_box = (y1 + y2) / 2.0
+            img_dist2 = (cx_box - cx_img) ** 2 + (cy_box - cy_img) ** 2
+
+            candidates.append({
+                "i": i, "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                "u": u, "v": v, "depth": depth_val,
+                "p_cam": p_cam, "p_robot": p_robot,
+                "img_dist2": img_dist2,
+            })
+
+        if not candidates:
+            return HandDetection(active=False)
+
+        # 在剩余候选里挑最靠图像中心的（保留之前的优先级）。
+        best = min(candidates, key=lambda c: c["img_dist2"])
+        i = best["i"]
+        box = boxes[i]
         conf = float(box.conf[0])
         cls_id = int(box.cls[0])
         hand_side = self._model.names[cls_id]
 
-        # Bbox center
-        u = (x1 + x2) // 2
-        v = (y1 + y2) // 2
+        x1, y1, x2, y2 = best["x1"], best["y1"], best["x2"], best["y2"]
+        u, v = best["u"], best["v"]
+        depth_val = best["depth"]
+        p_cam = best["p_cam"]
+        p_robot = best["p_robot"]
 
-        # Depth at center
-        depth_val = self._get_depth_at(depth_img, u, v, radius=5)
-        if depth_val <= self.depth_min or depth_val > self.depth_max:
-            return HandDetection(active=False)
-
-        # Pixel + depth → camera 3D
-        x_cam = (u - self._intrinsics.ppx) * depth_val / self._intrinsics.fx
-        y_cam = (v - self._intrinsics.ppy) * depth_val / self._intrinsics.fy
-        p_cam = np.array([x_cam, y_cam, depth_val])
-
-        # Camera → robot base frame
-        p_robot = (self.T_cam_to_robot @ np.append(p_cam, 1.0))[:3]
-
-        # Approximate 3D bbox extent at the center's depth (assumes hand roughly
-        # parallel to image plane — ok for typical front-camera setups).
         bbox_w_3d = (x2 - x1) * depth_val / self._intrinsics.fx
         bbox_h_3d = (y2 - y1) * depth_val / self._intrinsics.fy
         bbox_size_3d = np.array([bbox_w_3d, bbox_h_3d], dtype=np.float32)
@@ -216,7 +262,10 @@ class HandDetector:
         valid = patch[patch > 0.1]
         if len(valid) == 0:
             return 0.0
-        return float(np.median(valid))
+        # 25th percentile（lower quartile）而非 median：人手部分遮挡 robot hand
+        # 时 median 倾向距离更近的物体（robot hand 金属夹具），lower-quartile
+        # 更接近"前景"语义，对人手 - robot hand 重叠场景更鲁棒。
+        return float(np.percentile(valid, 25))
 
     def draw_detection(self, color_img: np.ndarray, detection: HandDetection,
                        aruco_pos: Optional[np.ndarray] = None) -> np.ndarray:
@@ -231,7 +280,11 @@ class HandDetector:
                      f"({detection.pos_robot[0]:.2f},{detection.pos_robot[1]:.2f},{detection.pos_robot[2]:.2f})")
             cv2.putText(vis, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         else:
-            cv2.putText(vis, "No hand", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # 右上角，避开 caller 在左上角写的 MODE / dist 标签；
+            # max(10, ...) 防 width<130 时跑负坐标
+            x = max(10, vis.shape[1] - 130)
+            cv2.putText(vis, "No hand", (x, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         if aruco_pos is not None:
             cv2.putText(vis, f"ArUco TCP: ({aruco_pos[0]:.3f},{aruco_pos[1]:.3f},{aruco_pos[2]:.3f})",

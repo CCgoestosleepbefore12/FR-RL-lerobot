@@ -58,6 +58,7 @@ class HierarchicalSupervisor:
         homing_kp_rot: float = 1.0,
         homing_action_scale: float = 0.03,
         homing_rot_action_scale: float = 0.1,
+        homing_done_consecutive_n: int = 1,
     ):
         assert d_safe < d_clear, f"需要 d_safe ({d_safe}) < d_clear ({d_clear})"
         self._d_safe = float(d_safe)
@@ -71,6 +72,7 @@ class HierarchicalSupervisor:
             rot_tol=homing_rot_tol,
             action_scale=homing_action_scale,
             rot_action_scale=homing_rot_action_scale,
+            done_consecutive_n=homing_done_consecutive_n,
         )
 
         self._mode: Mode = Mode.TASK
@@ -103,6 +105,16 @@ class HierarchicalSupervisor:
     def clear_count(self) -> int:
         """当前 BACKUP 下连续 d>d_clear 的步数计数（仅调试用）。"""
         return self._clear_count
+
+    @property
+    def homing_done_streak(self) -> int:
+        """HOMING 下当前连续 within-tol 的帧数（调试用）。"""
+        return self._homing.done_streak
+
+    @property
+    def homing_done_consecutive_n(self) -> int:
+        """HOMING 完成需要的连续 within-tol 帧数（vis 显示用）。"""
+        return self._homing._done_consecutive_n
 
     # ================================================================
     # FSM

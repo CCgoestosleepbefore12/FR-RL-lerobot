@@ -170,11 +170,31 @@ python scripts/hw_check/test_hand_detector.py
 ```
 D455 RGB → WiLoR YOLOv8 → bbox (u1,v1,u2,v2)
   ↓ bbox 中心像素 (u,v)
-D455 depth @ (u,v) → 3D 点（相机系）
+D455 depth @ (u,v) → 3D 点（相机系）  -- 5×5 patch lower-quartile depth
   ↓ T_cam_to_robot
 hand_pos（机器人基座系）
+  ↓ self-detection 几何过滤（双参考点）
+hand_pos（filtered，已剔除 franka hand 自检测）
   + bbox_size_3d = ((u2-u1)*depth/fx, (v2-v1)*depth/fy)
 ```
+
+### 2.4 Self-detection 几何过滤
+
+WiLoR 把 Franka 黑色 gripper hand（两根 finger + 矩形腕部）也识别为"手"。靠 3D
+距离过滤双参考点：
+- `flange_radius = 0.10m` 围绕 `hand_body_equiv`（TCP - 10.34cm 沿 gripper +z），覆盖
+  panda_hand 主体
+- `tcp_radius = 0.06m` 围绕 TCP（pinch_site），覆盖 finger 末端
+
+任一球内的 detection 视为 self-detection 丢弃。两球比单一 12cm 球更紧贴 franka hand
+几何（手掌侧短、指尖侧长），同时控制对人手贴近 gripper 的误杀。
+
+**深度估计**：bbox 中心 5×5 patch 取 lower-quartile（25th percentile）而非 median；
+人手部分遮挡 robot hand 时，前景（人手）距离更近，lower-quartile 更鲁棒。
+
+⚠️ **操作员安全约定**：人手不能伸入 flange 10cm 球内。进入后 detection 被滤，
+supervisor 看不到障碍（属 sim 训练分布外盲区）。BACKUP 触发距 D_SAFE = 0.40m
+远 > 10cm，正常作业不会撞此盲区。
 
 ---
 
@@ -220,6 +240,11 @@ python scripts/real/deploy_backup_policy.py
 - `D_CLEAR = 0.45m` — 允许 BACKUP → HOMING 的阈值（滞回，5cm 带宽）
 - `CLEAR_N_STEPS = 3` — 连续 3 帧 `dist > d_clear` 才切 HOMING（防抖动）
 - `HOMING_POS_TOL = 0.02m` / `HOMING_ROT_TOL = 0.05rad` — HOMING → TASK 收敛阈值
+- `homing_done_consecutive_n = 3` — HOMING → TASK 需连续 3 帧 within tol（300ms）才判完成；
+  防止阻抗收尾抖动 ±2-5mm 单帧瞬时进 tol 切回 TASK 留下定格误差。
+- `homing_action_scale = MAX_CART_SPEED/CTRL_HZ = 0.03 m/step` — HomingController 内部 P
+  控制器单步增量 = deploy 实际能发的最大单步距离（rate limit 上限），保证 kp=1 真正
+  deadbeat 不超调。
 
 > **V3 对齐（2026-04-26）**：阈值升到 0.40/0.45 配合 V3 sim 训练（multi-sphere arm
 > + obstacle r=0.10 + `ARM_SPAWN_DIST_V3=(0.30, 0.40)`）。D_SAFE=0.40 正好 = sim spawn
