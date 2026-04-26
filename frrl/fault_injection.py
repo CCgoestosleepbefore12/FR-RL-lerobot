@@ -387,6 +387,16 @@ class BiasMonitor:
         if self._initialized and not self._disabled:
             try:
                 self._draw_boundary_artists(marker)
+                # 同步刷新各 active subplot 标题，显示当前 episode 的 bias 值。
+                # 否则标题永远停在 _try_init_plot 时第一个 episode 的 bias 上。
+                if bias is not None and self._active_joints is not None:
+                    for i, j in enumerate(self._active_joints):
+                        b = float(bias[j])
+                        self._axes[i].set_title(
+                            f"Joint {j+1}   ep{ep_num} bias = {b:+.4f} rad "
+                            f"({np.rad2deg(b):+.2f}°)",
+                            fontsize=10,
+                        )
             except Exception as e:
                 print(f"[BiasMonitor] boundary draw failed: {e}")
 
