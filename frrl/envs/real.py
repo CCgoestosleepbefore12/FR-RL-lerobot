@@ -254,8 +254,10 @@ class FrankaRealEnv(gym.Env):
             * Rotation.from_quat(self.currpos[3:])
         ).as_quat()
 
-        # 夹爪
-        self._send_gripper_command(gripper_action)
+        # 夹爪：锁定模式下完全跳过（reset 时已经发到位置；step 期间 controller
+        # 内部锁定阻抗保持），自由模式才透传 action[6]。
+        if self.config.gripper_locked == "none":
+            self._send_gripper_command(gripper_action)
         # 位姿命令
         self._send_pos_command(self.clip_safety_box(nextpos))
 
@@ -602,21 +604,29 @@ class FrankaRealEnv(gym.Env):
         self._update_currpos()
 
     def _go_to_reset(self, joint_reset: bool = False):
-        """执行环境重置：precision 模式 → 张开夹爪 → 抬升 → 移动到 reset 位姿 → compliance 模式。"""
+        """执行环境重置：precision 模式 → 复位夹爪 → 抬升 → 移动到 reset 位姿 → compliance 模式。
+
+        夹爪复位行为由 ``config.gripper_locked`` 决定：
+          - "none" / "open" → 张开（pick-place 默认）
+          - "closed"        → 闭合（wipe 任务，保持海绵被夹住）
+        """
         self._update_currpos()
         self._send_pos_command(self.currpos)
         time.sleep(0.3)
         self._http_post("update_param", json=self.config.precision_param)
         time.sleep(0.5)
 
-        # 张开夹爪：上一 episode 可能抓着物体，必须先松手再抬升，否则物体被
-        # 带到 lift_z 高度后才掉落。绕开 _send_gripper_command 的 rate limiter
-        # 直接 POST，确保每次 reset 都能强制张开。阻塞 gripper_sleep 等到位
-        # 再开始 lift。
-        self._http_post("open_gripper")
+        # 夹爪复位：上一 episode 可能处于错误状态。绕开 _send_gripper_command
+        # 的 rate limiter 直接 POST 强制到位。阻塞 gripper_sleep 等机械动作完
+        # 成再 lift，否则物体可能被带到 lift_z 才掉。
+        gripper_endpoint = (
+            "close_gripper" if self.config.gripper_locked == "closed"
+            else "open_gripper"
+        )
+        self._http_post(gripper_endpoint)
         self.last_gripper_act = time.time()
         time.sleep(self.config.gripper_sleep)
-        self._update_currpos()  # 刷新 curr_gripper_pos = 0 (open)
+        self._update_currpos()  # 刷新 curr_gripper_pos
 
         if joint_reset:
             logging.info("JOINT RESET")

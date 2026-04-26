@@ -65,6 +65,20 @@ def _flush_stdin_buffer() -> None:
 # ----------------------------------------------------------------------
 
 
+def build_action_from_spacemouse_locked_gripper(
+    sm_state, sm_buttons,
+    locked_value: float,
+    scale_xyz: float = 1.0,
+    scale_rpy: float = 1.0,
+) -> np.ndarray:
+    """夹爪锁定模式：忽略 sm_buttons，action[6] 强制 const。"""
+    action = np.zeros(7, dtype=np.float32)
+    action[0:3] = np.asarray(sm_state[0:3], dtype=np.float32) * scale_xyz
+    action[3:6] = np.asarray(sm_state[3:6], dtype=np.float32) * scale_rpy
+    action[6] = locked_value
+    return action
+
+
 def build_action_from_spacemouse(
     sm_state: np.ndarray,
     sm_buttons,
@@ -91,9 +105,15 @@ def build_action_from_spacemouse(
     return action
 
 
-def make_config(use_bias: bool) -> FrankaRealConfig:
-    """FrankaRealConfig for demo collection (keyboard reward + optional J1 bias)."""
-    cfg = FrankaRealConfig(reward_backend="keyboard")
+def make_config(use_bias: bool, gripper_locked: str = "none") -> FrankaRealConfig:
+    """FrankaRealConfig for demo collection (keyboard reward + optional J1 bias).
+
+    gripper_locked:
+      "none"   → 默认，夹爪自由控制（pick-place）
+      "closed" → 永远闭合（wipe 任务，海绵被夹住）
+      "open"   → 永远张开（push 任务）
+    """
+    cfg = FrankaRealConfig(reward_backend="keyboard", gripper_locked=gripper_locked)
     if use_bias:
         cfg.encoder_bias_config = EncoderBiasConfig(
             enable=True,
@@ -159,6 +179,9 @@ def main():
                     help="target number of successful demos (default 50)")
     ap.add_argument("--no-bias", action="store_true",
                     help="disable J1 bias injection (default: bias enabled)")
+    ap.add_argument("--gripper", choices=["none", "closed", "open"], default="none",
+                    help="夹爪锁定模式。'closed' 用于 wipe 任务（夹住海绵），"
+                         "'open' 用于 push，'none' 默认用 SpaceMouse 按键自由控制。")
     ap.add_argument("--output-dir", type=str, default="data/task_policy_demos")
     args = ap.parse_args()
 
@@ -166,14 +189,24 @@ def main():
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
 
-    cfg = make_config(use_bias=not args.no_bias)
+    cfg = make_config(use_bias=not args.no_bias, gripper_locked=args.gripper)
     env = FrankaRealEnv(cfg)
     spacemouse = SpaceMouseExpert()
     logging.info(
         f"collection ready — reward=keyboard, "
         f"bias={'J1 U(-0.2, 0.2) per episode' if not args.no_bias else 'DISABLED'}, "
+        f"gripper_locked={args.gripper}, "
         f"target {args.successes_needed} successes"
     )
+
+    # 锁定夹爪时 SpaceMouse 按键无效，action[6] 强制 const（-1=closed, +1=open）。
+    # 用 dataclass-style 闭包：避免每帧 if/else。
+    if args.gripper == "closed":
+        _locked_val = -1.0
+    elif args.gripper == "open":
+        _locked_val = +1.0
+    else:
+        _locked_val = None  # 自由模式
 
     transitions = []      # all flat transitions from successful demos
     trajectory = []       # transitions from the CURRENT episode
@@ -186,7 +219,12 @@ def main():
 
         while success_count < args.successes_needed:
             sm_state, sm_buttons = spacemouse.get_action()
-            action = build_action_from_spacemouse(sm_state, sm_buttons)
+            if _locked_val is None:
+                action = build_action_from_spacemouse(sm_state, sm_buttons)
+            else:
+                action = build_action_from_spacemouse_locked_gripper(
+                    sm_state, sm_buttons, locked_value=_locked_val,
+                )
 
             # Every step in demo collection is 100% human teleop → mark
             # is_intervention=True so RLPD routes the transition into the

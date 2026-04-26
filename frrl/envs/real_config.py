@@ -196,3 +196,12 @@ class FrankaRealConfig:
     # BiasMonitor 数据 npz + 同名 png 输出路径前缀（None = 不存）。脚本侧
     # 通常设到 charts/bias_<timestamp>，BiasMonitor.close() 时一次性写入。
     bias_monitor_save_path: Optional[str] = None
+
+    # Gripper 锁定模式：
+    #   "none"   — 默认，env.step 用 action[6] 自由控制夹爪，reset 时张开
+    #   "closed" — 夹爪永远闭合（如 wipe 任务夹住海绵），reset 时也闭合，
+    #              env.step 忽略 action[6]，policy / SpaceMouse 的夹爪指令无效
+    #   "open"   — 夹爪永远张开（如 push 任务），reset 时张开，step 忽略 action[6]
+    # 锁定模式下 dataset_stats 的 action[6] 应固定为该模式的 const，避免
+    # std=0 触发归一化 NaN。collect_demo 也对应屏蔽 SpaceMouse 夹爪按键。
+    gripper_locked: str = "none"
