@@ -69,8 +69,11 @@ class FrankaRealConfig:
         "front": {"serial_number": FRONT_CAMERA_SERIAL, "dim": (640, 480), "fps": 15, "exposure": 40000},
         "wrist": {"serial_number": WRIST_CAMERA_SERIAL, "dim": (640, 480), "fps": 15, "exposure": 40000},
     })
+    # front ROI 来自 scripts/hw_check/select_workspace_roi.py 鼠标手动框选
+    # (2026-04-26)，bbox=(200,171,408,379) = 208×208 正方形，覆盖 pick-place
+    # 工作区域且裁掉下方无关背景。换 workspace 时重跑 select 脚本 → 改这里。
     image_crop: Dict[str, callable] = field(default_factory=lambda: {
-        "front": workspace_roi_crop_placeholder,   # 阶段 3.5 切到真正 ROI
+        "front": make_workspace_roi_crop(200, 171, 408, 379),
         "wrist": center_square_crop,
     })
     # SAC 架构 (frrl/policies/sac/modeling_sac.py:586) 要求所有相机同尺寸

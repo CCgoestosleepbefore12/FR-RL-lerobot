@@ -88,9 +88,24 @@ def main():
                     help="SAC encoder 输入尺寸（FrankaRealConfig.image_size['front'] 默认 128）")
     ap.add_argument("--serial", type=str, default=FRONT_CAMERA_SERIAL,
                     help=f"D455 serial (default: front {FRONT_CAMERA_SERIAL})")
+    ap.add_argument("--override-roi", type=str, default=None,
+                    help="覆盖 workspace.json 的 ROI，格式 u0,v0,u1,v1（逗号分隔，"
+                         "无空格）。用于不改 json 直接试 crop。建议保持 u1-u0 == v1-v0 "
+                         "（正方形），SAC encoder 要求 H==W；非方时 resize 会拉伸。")
     args = ap.parse_args()
 
     u0, v0, u1, v1, ws_data = load_roi(args.workspace)
+    if args.override_roi is not None:
+        try:
+            parts = [int(x) for x in args.override_roi.split(",")]
+            assert len(parts) == 4, f"need 4 ints u0,v0,u1,v1, got {parts}"
+        except (ValueError, AssertionError) as e:
+            raise SystemExit(f"--override-roi 解析失败: {e}")
+        u0, v0, u1, v1 = parts
+        ws_data = {**ws_data, "roi_shape": "override"}
+        w, h = u1 - u0, v1 - v0
+        print(f"OVERRIDE ROI: ({u0},{v0}) -> ({u1},{v1}) = {w}x{h}px"
+              f"{'  [WARN: not square]' if w != h else ''}")
     print(f"Loaded ROI from {args.workspace}: ({u0},{v0}) -> ({u1},{v1}) "
           f"= {u1-u0}x{v1-v0}px [{ws_data.get('roi_shape', '?')}]")
     print(f"Policy input size: {args.policy_size}x{args.policy_size}")
