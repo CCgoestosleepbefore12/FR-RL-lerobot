@@ -61,8 +61,12 @@ D_SAFE_BY_VERSION = {"v2": 0.30, "v3": 0.40}
 D_CLEAR_BY_VERSION = {"v2": 0.35, "v3": 0.45}
 DEFAULT_CKPT_BY_VERSION = {
     "v2": "checkpoints/backup_policy_s1_v2_newgeom_145k",
-    "v3": "checkpoints/backup_policy_s1_v3_newgeom",  # 占位，待 V3 训完落库后更新
+    "v3": "checkpoints/backup_policy_s1_v3b_300k_95pct",
 }
+# V3c (tracking_target=arm_center, D_TIGHT_ARM=0.23) 当前与 V3b 共用 D_SAFE/D_CLEAR
+# 0.40/0.45——sim 训练 ARM_SPAWN_DIST_V3 (0.30, 0.40) 不变，FSM 触发不变。训完 V3c
+# 后若 fast-approach stress test 表现不及 V3b，部署仍回退 V3b；若 V3c 显著更优考虑
+# 加独立 v3c 档位（保留接口为未来扩展）。详见 docs/sim_exp_data.md Backup S1 V3c 段落。
 CLEAR_N_STEPS = 3      # consecutive clear steps before BACKUP → HOMING
 HOMING_POS_TOL = 0.02  # m
 HOMING_ROT_TOL = 0.05  # rad (~2.9°)
@@ -211,11 +215,11 @@ def main():
     print(f"[OK] ckpt-version={args.ckpt_version} → D_SAFE={d_safe:.2f}m / D_CLEAR={d_clear:.2f}m")
 
     # Sanity: V3 default ckpt path is a placeholder until V3 training lands; raise early
-    if args.ckpt_version == "v3" and not Path(ckpt_path).exists():
+    if not Path(ckpt_path).exists():
         raise SystemExit(
-            f"[ERROR] v3 checkpoint not found: {ckpt_path}\n"
-            f"        V3 training pending; pass --checkpoint <path> explicitly, "
-            f"or use --ckpt-version v2 with the existing V2 ckpt for now."
+            f"[ERROR] checkpoint not found: {ckpt_path}\n"
+            f"        ckpt-version={args.ckpt_version} default points to a non-existent path.\n"
+            f"        Pass --checkpoint <path> explicitly or check checkpoints/ directory."
         )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

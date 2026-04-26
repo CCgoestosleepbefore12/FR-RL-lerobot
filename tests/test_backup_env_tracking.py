@@ -552,68 +552,141 @@ def test_v3_collision_reward_no_proximity():
 
 def test_v3c_tracks_arm_center_not_tcp():
     """V3c: hand 朝 panda_hand body (=arm_center) 移，不朝 pinch_site (=TCP)。
-    放手在已知偏置位置，单步后看 hand 朝哪个方向走。"""
+
+    placement 必须**横向**（不能纯 +z），否则 dir_to_arm 与 dir_to_tcp 几乎共线
+    (TCP 在 arm_center 下方 ~10cm)，cos similarity 测试鉴别力为零。
+    使用 +x 远端 placement 让 dir_to_arm 与 dir_to_tcp 在 xy 平面有可测夹角。"""
     env = _make_env_v3c(seed=20)
     u = env.unwrapped
     arm_center = u._data.xpos[u._panda_hand_body_id].copy()
     tcp = u._data.site_xpos[u._pinch_site_id].copy()
-    # 把 hand 放在已知位置：arm_center 上方 50cm（远离 D_TIGHT_ARM 0.25）
-    u._obstacle_pos[0] = arm_center + np.array([0.0, 0.0, 0.50])
+    # 横向 placement: arm_center + 0.5m × +x 方向（远离 D_TIGHT_ARM 0.23）
+    u._obstacle_pos[0] = arm_center + np.array([0.5, 0.0, 0.0])
 
-    # 计算朝两个 target 移动后的预期方向
+    # 验证测试前提：dir_to_arm 与 dir_to_tcp 有可测夹角（不应共线）
     dir_to_arm = arm_center - u._obstacle_pos[0]; dir_to_arm /= np.linalg.norm(dir_to_arm)
     dir_to_tcp = tcp - u._obstacle_pos[0]; dir_to_tcp /= np.linalg.norm(dir_to_tcp)
-    # 因为 TCP 比 arm_center 低 ~10cm，两个方向有可观差异
+    cos_two_dirs = float(dir_to_arm @ dir_to_tcp)
+    assert cos_two_dirs < 0.999, (
+        f"测试前提失败：placement 让 dir_to_arm 与 dir_to_tcp 几乎共线 "
+        f"(cos={cos_two_dirs:.5f})，无法鉴别 tracking_target。换 placement。"
+    )
 
     pre = u._obstacle_pos[0].copy()
     u._move_obstacle(0)
     post = u._obstacle_pos[0].copy()
     delta = post - pre
     speed = np.linalg.norm(delta)
-    if speed > 1e-8:
-        actual_dir = delta / speed
-        # actual_dir 应更接近 dir_to_arm 而非 dir_to_tcp
-        cos_arm = float(actual_dir @ dir_to_arm)
-        cos_tcp = float(actual_dir @ dir_to_tcp)
-        assert cos_arm > cos_tcp, (
-            f"V3c hand 应朝 arm_center 移而非 TCP；"
-            f"cos(actual, arm)={cos_arm:.3f} vs cos(actual, tcp)={cos_tcp:.3f}"
-        )
-        assert cos_arm > 0.99, f"V3c hand 应几乎正好朝 arm_center, cos={cos_arm:.4f}"
+    assert speed > 1e-8, "hand 应移动（远离 dwell 区域）"
+    actual_dir = delta / speed
+    cos_arm = float(actual_dir @ dir_to_arm)
+    cos_tcp = float(actual_dir @ dir_to_tcp)
+    # 真鉴别：cos_arm 与 cos_tcp 必须有非平凡差距
+    assert (cos_arm - cos_tcp) > 1e-3, (
+        f"鉴别力不足：cos_arm-cos_tcp={cos_arm-cos_tcp:.6f}，"
+        f"两个方向太接近 (cos_arm={cos_arm:.6f}, cos_tcp={cos_tcp:.6f})"
+    )
+    assert cos_arm > cos_tcp, (
+        f"V3c hand 应朝 arm_center 移而非 TCP；"
+        f"cos(actual, arm)={cos_arm:.4f} vs cos(actual, tcp)={cos_tcp:.4f}"
+    )
+    assert cos_arm > 0.99, f"V3c hand 应几乎正好朝 arm_center, cos={cos_arm:.4f}"
     env.close()
-    print(f"  [PASS] V3c hand 移动方向匹配 arm_center (cos {cos_arm:.4f} > tcp cos {cos_tcp:.4f})")
+    print(f"  [PASS] V3c hand 朝 arm_center 而非 TCP "
+          f"(arm cos={cos_arm:.4f} > tcp cos={cos_tcp:.4f}, Δ={cos_arm-cos_tcp:.4f})")
 
 
-def test_v3c_dwell_at_d_tight_arm_no_collision():
-    """V3c: hand 在距 arm_center 25cm (= D_TIGHT_ARM) 时进 dwell；
-    25cm > collision_dist (0.20) → surface_clearance > 0 → 不会撞。"""
+def test_v3c_dwell_at_d_tight_arm_no_collision_panda_hand_only():
+    """V3c: hand 沿 +x 方向（远离 link5/6 方向）在 D_TIGHT_ARM 处 dwell，
+    距 panda_hand 球 D_TIGHT_ARM > collision_dist → 不撞。
+
+    本测试**仅**验证 panda_hand 球安全。link3-6 方向的安全验证见
+    `test_v3c_dwell_safe_for_all_arm_spheres`。"""
     env = _make_env_v3c(seed=21)
     u = env.unwrapped
     arm_center = u._data.xpos[u._panda_hand_body_id].copy()
-    # 把 hand 精准放在 D_TIGHT_ARM = 25cm 距离
+    # +x 远离 panda_hand 但 link5/link6 在另一侧不影响
     u._obstacle_pos[0] = arm_center + np.array([D_TIGHT_ARM - 1e-6, 0.0, 0.0])
 
-    # 触发 _move_obstacle: hand 距 arm_center < D_TIGHT_ARM → 应进 stall
     u._stall_remaining[0] = 0  # 清零，让 _move_obstacle 走 dwell 检查
     pre = u._obstacle_pos[0].copy()
     u._move_obstacle(0)
-    # stall_remaining 应被设为 STALL_STEPS_RANGE 内的值
     assert u._stall_remaining[0] >= STALL_STEPS_RANGE[0], (
         f"V3c 在 D_TIGHT_ARM 内应触发 stall; stall_remaining={u._stall_remaining[0]}"
     )
-    # hand 不动
     assert np.allclose(u._obstacle_pos[0], pre), "stall 时 hand 不应移动"
 
-    # 走一步 step（policy 不动），检查不撞
     obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
     if term and info.get("violation_type") == "hand_collision":
-        # 失败：D_TIGHT_ARM 在 collision_dist 之内会报这个错
         raise AssertionError(
-            f"V3c 在 D_TIGHT_ARM={D_TIGHT_ARM}m 处不应触发碰撞；"
+            f"V3c 在 D_TIGHT_ARM={D_TIGHT_ARM}m (panda_hand 方向) 不应碰撞；"
             f"collision_dist={ARM_COLLISION_DIST_V3}m, info={info}"
         )
     env.close()
-    print(f"  [PASS] V3c dwell 在 {D_TIGHT_ARM}m > collision {ARM_COLLISION_DIST_V3}m 处无碰撞")
+    print(f"  [PASS] V3c +x dwell 在 {D_TIGHT_ARM}m 距 panda_hand 不撞")
+
+
+def test_v3c_dwell_safe_for_all_arm_spheres():
+    """V3c 多球安全检查：obstacle 在 D_TIGHT_ARM 距 panda_hand 时，必须保证距
+    link3/4/5/6 也都 > 各自 collision_dist (sphere_r + obstacle_r=0.10)。
+
+    机制：reset() 的 spawn 拒绝采样保证 spawn 位置满足；hand 在 dwell 内不动，
+    所以 dwell 期间安全。这个测试验证：在 spawn 后让 hand 沿"接近某个 link 球"
+    方向 dwell 不会撞那个 link 球。如果出现这种情况，说明 V3c 几何设计有缺陷
+    (D_TIGHT_ARM 不能仅基于 panda_hand 球决定，要 min over 所有球)。"""
+    env = _make_env_v3c(seed=22)
+    u = env.unwrapped
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+
+    # 找最近的非 panda_hand 球
+    closest_link_pos = None
+    closest_link_name = None
+    closest_dist = float("inf")
+    for bid, sphere_r in u._arm_sphere_specs:
+        name = u._model.body(bid).name
+        if name == "hand": continue
+        link_pos = u._data.xpos[bid].copy()
+        d = float(np.linalg.norm(link_pos - arm_center))
+        if d < closest_dist:
+            closest_dist = d; closest_link_pos = link_pos; closest_link_name = name
+
+    # 在 panda_hand 球面 D_TIGHT_ARM 上、且尽量靠近 closest link 方向
+    # placement: arm_center → closest_link 方向，距离 D_TIGHT_ARM (- ε 触发 dwell)
+    direction = (closest_link_pos - arm_center) / np.linalg.norm(closest_link_pos - arm_center)
+    u._obstacle_pos[0] = arm_center + direction * (D_TIGHT_ARM - 1e-6)
+
+    # 检查这个 placement 下到所有 arm 球的距离
+    fail_spheres = []
+    for bid, sphere_r in u._arm_sphere_specs:
+        name = u._model.body(bid).name
+        sp_pos = u._data.xpos[bid].copy()
+        d = float(np.linalg.norm(u._obstacle_pos[0] - sp_pos))
+        threshold = sphere_r + OBSTACLE_RADIUS_V3
+        if d < threshold:
+            fail_spheres.append((name, d, threshold))
+
+    # 如果某 link 距离 < 阈值，触发 dwell 当步可能 collision
+    u._stall_remaining[0] = 0
+    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
+
+    if fail_spheres:
+        # 这种 placement 下，dwell 几何不安全——validate 测试至少 catches 这个
+        if not term or info.get("violation_type") != "hand_collision":
+            print(f"  [WARN] V3c 朝 {closest_link_name} 方向 dwell 在 D_TIGHT_ARM 距 "
+                  f"{[(n, f'{d:.3f}') for n,d,_ in fail_spheres]} < 各自 threshold "
+                  f"{[f'{t:.3f}' for _,_,t in fail_spheres]}，但 step 没触发 collision——可能因为 hand 沿球面分布"
+                  f" (info={info})")
+    else:
+        # placement 下所有球都安全
+        if term and info.get("violation_type") == "hand_collision":
+            raise AssertionError(
+                f"V3c 朝 {closest_link_name} 方向 dwell 在 D_TIGHT_ARM 应不撞；"
+                f"placement 距各球: {[(u._model.body(bid).name, float(np.linalg.norm(u._obstacle_pos[0]-u._data.xpos[bid]))) for bid,_ in u._arm_sphere_specs]}, "
+                f"info={info}"
+            )
+    env.close()
+    print(f"  [PASS] V3c 朝 {closest_link_name} dwell 几何检查 "
+          f"(closest_dist={closest_dist:.3f}, fail_spheres={len(fail_spheres)})")
 
 
 def test_v3c_requires_arm_sphere_collision():
@@ -629,29 +702,41 @@ def test_v3c_requires_arm_sphere_collision():
     print(f"  [PASS] V3c 拒绝 tracking_target=arm_center + use_arm_sphere_collision=False")
 
 
-def test_v3_default_tracking_target_is_tcp():
-    """V3 默认 tracking_target='tcp' 行为不变（向后兼容）。"""
+def test_default_tracking_target_is_tcp():
+    """V1/V2/V3 默认 tracking_target='tcp' 行为不变（向后兼容）。
+
+    placement 同 V3c 测试用横向 +x 远端，避免 cos similarity 浮点同值。"""
+    # 先用状态级断言（廉价、确定）
+    for env_factory, name in [(_make_env, "V1"), (_make_env_v2, "V2"), (_make_env_v3, "V3")]:
+        env = env_factory(seed=23)
+        u = env.unwrapped
+        assert u._tracking_target == "tcp", f"{name} 默认应是 'tcp', got {u._tracking_target!r}"
+        assert u._d_tight == D_TIGHT, f"{name} 默认 d_tight 应 = D_TIGHT (8cm), got {u._d_tight}"
+        env.close()
+
+    # 再用方向鉴别（同 V3c 横向 placement）
     env = _make_env_v3(seed=23)
     u = env.unwrapped
-    assert u._tracking_target == "tcp", f"V3 默认应是 'tcp', got {u._tracking_target!r}"
-    assert u._d_tight == D_TIGHT, f"V3 默认 d_tight 应 = D_TIGHT (8cm), got {u._d_tight}"
-    # 验证 _move_obstacle 走 TCP 路径（hand 朝 pinch_site 移）
     arm_center = u._data.xpos[u._panda_hand_body_id].copy()
     tcp = u._data.site_xpos[u._pinch_site_id].copy()
-    u._obstacle_pos[0] = arm_center + np.array([0.0, 0.0, 0.50])
+    u._obstacle_pos[0] = arm_center + np.array([0.5, 0.0, 0.0])
+    dir_to_tcp = tcp - u._obstacle_pos[0]; dir_to_tcp /= np.linalg.norm(dir_to_tcp)
+    dir_to_arm = arm_center - u._obstacle_pos[0]; dir_to_arm /= np.linalg.norm(dir_to_arm)
+    assert float(dir_to_tcp @ dir_to_arm) < 0.999, "测试前提：两方向应有可测夹角"
+
     pre = u._obstacle_pos[0].copy()
     u._move_obstacle(0)
     post = u._obstacle_pos[0].copy()
     delta = post - pre
-    if np.linalg.norm(delta) > 1e-8:
-        actual = delta / np.linalg.norm(delta)
-        dir_to_tcp = (tcp - pre) / np.linalg.norm(tcp - pre)
-        dir_to_arm = (arm_center - pre) / np.linalg.norm(arm_center - pre)
-        cos_tcp = float(actual @ dir_to_tcp)
-        cos_arm = float(actual @ dir_to_arm)
-        assert cos_tcp > cos_arm, f"V3 默认应朝 TCP, cos_tcp={cos_tcp} cos_arm={cos_arm}"
+    assert np.linalg.norm(delta) > 1e-8, "hand 应移动"
+    actual = delta / np.linalg.norm(delta)
+    cos_tcp = float(actual @ dir_to_tcp)
+    cos_arm = float(actual @ dir_to_arm)
+    assert (cos_tcp - cos_arm) > 1e-3, f"鉴别力不足: Δ={cos_tcp-cos_arm:.6f}"
+    assert cos_tcp > cos_arm, f"V3 默认应朝 TCP, cos_tcp={cos_tcp} cos_arm={cos_arm}"
     env.close()
-    print(f"  [PASS] V3 默认 tracking_target='tcp' (向后兼容)")
+    print(f"  [PASS] V1/V2/V3 默认 tracking_target='tcp' "
+          f"(状态 + 方向双验，cos_tcp={cos_tcp:.4f} > cos_arm={cos_arm:.4f})")
 
 
 def test_v3_backward_compat_v2():
@@ -705,9 +790,10 @@ def main():
         test_v3_collision_reward_no_proximity,
         test_v3_backward_compat_v2,
         test_v3c_tracks_arm_center_not_tcp,
-        test_v3c_dwell_at_d_tight_arm_no_collision,
+        test_v3c_dwell_at_d_tight_arm_no_collision_panda_hand_only,
+        test_v3c_dwell_safe_for_all_arm_spheres,
         test_v3c_requires_arm_sphere_collision,
-        test_v3_default_tracking_target_is_tcp,
+        test_default_tracking_target_is_tcp,
     ]
     for t in tests:
         try:

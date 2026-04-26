@@ -450,7 +450,7 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 | `checkpoints/backup_policy_s1_v3_300k_71pct/` | V3 首训（max_disp=0.40, 71.5%, ablation 对照） | `--ckpt-version v3` |
 | `checkpoints/backup_policy_s1_v3b_115k_90pct/` | V3 Path A 中段（max_disp=0.50, 115k, 89.5%, 训练曲线记录）| `--ckpt-version v3` |
 | `checkpoints/backup_policy_s1_v3b_300k_95pct/` | **V3 Path A 训完版（max_disp=0.50, 300k, 95%, hand_collision 3%）** ⭐ | **真机首选**，`--ckpt-version v3` |
-| `checkpoints/backup_policy_s1_v3c_*` | V3c (tracking arm_center + D_TIGHT_ARM=25cm) 待训完 | `--ckpt-version v3` |
+| `checkpoints/backup_policy_s1_v3c_*` | V3c (tracking arm_center + D_TIGHT_ARM=23cm) 待训完 | `--ckpt-version v3`（待训完后评估是否独立 v3c 档，目前几何与 V3b 共用 D_SAFE/D_CLEAR）|
 
 ### 9.2 本地训练输出（`outputs/`，**不入 git**）
 
