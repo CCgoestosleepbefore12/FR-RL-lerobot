@@ -340,6 +340,24 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 
 ## 七、待办事项
 
+### [共通] Vision encoder：ResNet10 → DINOv3-S（2026-04-26 切换）
+
+动机：sim 分类任务用 ResNet10 失败，证明 ImageNet 预训 CNN 对 manipulation 任务特征不够分离。**升级 DINOv3-S** (ViT-S/16, 21M frozen, LVD-1689M 预训 1.69B 图)，dense feature 质量首次超过 weakly-supervised 模型。
+
+实现：`frrl/policies/sac/modeling_sac.py::PretrainedImageEncoder` 加 ViT 适配（detect ViT vs CNN backbone, 丢 CLS+register tokens, reshape 成 4D feature map）；ResNet10 路径完全保留向后兼容。
+
+参数对比（task policy real, shared_encoder + freeze + 2 cam 128²）：
+
+| 项 | ResNet10 (旧) | DINOv3-S (新) |
+|---|---|---|
+| trainable | 3.57M | 2.08M |
+| total | 8.47M | 24.14M |
+| frozen vision | 4.9M | 22.06M |
+
+11 个 task/safe config 已切换到 `facebook/dinov3-vits16-pretrain-lvd1689m`。Backup policy 不用 vision，不受影响。
+
+⚠️ **DINOv3 是 HF gated repo**：首次下载需 `huggingface-cli login` + 在 [HF 模型页](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m) 上 accept license。
+
 ### [real] 真机部署（当前焦点）
 - [x] RT PC 内核 + libfranka + franka_ros + serl_franka_controllers 部署
 - [x] 两机网络隔离

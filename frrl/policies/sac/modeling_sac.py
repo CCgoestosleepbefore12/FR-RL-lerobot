@@ -974,28 +974,78 @@ def freeze_image_encoder(image_encoder: nn.Module):
 
 
 class PretrainedImageEncoder(nn.Module):
+    """HuggingFace AutoModel-loaded image encoder. Supports both CNN (ResNet 系列)
+    和 ViT (DINOv2 / DINOv3 / CLIP-ViT 等) backbone。
+
+    上层 SACObservationEncoder 期望 forward 输出 4D feature map `(B, C, H, W)` 喂给
+    SpatialLearnedEmbeddings。CNN 天然输出 4D，ViT 输出 3D token sequence
+    `(B, N, D)`，需要丢 non-patch tokens (CLS + register) 后 reshape 成 4D。
+    """
+
     def __init__(self, config: SACConfig):
         super().__init__()
 
         self.image_enc_layers, self.image_enc_out_shape = self._load_pretrained_vision_encoder(config)
+        # ViT 适配：non-patch token 数 = 1 (CLS) + num_register_tokens
+        # CNN 路径下 _is_vit=False，forward 不走 reshape 分支
+        self._is_vit = self._detect_vit_backbone()
+        if self._is_vit:
+            num_reg = getattr(self.image_enc_layers.config, "num_register_tokens", 0)
+            self._num_non_patch_tokens = 1 + int(num_reg)
+        else:
+            self._num_non_patch_tokens = 0
 
     def _load_pretrained_vision_encoder(self, config: SACConfig):
-        """Set up CNN encoder"""
+        """加载 HF AutoModel 并解析输出通道数。"""
         from transformers import AutoModel
 
         self.image_enc_layers = AutoModel.from_pretrained(config.vision_encoder_name, trust_remote_code=True)
 
         if hasattr(self.image_enc_layers.config, "hidden_sizes"):
-            self.image_enc_out_shape = self.image_enc_layers.config.hidden_sizes[-1]  # Last channel dimension
+            # CNN (ResNet 等)：输出通道 = hidden_sizes[-1]
+            self.image_enc_out_shape = self.image_enc_layers.config.hidden_sizes[-1]
+        elif hasattr(self.image_enc_layers.config, "hidden_size"):
+            # ViT (DINOv2/v3, CLIP-ViT 等)：embedding 维度 = hidden_size
+            self.image_enc_out_shape = self.image_enc_layers.config.hidden_size
         elif hasattr(self.image_enc_layers, "fc"):
             self.image_enc_out_shape = self.image_enc_layers.fc.in_features
         else:
-            raise ValueError("Unsupported vision encoder architecture, make sure you are using a CNN")
+            raise ValueError(
+                "Unsupported vision encoder architecture; expected `hidden_sizes` "
+                "(CNN) or `hidden_size` (ViT) on model config."
+            )
         return self.image_enc_layers, self.image_enc_out_shape
 
+    def _detect_vit_backbone(self) -> bool:
+        """判断 backbone 是否为 ViT。CNN 有 `hidden_sizes`，ViT 有 `hidden_size`
+        但通常没有 `hidden_sizes`。也通过 model_type / patch_size 兜底。"""
+        cfg = self.image_enc_layers.config
+        if hasattr(cfg, "hidden_sizes"):
+            return False
+        if hasattr(cfg, "patch_size") or hasattr(cfg, "num_register_tokens"):
+            return True
+        # 兜底：HF model_type 含 "vit" / "dinov" / "clip"
+        mt = getattr(cfg, "model_type", "").lower()
+        return any(kw in mt for kw in ["vit", "dinov", "clip"])
+
     def forward(self, x):
-        enc_feat = self.image_enc_layers(x).last_hidden_state
-        return enc_feat
+        out = self.image_enc_layers(x)
+        feat = out.last_hidden_state                                         # CNN: (B,C,H,W); ViT: (B,N,D)
+
+        if self._is_vit:
+            # ViT 路径：丢 [CLS]+register tokens，剩下的 patch tokens reshape 成 (B,D,H',W')
+            patch = feat[:, self._num_non_patch_tokens:, :]                  # shape: (B, num_patches, D)
+            B, N, D = patch.shape
+            side = int(round(N ** 0.5))
+            if side * side != N:
+                raise ValueError(
+                    f"PretrainedImageEncoder: ViT patch grid not square "
+                    f"(N={N}, num_non_patch={self._num_non_patch_tokens}). "
+                    "确认输入分辨率被 patch_size 整除。"
+                )
+            feat = patch.permute(0, 2, 1).reshape(B, D, side, side)          # shape: (B, D, side, side)
+
+        return feat
 
 
 def orthogonal_init():

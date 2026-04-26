@@ -45,7 +45,7 @@
         },
         "device": "cuda",
         "storage_device": "cpu",
-        "vision_encoder_name": "helper2424/resnet10",
+        "vision_encoder_name": "facebook/dinov3-vits16-pretrain-lvd1689m",
         "freeze_vision_encoder": true,
         "shared_encoder": true,
         "image_encoder_hidden_dim": 32,

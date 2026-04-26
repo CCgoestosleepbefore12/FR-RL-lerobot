@@ -211,15 +211,25 @@ python scripts/tools/pretrain_task_policy.py \
 
 ### 参数量验证
 
-正常配置下（`shared_encoder=true`, `freeze_vision_encoder=true`, 2 相机 128²）：
+**ResNet10 baseline**（`shared_encoder=true`, `freeze_vision_encoder=true`, 2 相机 128²）：
 ```
 num_learnable_params ≈ 3.57M
-num_total_params ≈ 8.47M
+num_total_params ≈ 8.47M  (含 4.9M frozen ResNet10)
 ```
+
+**DINOv3-S baseline**（2026-04-26 起切换；ViT-S/16, 21M frozen）：
+```
+num_learnable_params ≈ 2.08M (略低于 ResNet10 因为 ViT 投影代替 spatial embedding)
+num_total_params ≈ 24.14M (含 22.06M frozen DINOv3)
+```
+
+切换 DINOv3-S 的动机：sim 分类任务用 ResNet10 失败，证明 ResNet10 ImageNet 预训特征对 manipulation 任务不够分离。DINOv3 用 LVD-1689M (1.69B 张) 自监督预训，dense feature 质量首次超过 weakly-supervised 模型。`PretrainedImageEncoder` 已加 ViT 适配（patch token sequence → 4D feature map），ResNet 路径不破坏。
+
+⚠️ **DINOv3 是 HuggingFace gated repo**：首次下载需 (1) `huggingface-cli login` (2) 在 https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m 上 accept license。否则 SAC 启动时 OSError。
 
 数量级不符请先检查：
 - `shared_encoder` 是否 true（false 会导致 3× 参数）
-- 图像分辨率（224 会比 128 多 4× encoder latent）
+- 图像分辨率（224 会比 128 多 4× encoder latent，DINOv3 patch 16 → 14×14=196 patch）
 - `num_discrete_actions` 是否为 null（非 null 会加 discrete critic 头）
 
 ---
@@ -245,7 +255,7 @@ num_total_params ≈ 8.47M
 {
     "policy": {
         "shared_encoder": true,          // 共享 encoder 省 3× 参数
-        "freeze_vision_encoder": true,   // 冻结 ResNet10 backbone
+        "freeze_vision_encoder": true,   // 冻结 DINOv3-S backbone（之前是 ResNet10）
         "offline_only_mode": true,       // 切换 pretrain 模式
         "offline_pretrain_steps": 5000,
         "demo_pickle_paths": [],         // CLI 覆盖
