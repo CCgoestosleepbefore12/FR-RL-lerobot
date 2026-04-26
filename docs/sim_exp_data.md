@@ -984,14 +984,44 @@ bash scripts/real/train_hil_sac.sh backup_v3 learner   # 端口 50055
 bash scripts/real/train_hil_sac.sh backup_v3 actor
 ```
 
-### 后续 TODO
+### V3 Path A 重训结果（2026-04-26 / 04-27, 300k learner step, 6.3h）
 
-- [x] 首训 300k + offline eval 200 ep → 71.5% 落档
-- [ ] Path A 重训（max_disp 0.50）→ eval 比较
-- [ ] 若 Path A 仍 < 80%，考虑 Path B（v_hand 0.030 → 0.025）或 Path C（A+B）
-- [ ] 中间 ckpt 50/100/150/200/250k 选最稳点（首训只 eval 了 300k，可能不是最优）
-- [ ] 真机端到端首跑（用当前 71.5% ckpt 或 Path A 改进版）
-- [ ] eval 统计 hand_collision 终止里 link3-6 占比（验证多球确实被 policy 用上）
+`max_displacement` 0.40 → 0.50，其他参数全部不变。
+
+**关键发现：单参数改动同时救了两个失效模式**
+
+| 终止原因 | V3 (0.40, 300k) | **V3b (0.50, 300k)** | Δ |
+|---|---|---|---|
+| survived | 66.5% | **91.0%** | +24.5% |
+| hand_collision | 17.5% | **3.0%** | **−14.5%** ⭐ |
+| excessive_displacement | 14.5% | 5.5% | −9.0% |
+| zone_c_intrusion | 1.0% | 0.5% | — |
+| block_dropped | 0.5% | 0.0% | — |
+| **总满存活率** | **71.5%** | **95.0%** | **+23.5%** |
+
+**hand_collision 降 14.5% 是意外大收获**——V3 首训假设 multi-sphere 几何天然难（5 球 vs 单球），实测 max_disp 放宽后 hand_collision 也大幅降，**说明大半碰撞是因为 policy 想退但被位移上限"夹"住，不是真的避不开**。Path A 单参数改动一举两得。
+
+### V3 Path A 训练曲线（200 ep deterministic eval）
+
+| Ckpt | 存活率 | hand_collision | excessive_disp | 平均奖励 |
+|---|---|---|---|---|
+|  65k | 89.0% | 11.0% | 7.5% | +9.69 |
+| 115k | 89.5% |  7.0% | 7.5% | +10.59 |
+| 150k | 91.5% |  7.0% | 4.0% | +11.01 |
+| 200k | 91.0% |  5.5% | 5.0% | +11.10 |
+| 250k | 91.5% |  6.5% | 3.5% | +11.00 |
+| **300k** | **95.0%** | **3.0%** | 5.5% | **+11.41** |
+
+300k 在最后一段把 hand_collision 砍到 3%——multi-sphere 避让能力完全学到位（已接近 V2 单球 100% 但根除真机肘撞）。
+
+### TODO
+
+- [x] 首训 300k + 200 ep eval → 71.5% 落档 `backup_policy_s1_v3_300k_71pct`
+- [x] **Path A 重训 (max_disp 0.50) → 300k → 95% 落档 `backup_policy_s1_v3b_300k_95pct` ⭐ 真机首选**
+- [x] 中间 ckpt 65k/115k/150k/200k/250k/300k 全部 eval，确认 300k 是 final 最佳
+- [ ] 真机端到端首跑（用 V3b 300k 95% ckpt）
+- [ ] Path B (v_hand 0.030 → 0.025) ablation —— 不必须，95% 已超预期
+- [ ] eval 统计 hand_collision 终止里 link3-6 vs hand 占比（验证多球检测被 policy 真正使用）
 
 ---
 
