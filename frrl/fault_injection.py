@@ -445,17 +445,25 @@ class BiasMonitor:
             self._disabled = True
 
     def close(self) -> None:
-        """Save buffered data to npz (if configured) and close the figure."""
+        """Save buffered data (npz) + figure snapshot (png) and close.
+
+        Both files share the prefix ``self._save_path`` (.npz removed if
+        present): e.g. ``charts/bias_2026-04-26_18-05-00`` →
+        ``...npz`` + ``...png``. ``_save_path=None`` 时只关图不存。
+        """
         if self._save_path is not None and len(self._times) > 0:
+            from pathlib import Path
+            base = Path(str(self._save_path))
+            if base.suffix == ".npz":
+                base = base.with_suffix("")
             try:
-                # Episode boundaries: only in-window markers have been retained,
-                # but that's what you need for segmenting the saved q_* arrays.
                 ep_t = np.array([m["t"] for m in self._ep_markers],
                                 dtype=np.float32)
                 ep_num = np.array([m["ep"] for m in self._ep_markers],
                                   dtype=np.int32)
+                npz_path = base.with_suffix(".npz")
                 np.savez(
-                    self._save_path,
+                    str(npz_path),
                     t=np.array(self._times, dtype=np.float32),
                     q_true=np.stack(list(self._q_true)),
                     q_biased=np.stack(list(self._q_biased)),
@@ -463,9 +471,16 @@ class BiasMonitor:
                     ep_boundary_t=ep_t,
                     ep_boundary_num=ep_num,
                 )
-                print(f"[BiasMonitor] saved {len(self._times)} samples to {self._save_path}")
+                print(f"[BiasMonitor] saved {len(self._times)} samples to {npz_path}")
             except Exception as e:
-                print(f"[BiasMonitor] save failed: {e}")
+                print(f"[BiasMonitor] npz save failed: {e}")
+            if self._fig is not None:
+                try:
+                    png_path = base.with_suffix(".png")
+                    self._fig.savefig(str(png_path), dpi=120, bbox_inches="tight")
+                    print(f"[BiasMonitor] saved figure to {png_path}")
+                except Exception as e:
+                    print(f"[BiasMonitor] png save failed: {e}")
         if self._fig is not None:
             try:
                 import matplotlib.pyplot as plt

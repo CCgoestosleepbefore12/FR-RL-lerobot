@@ -135,7 +135,10 @@ class FrankaRealEnv(gym.Env):
         self._bias_monitor = None
         if self.bias_injector is not None and config.enable_bias_monitor:
             from frrl.fault_injection import BiasMonitor
-            self._bias_monitor = BiasMonitor(update_hz=2.0)
+            self._bias_monitor = BiasMonitor(
+                update_hz=2.0,
+                save_path=config.bias_monitor_save_path,
+            )
 
         # 运行时状态 —— biased（来自 /getstate）
         self.currpos = np.zeros(7)     # xyz + quat  (7D) biased
@@ -325,11 +328,11 @@ class FrankaRealEnv(gym.Env):
         self._is_intervention_pending = bool(is_intervention)
 
     def _render_live_view(self) -> None:
-        """本地 imshow 两路相机的原始 BGR 帧（640×480，crop 前）。
+        """单窗口同框显示双相机 — 已经过 crop + resize 到 image_size 的 BGR 帧
+        （即送进 vision encoder 的真实输入），左 front / 右 wrist。
 
-        仅当 `config.display_image=True` 且相机已初始化且没有历史失败时才调用
-        `cv2.imshow`。headless（无 X11）首次调用会抛 cv2.error → 吞掉 + 打一次
-        warning + 置 `_live_view_failed=True`，后续 step 不再尝试。
+        显示前 upscale 3× 让小目标肉眼可读（128² → 384² 单路 → hstack 768x384
+        总框）。headless（无 X11）首次 cv2.error 时降级为 silent。
         """
         if (
             not self.config.display_image
@@ -338,8 +341,30 @@ class FrankaRealEnv(gym.Env):
         ):
             return
         try:
-            for name, bgr in self._camera_manager.get_images_raw().items():
-                cv2.imshow(f"cam/{name}", bgr)
+            raw = self._camera_manager.get_images_raw()
+            panels = []
+            for name in ("front", "wrist"):
+                if name not in raw:
+                    continue
+                bgr = raw[name]
+                crop_fn = self.config.image_crop.get(name)
+                target_wh = self.config.image_size.get(name)
+                if crop_fn is None or target_wh is None:
+                    panels.append(bgr)
+                    continue
+                cropped = crop_fn(bgr)
+                resized = cv2.resize(cropped, target_wh, interpolation=cv2.INTER_AREA)
+                # upscale 3× 让 128² 不那么憋屈
+                up = cv2.resize(resized,
+                                (target_wh[0] * 3, target_wh[1] * 3),
+                                interpolation=cv2.INTER_NEAREST)
+                cv2.putText(up, name, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (0, 255, 0), 2)
+                panels.append(up)
+            if not panels:
+                return
+            combined = np.hstack(panels) if len(panels) > 1 else panels[0]
+            cv2.imshow("cam (encoder input)", combined)
             cv2.waitKey(1)
         except cv2.error as e:
             logging.warning(

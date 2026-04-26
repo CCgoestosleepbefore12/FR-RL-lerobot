@@ -104,6 +104,14 @@ def make_config(use_bias: bool) -> FrankaRealConfig:
         )
         # 弹出 BiasMonitor 波形窗（仅在本地 demo 时开；远程 headless 训练用默认 False）
         cfg.enable_bias_monitor = True
+        # 默认存到 charts/bias_<timestamp>.npz + .png（BiasMonitor.close() 写）。
+        # mkdir 在 main() 里启动时做，这里只生成路径前缀。
+        from datetime import datetime
+        from pathlib import Path
+        charts_dir = Path("charts")
+        charts_dir.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cfg.bias_monitor_save_path = str(charts_dir / f"bias_{ts}")
     return cfg
 
 
@@ -224,6 +232,14 @@ def main():
             env.go_home()
         except Exception as e:
             logging.warning(f"go_home on shutdown failed: {e}")
+        # 清 RT PC 残留 bias，防下次跑别的脚本读到上 episode 的 bias。go_home
+        # 不触发 on_episode_start，所以这里显式清。
+        try:
+            import requests
+            requests.post("http://192.168.100.1:5000/clear_encoder_bias", timeout=2.0)
+            logging.info("encoder_bias cleared on shutdown")
+        except Exception as e:
+            logging.warning(f"clear_encoder_bias on shutdown failed: {e}")
         try:
             spacemouse.close()
         finally:

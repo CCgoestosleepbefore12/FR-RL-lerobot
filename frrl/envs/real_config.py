@@ -192,3 +192,7 @@ class FrankaRealConfig:
     # encoder_bias_config 非空 & 本开关 True 时创建 BiasMonitor。默认关：
     # headless 训练不要 GUI，本地 demo / online HIL 时脚本侧显式置 True 即可。
     enable_bias_monitor: bool = False
+
+    # BiasMonitor 数据 npz + 同名 png 输出路径前缀（None = 不存）。脚本侧
+    # 通常设到 charts/bias_<timestamp>，BiasMonitor.close() 时一次性写入。
+    bias_monitor_save_path: Optional[str] = None

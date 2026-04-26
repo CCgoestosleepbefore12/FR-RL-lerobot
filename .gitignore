@@ -24,8 +24,9 @@ d455_color.png
 d455_depth.png
 debug_aruco_frame.png
 
-# BiasMonitor npz dumps
+# BiasMonitor npz/png dumps
 bias_*.npz
+charts/
 
 # Task policy demo pickles (per-robot teleop recordings, too large for git)
 data/task_policy_demos/*.pkl
