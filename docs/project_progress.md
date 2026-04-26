@@ -500,11 +500,12 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 | GripperPenalty 激活 | ✅ 软件 | `gripper_penalty=-0.05` 对齐 sim |
 | Phase 2 critic-only warmup（actor 冻结） | ✅ 软件 | `SACConfig.critic_only_online_steps` + `learner._should_freeze_actor` / `_should_run_actor_optimization`，配合 `__post_init__._validate_phase2()` 锁契约 |
 | Resume 白名单超参覆盖 | ✅ 软件 | `learner.RESUMABLE_POLICY_OVERRIDES` + 覆盖后 `_validate_phase2()` 重校验 |
-| ArUco 4 角 workspace 校准**执行** | ⏳ 硬件 | 跑脚本 → 填回 `real_config.py::image_crop["front"]` |
-| `abs_pose_limit` 手动引导采样 | ⏳ 硬件 | 需要真机引导 |
-| 50 条真机 demo 采集 | ⏳ 硬件 | `python scripts/real/collect_demo_task_policy.py -n 50` |
-| 真 dataset_stats | ⏳ 硬件 | `compute_dataset_stats.py` 跑完填回 config（现在是先验占位） |
-| 5000 步真 pretrain + wandb | ⏳ 硬件 | demo 就位后 learner 启动即自动执行 |
+| ArUco 4 角 workspace 校准**执行** | ✅ 硬件（2026-04-26）| `scripts/hw_check/select_workspace_roi.py` 鼠标框选 → `roi_front_final=(200,171,408,379)` 208² 落档 `frrl/envs/real_config.py::image_crop["front"]` |
+| `abs_pose_limit` 手动引导采样 | ✅ 硬件（2026-04-25）| 16 点采样 + `tour_workspace_corners.py` 实地巡 8 角 → `[0.386, -0.213, 0.175]` ~ `[0.709, 0.198, 0.315]` |
+| Calibrate cam-to-robot **执行** | ✅ 硬件（2026-04-26）| 四元数根因 bug fix 后重标定，`calibration_data/T_cam_to_robot.npy` |
+| 50 条真机 demo 采集 | ⏳ 硬件 | 当前 13 条（wipe 任务，gripper_locked='closed'）；继续 `--gripper closed -n 37` 凑齐 |
+| 真 dataset_stats | ✅ 硬件（13 demos）| `dataset_stats_generated.json` 已落 `train_task_policy_franka.json`；新加 const-channel guard 防 wipe action[6] std=0 NaN |
+| 5000 步真 pretrain + wandb | ⏳ 硬件 | smoke 500 步通过（critic_loss 0.26→0.014，2026-04-26）；50 demos 凑齐后跑正式 5000 步 |
 | 真机端到端首跑 | ⏳ 硬件 | `task_real learner` + `task_real actor` 双终端 |
 | `eval_bias_curve_realhw.py` | ⏳ 硬件 | 训完 ckpt 后再搭，现在搭无价值 |
 
@@ -520,3 +521,19 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 | P0-4 | frozen ResNet10 BN 在 train mode 下 running_mean 仍漂移；shared encoder 中 state/env path 未对 actor detach | `freeze_image_encoder` 加 `.eval()`；`SACPolicy.train` override 强制 image encoder 永远 eval；`SACObservationEncoder.forward(detach=...)` 对 state/env 也加 detach 分支 |
 | P0-5 | 真机 HTTP 单次失败直接 raise 中断 episode；reset 直线插值有撞撞风险 | 新增 `_http_post` 指数退避重试（pose/getstate/clearerr 等幂等端点）；`jointreset` 单次硬失败；`_go_to_reset` 加 z-lift 抬升避免工件下卡住（**round 4：升级为 lift→horizontal transit→descend 三段路径**）|
 | P0-6 | NaN transition silent skip 让 critic 梯度污染；online buffer 起步过早导致 batch shrink | `check_nan_in_transition` 改 `if NaN: continue`（外层补 `optimization_step += 1` 避免 save_freq 卡死）；`online_step_before_learning=500`、`critic_only_online_steps=2000` |
+
+### 阶段 6 真机部署 round 5 修复（2026-04-26 demo 采集前）
+
+第二轮真机调试，解决 backup deploy + demo 采集中实测发现的问题：
+
+| ID | 议题 | 修复 |
+|---|---|---|
+| R5-1 | WiLoR YOLO 把 franka gripper hand 误识别成人手，supervisor 永触 BACKUP 乱躲 | `HandDetector.detect()` 双参考点几何过滤：`flange_radius=0.10` 球（手掌+腕部）∨ `tcp_radius=0.06` 球（finger 末端），3D 距离任一命中视为 self-detection 丢弃 |
+| R5-2 | HOMING 误差大（~20mm 稳态）+ 阻抗收尾抖动单帧瞬时切走 | `homing_action_scale=MAX_CART_SPEED/CTRL_HZ=0.03` 让 P 控制器算的 step 等于 deploy 实际能发的（kp=1 真正 deadbeat）；`is_done` 加 `done_consecutive_n=3` streak 闸门 |
+| R5-3 | env reset 不处理夹爪，pick-place 上一 episode 抓的物体被带飞 | `_go_to_reset` 加根据 `gripper_locked` mode 强制 open/close + `gripper_sleep` 阻塞等机械到位再 lift |
+| R5-4 | 双相机 live view 显示原始 640×480 BGR 两个独立窗口，对应不上 vision encoder 真实输入 | `_render_live_view` 改单窗 hstack：left front / right wrist，两路都是 image_crop+resize 后的 128² 图，3× upscale 让小目标可见 |
+| R5-5 | 按 S 开始 episode 时 BiasMonitor 弹 "Save figure" 对话框（matplotlib 默认 's' 绑 save） | `_try_init_plot` 创建 figure 前清掉 keymap.save/quit/quit_all/fullscreen/home |
+| R5-6 | 任务级夹爪锁定（wipe 海绵 / push 推动）需要全程闭合或张开 | `FrankaRealConfig.gripper_locked: "none" \| "closed" \| "open"`，env.step 锁定模式跳过 `_send_gripper_command`；collect_demo `--gripper closed` 屏蔽 SpaceMouse 按键，action[6]≡-1 |
+| R5-7 | wipe 任务 action[6] 锁定 -1 → dataset_stats min=max → MIN_MAX 归一化 (x-min)/0=NaN | `compute_dataset_stats.py` 检测 (max-min) < 1e-6 const channel，自动 max=min+1，归一化恒等于 0 不爆 NaN |
+| R5-8 | front workspace ROI 非正方形 412×326（z_plane 投影 4 角太扁），SAC encoder resize 失真 | 新增 `scripts/hw_check/select_workspace_roi.py` 鼠标拖拽框选 + auto-square + 写回 workspace.json，避免依赖几何投影 |
+| R5-9 | BiasMonitor subplot 标题写死第一个 episode bias，后续 episode 切换不更新 | `mark_episode_boundary` 每次刷新 active subplot title 为当前 ep bias 值 |
