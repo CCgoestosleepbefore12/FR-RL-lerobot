@@ -1095,7 +1095,7 @@ V3b vs V3c 数字直接比是错的——两个 env 难度不同。必须做 **2
 | ckpt \ env | V3 env (TCP/0.08) | V3c env (arm/0.23) |
 |---|---|---|
 | V3b 300k | 95.0% (已知) | ? |
-| V3c 300k | ? | ? |
+| V3c 400k | ? | ? |
 
 **决策准则**：选 **min(两 env)** 最高的 ckpt 上真机——避免 overfit 单一 env。
 
@@ -1121,9 +1121,11 @@ V3c 训分布偏 "stable maintain"，对真机快速 approach (人手 ≥ 0.05 m
 
 ### Early-stop 策略（meta agent C.P1-6）
 
-V3c hand stall 让威胁帧密度降 30-50%，可能 300k 不够。**先训 150k 设 checkpoint**：
-- 150k 时 success rate < V3b 同期 (~70-80%) → stop，假设证伪，回退 V3b
-- 150k 时 ≥ V3b 同期 → 续训到 300k 或更长（500k 上限）
+V3c hand stall 让威胁帧密度降 30-50%，**预算 400k step (utd=4)** 留足训练空间。决策点：
+- **150k**：actor success rate < V3b 同期 (~70-80%) → stop，回退 V3b
+- **150k ≥ V3b 同期** → 续训到 300k 中间 eval
+- **300k**：若 deterministic eval ≥ V3b 95% → 已超目标，可早停；若仍 < 90% → 续训到 400k 看曲线
+- **400k**：训完 final eval，落库最佳 ckpt
 
 ---
 

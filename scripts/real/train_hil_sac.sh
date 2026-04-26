@@ -129,7 +129,7 @@ case "$VARIANT" in
         ;;
     backup_v3c)
         CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1_v3c.json"
-        echo "=== Backup Policy S1-V3c arm_center tracking: 同 V3 但 hand 追 panda_hand body (=collision 球心) + D_TIGHT_ARM=25cm（hand 在 25cm > collision 20cm 处停顿，dwell 可达；端口 50056）==="
+        echo "=== Backup Policy S1-V3c arm_center tracking: 同 V3b 但 hand 追 panda_hand body (=collision 球心) + D_TIGHT_ARM=23cm（hand 在 23cm > collision 20cm 处停顿，dwell 可达；utd=4, 400k 步, ~8h, 端口 50056）==="
         TASK_ID="PandaBackupPolicyS1V3c-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v3c"
         ;;
