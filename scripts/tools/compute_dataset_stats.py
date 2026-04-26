@@ -47,10 +47,22 @@ def main():
 
     def stats(arr, name):
         """Return min/max/mean/std per-dim as Python lists (JSON-ready)."""
-        mn = arr.min(axis=0).tolist()
-        mx = arr.max(axis=0).tolist()
+        mn = arr.min(axis=0)
+        mx = arr.max(axis=0)
         mu = arr.mean(axis=0).tolist()
         sd = arr.std(axis=0).tolist()
+        # Const-channel guard: 锁定夹爪等任务下 action[6] 永远 -1 → min=max →
+        # MIN_MAX 归一化 (x-min)/(max-min) = 0/0 = NaN。检测 const 维度并人为
+        # 把 max 抬到 min+1，使该维度归一化恒等于 0（无信息但不爆 NaN）。
+        const_mask = (mx - mn) < 1e-6
+        if const_mask.any():
+            const_idx = np.where(const_mask)[0].tolist()
+            print(f"  [WARN] const channels detected at dim(s) {const_idx} — "
+                  f"setting max=min+1 to avoid normalize NaN")
+            mx = mx.copy()
+            mx[const_mask] = mn[const_mask] + 1.0
+        mn = mn.tolist()
+        mx = mx.tolist()
         print(f"\n== {name} ==  shape={arr.shape}  (showing 6 decimals)")
         print(f"  min: {[round(v, 6) for v in mn]}")
         print(f"  max: {[round(v, 6) for v in mx]}")
