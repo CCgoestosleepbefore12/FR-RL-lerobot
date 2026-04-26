@@ -211,17 +211,19 @@ python scripts/tools/pretrain_task_policy.py \
 
 ### 参数量验证
 
-**ResNet10 baseline**（`shared_encoder=true`, `freeze_vision_encoder=true`, 2 相机 128²）：
+**ResNet10 baseline**（`shared_encoder=true`, `freeze_vision_encoder=true`, 2 相机 128²，含 actor + 2 critics + targets + discrete critic + temperature）：
 ```
 num_learnable_params ≈ 3.57M
 num_total_params ≈ 8.47M  (含 4.9M frozen ResNet10)
 ```
 
-**DINOv3-S baseline**（2026-04-26 起切换；ViT-S/16, 21M frozen）：
+**DINOv3-S baseline**（2026-04-26 起切换；ViT-S/16, 22M frozen）：
 ```
-num_learnable_params ≈ 2.08M (略低于 ResNet10 因为 ViT 投影代替 spatial embedding)
-num_total_params ≈ 24.14M (含 22.06M frozen DINOv3)
+num_learnable_params ≈ 3.94M  (略多于 ResNet10：ViT 投影 + actor/critic 不变)
+num_total_params ≈ 26.00M  (含 22.06M frozen DINOv3)
 ```
+
+obs encoder 单独：trainable 2.08M / total 24.14M（含 frozen ViT），SAC 算法侧 actor+critics+targets 占额外 ~1.86M trainable。
 
 切换 DINOv3-S 的动机：sim 分类任务用 ResNet10 失败，证明 ResNet10 ImageNet 预训特征对 manipulation 任务不够分离。DINOv3 用 LVD-1689M (1.69B 张) 自监督预训，dense feature 质量首次超过 weakly-supervised 模型。`PretrainedImageEncoder` 已加 ViT 适配（patch token sequence → 4D feature map），ResNet 路径不破坏。
 

@@ -346,12 +346,12 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 
 实现：`frrl/policies/sac/modeling_sac.py::PretrainedImageEncoder` 加 ViT 适配（detect ViT vs CNN backbone, 丢 CLS+register tokens, reshape 成 4D feature map）；ResNet10 路径完全保留向后兼容。
 
-参数对比（task policy real, shared_encoder + freeze + 2 cam 128²）：
+参数对比（**完整 SACPolicy**：obs encoder + actor + 2 critics + targets + discrete critic + temperature；shared_encoder + freeze + 2 cam 128²）：
 
 | 项 | ResNet10 (旧) | DINOv3-S (新) |
 |---|---|---|
-| trainable | 3.57M | 2.08M |
-| total | 8.47M | 24.14M |
+| trainable | 3.57M | 3.94M |
+| total | 8.47M | 26.00M |
 | frozen vision | 4.9M | 22.06M |
 
 11 个 task/safe config 已切换到 `facebook/dinov3-vits16-pretrain-lvd1689m`。Backup policy 不用 vision，不受影响。
