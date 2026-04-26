@@ -514,9 +514,23 @@ class SACObservationEncoder(nn.Module):
         if self.config.freeze_vision_encoder:
             freeze_image_encoder(self.image_encoder)
 
-        dummy = torch.zeros(1, *self.config.input_features[self.image_keys[0]].shape)
+        # 输入 sanity：保正方（ViT adapter 假设；CNN 无此约束但保正方利于 spatial embedding）
+        # 注意 ViT 不强制要求 H 被 patch_size 整除——HF 的 ViT 实现用 position embedding
+        # 插值来处理非整除情况（如 DINOv2 patch=14 接受 128 输入实际产 9×9=81 patches）。
+        # patch grid 是否方阵由 forward 内的 sqrt-N check 兜底。
+        img_shape = self.config.input_features[self.image_keys[0]].shape       # (C, H, W)
+        _, _h, _w = img_shape
+        assert _h == _w, f"image input must be square, got {_h}×{_w}"
+
+        dummy = torch.zeros(1, *img_shape)
         with torch.no_grad():
-            _, channels, height, width = self.image_encoder(dummy).shape
+            enc_out = self.image_encoder(dummy)
+        assert enc_out.ndim == 4, (
+            f"PretrainedImageEncoder forward 必须输出 4D (B,C,H,W) 喂给 SpatialLearnedEmbeddings, "
+            f"got ndim={enc_out.ndim}, shape={tuple(enc_out.shape)}. "
+            f"若用了 CLIPModel 顶层、SigLIP 等非 patch-only backbone，请改用 vision tower 子模型。"
+        )
+        _, channels, height, width = enc_out.shape
 
         self.spatial_embeddings = nn.ModuleDict()
         self.post_encoders = nn.ModuleDict()
@@ -996,10 +1010,37 @@ class PretrainedImageEncoder(nn.Module):
             self._num_non_patch_tokens = 0
 
     def _load_pretrained_vision_encoder(self, config: SACConfig):
-        """加载 HF AutoModel 并解析输出通道数。"""
+        """加载 HF AutoModel 并解析输出通道数。
+
+        DINOv3 等 gated repo 首次加载需 `huggingface-cli login` + 在 HF 模型页 accept
+        license。本方法 catch 住相关 OSError 给出中文错误，避免用户面对原始 stack。
+        """
         from transformers import AutoModel
 
-        self.image_enc_layers = AutoModel.from_pretrained(config.vision_encoder_name, trust_remote_code=True)
+        try:
+            self.image_enc_layers = AutoModel.from_pretrained(
+                config.vision_encoder_name, trust_remote_code=True,
+            )
+        except OSError as e:
+            msg = str(e)
+            if "gated repo" in msg or "401" in msg or "restricted" in msg.lower():
+                raise OSError(
+                    f"\n[Vision Encoder] 加载 `{config.vision_encoder_name}` 失败：HF gated repo。\n"
+                    f"  解决方法（GPU 机本地）：\n"
+                    f"    1. huggingface-cli login    # 首次需 HF token: https://huggingface.co/settings/tokens\n"
+                    f"    2. 浏览器打开 https://huggingface.co/{config.vision_encoder_name} → 'Agree and access'\n"
+                    f"    3. 重新启动训练\n"
+                    f"  离线机：先在有外网机预下载到 ~/.cache/huggingface/，rsync 整目录后设 HF_HUB_OFFLINE=1\n"
+                    f"  原始错误：{msg[:200]}"
+                ) from e
+            elif "Connection" in msg or "Network" in msg or "ConnectError" in msg:
+                raise OSError(
+                    f"\n[Vision Encoder] 加载 `{config.vision_encoder_name}` 失败：网络问题。\n"
+                    f"  代理（项目约定）：HTTP/HTTPS = 127.0.0.1:7897\n"
+                    f"  或离线模式：HF_HUB_OFFLINE=1（确保 ~/.cache/huggingface/hub 已有缓存）\n"
+                    f"  原始错误：{msg[:200]}"
+                ) from e
+            raise
 
         if hasattr(self.image_enc_layers.config, "hidden_sizes"):
             # CNN (ResNet 等)：输出通道 = hidden_sizes[-1]
@@ -1024,9 +1065,12 @@ class PretrainedImageEncoder(nn.Module):
             return False
         if hasattr(cfg, "patch_size") or hasattr(cfg, "num_register_tokens"):
             return True
-        # 兜底：HF model_type 含 "vit" / "dinov" / "clip"
+        # 兜底：HF model_type 含 "vit" / "dinov" / "siglip"
+        # 注：去掉 "clip" 兜底——CLIPModel 顶层 last_hidden_state 是 fused output,
+        # 不是 vision patch tokens。要用 CLIP vision tower 必须显式
+        # vision_encoder_name="..._vision_model" 或子模块路径。
         mt = getattr(cfg, "model_type", "").lower()
-        return any(kw in mt for kw in ["vit", "dinov", "clip"])
+        return any(kw in mt for kw in ["vit", "dinov", "siglip"])
 
     def forward(self, x):
         out = self.image_enc_layers(x)

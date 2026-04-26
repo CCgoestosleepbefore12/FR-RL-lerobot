@@ -78,11 +78,11 @@ frrl/
 **[real]** `FrankaRealEnv` observation：
 - `agent_pos = 29D` = `joint_pos_biased(7) + joint_vel(7) + gripper(1) + tcp_biased(7) + tcp_true(7)`
 - 其中 `tcp_true` 为 ArUco 追踪 TCP（privileged 作弊通道；sim 用 `noisy_real_tcp + σ=5mm` 高斯，真机当前无额外噪声）
-- 相机：wrist + front 各 128×128，`shared_encoder=true`，冻结 ResNet10
+- 相机：wrist + front 各 128×128，`shared_encoder=true`，冻结 **DINOv3-S** (2026-04-26 起；之前 ResNet10)
 
 两端共通：
 - Action unified 到 7D：`[dx, dy, dz, rx, ry, rz, gripper]`
-- Vision encoder: frozen ResNet10（`modeling_sac.py::586` 约束双相机同尺寸）
+- Vision encoder: frozen **DINOv3-S** (ViT-S/16, 22M frozen, 2026-04-26 起；之前 ResNet10)；约束双相机同尺寸由 `SACObservationEncoder.get_cached_image_features` 强制
 
 ### 2.4 训练框架
 
@@ -260,7 +260,7 @@ V2→V3 sim 数字略降但**真机失效模式被根除**——质的改进。w
 | online_step_before_learning | 100（sim） / 500（real，P0-6） |
 | warmup_steps | 500（真机 pretrain 目标 5000） |
 | save_freq | 2,000 |
-| vision_encoder | frozen ResNet10（shared） |
+| vision_encoder | frozen DINOv3-S ViT-S/16（shared, 2026-04-26 起；之前 ResNet10）|
 | state_encoder | Linear(D, 256) + LayerNorm + Tanh |
 | actor / critic | [256, 256] |
 
@@ -392,7 +392,7 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 
 ### [共通] 优先级低
 - [ ] GRU context encoder
-- [ ] DINOv2 替换 ResNet10
+- [x] **DINOv3-S 替换 ResNet10** (2026-04-26 完成；ViT-S/16, 22M frozen, LVD-1689M 预训)
 - [ ] 多关节偏差
 - [ ] 多故障类型扩展
 
@@ -484,7 +484,7 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 
 - **tcp_true 作弊通道**：真机无噪声（和 sim 的 `noisy_real_tcp` σ=5mm 不同），简化训练信号；future 消融可验证"无作弊"版本
 - **双相机 128²**：来自 `modeling_sac.py::586` 硬编码同尺寸约束；future refactor 支持异构
-- **shared_encoder=true**：frozen ResNet10 无梯度，三副本浪费（15.6M → 8.47M 总参）
+- **shared_encoder=true**：frozen vision encoder（旧 ResNet10 / 现 DINOv3-S）无梯度，三副本浪费（ResNet10: 15.6M→8.47M；DINOv3-S: 70M→26M 总参）
 - **action_scale 0.03（P0-3 后调整）**：原 0.04 × 10Hz = 0.40 m/s 会被 `max_cart_speed=0.30` 非线性压缩 0.75x，policy 学到的动作幅度与执行幅度不一致。改 0.03 后正好 0.30 m/s 触顶不削减；现阶段尚无 0.04 demo，安全切换
 
 ### 阶段 6 交付（2026-04-25 软件侧完结）
