@@ -16,6 +16,12 @@ from frrl.envs.sim.panda_backup_policy_env import (
     ROT_ACTION_SCALE,
     ARM_COLLISION_DIST,
     MAX_ROTATION,
+    ARM_SPHERES_V3,
+    OBSTACLE_RADIUS_V3,
+    ARM_SPAWN_DIST_V3,
+    HAND_SPEED_RANGE_V3,
+    PROXIMITY_REWARD_MAX,
+    PROXIMITY_SAFE_DIST,
 )
 
 
@@ -37,6 +43,22 @@ def _make_env_v2(num_obstacles=1, seed=0):
         seed=seed,
         use_arm_sphere_collision=True,
         max_displacement=0.30,
+        enforce_cartesian_bounds=False,
+    )
+    env.reset(seed=seed)
+    return env
+
+
+def _make_env_v3(num_obstacles=1, seed=0):
+    """V3：5 球全臂避障 + obstacle r=0.10 + spawn (0.30,0.40) + proximity reward。
+    kwargs 与 PandaBackupPolicyS1V3-v0 注册对齐。"""
+    env = PandaBackupPolicyEnv(
+        num_obstacles=num_obstacles,
+        enable_dr=False,
+        seed=seed,
+        use_arm_sphere_collision=True,
+        use_full_arm_collision=True,
+        max_displacement=0.40,
         enforce_cartesian_bounds=False,
     )
     env.reset(seed=seed)
@@ -301,6 +323,240 @@ def test_v2_rotation_penalty_applied():
           f"penalty chain wired in reward")
 
 
+def test_v3_spawn_no_one_step_death():
+    """V3: 30 seed 全部 spawn 距离对每个臂球都 ≥ (sphere_r + obstacle_r)。"""
+    failures = []
+    for seed in range(30):
+        env = _make_env_v3(seed=seed)
+        u = env.unwrapped
+        for bid, sphere_r in u._arm_sphere_specs:
+            sphere_pos = u._data.xpos[bid].copy()
+            d = float(np.linalg.norm(u._obstacle_pos[0] - sphere_pos))
+            threshold = sphere_r + OBSTACLE_RADIUS_V3
+            if d < threshold:
+                failures.append((seed, u._model.body(bid).name, d, threshold))
+        env.close()
+    assert not failures, f"V3 spawn 1-step-death 风险: {failures[:5]}"
+    print(f"  [PASS] V3 spawn 全部满足所有 5 个臂球的安全距离 (30 seed × 5 球)")
+
+
+def test_v3_obstacle_radius_010():
+    """V3: 把手放到 panda_hand 球前方 0.19m (< 0.20 阈值)，应触发 hand_collision。"""
+    env = _make_env_v3(seed=0)
+    u = env.unwrapped
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    # 0.19 < 0.10 (sphere_r) + 0.10 (obstacle_r) = 0.20 阈值
+    u._obstacle_pos[0] = arm_center + np.array([0.19, 0.0, 0.0])
+    u._stall_remaining[0] = 999
+
+    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
+    assert term, f"V3 应在 0.19m < 0.20m 阈值终止，但 term={term}, info={info}"
+    assert info.get("violation_type") == "hand_collision"
+    env.close()
+    print(f"  [PASS] V3 panda_hand 阈值 0.20m 工作 (0.10 sphere_r + 0.10 obstacle_r)")
+
+
+def test_v3_elbow_collision_terminates():
+    """V3 核心：手贴到 link4（肘）球内 → 即使离 EE 远也应触发 hand_collision。
+    这是 V3 解决的"V2 看不见肘碰撞"问题的核心场景。"""
+    env = _make_env_v3(seed=2)
+    u = env.unwrapped
+    # 找到 link4 body id
+    link4_id = None
+    link4_r = None
+    for bid, r in u._arm_sphere_specs:
+        if u._model.body(bid).name == "link4":
+            link4_id = bid
+            link4_r = r
+            break
+    assert link4_id is not None, "未找到 link4 sphere"
+    elbow_pos = u._data.xpos[link4_id].copy()
+    # 在 link4 球前方 0.13m (< 0.07 + 0.10 = 0.17 阈值) 放置 obstacle
+    u._obstacle_pos[0] = elbow_pos + np.array([0.13, 0.0, 0.0])
+    u._stall_remaining[0] = 999
+    # 同时把 panda_hand 距离做远 — 验证不是因为 hand 球触发
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    hand_to_obs = float(np.linalg.norm(u._obstacle_pos[0] - arm_center))
+    assert hand_to_obs > 0.20, f"测试前提：obstacle 应离 panda_hand 远 ({hand_to_obs:.3f}m > 0.20m)"
+
+    # 验证测试前提：仅 link4 进入威胁范围，其他 4 个球都未违反
+    # （否则碰撞触发可能来自其他球，无法证明"V3 看到肘"的核心命题）
+    triggered_spheres = []
+    for bid, sphere_r in u._arm_sphere_specs:
+        sp_pos = u._data.xpos[bid]
+        d = float(np.linalg.norm(sp_pos - u._obstacle_pos[0]))
+        thr = sphere_r + OBSTACLE_RADIUS_V3
+        if d < thr:
+            triggered_spheres.append((u._model.body(bid).name, d, thr))
+    assert len(triggered_spheres) == 1 and triggered_spheres[0][0] == "link4", (
+        f"测试前提失败：应只有 link4 < threshold；实际 {triggered_spheres}"
+    )
+
+    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
+    assert term, (
+        f"link4 距 obstacle {0.13:.3f}m < {link4_r + OBSTACLE_RADIUS_V3:.3f}m 阈值 "
+        f"应 hand_collision 终止；hand 距 {hand_to_obs:.3f}m 是远离的；"
+        f"但 term={term}, info={info}"
+    )
+    assert info.get("violation_type") == "hand_collision"
+    env.close()
+    print(f"  [PASS] V3 link4 (肘) 单独触发碰撞 (hand {hand_to_obs:.3f}m 远未触发)")
+
+
+def test_v3_proximity_reward_saturation():
+    """V3 proximity reward 行为：clear=10cm 时饱和；clear=5cm 时 0.10；clear=0 时 0。"""
+    env = _make_env_v3(seed=4)
+    u = env.unwrapped
+    # 冻结手位置避免 step 内 _move_obstacle 移动
+    u._stall_remaining[0] = 999
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+
+    # case 1: clear = 10cm = SAFE_DIST → 饱和 0.20
+    # 把手放到 panda_hand 球外 0.30m (= 0.10 sphere_r + 0.10 obs_r + 0.10 clear)
+    u._obstacle_pos[0] = arm_center + np.array([0.30, 0.0, 0.0])
+    obs, rew_sat, term, _, info = env.step(np.zeros(6, dtype=np.float32))
+    assert not term, f"clear=10cm 应不终止，info={info}"
+    clear_sat = info["step_surface_clearance"]
+    assert abs(clear_sat - 0.10) < 0.01, f"step_surface_clearance 应 ≈0.10, got {clear_sat:.4f}"
+
+    # case 2: clear = 5cm → 0.10 reward
+    env2 = _make_env_v3(seed=4)
+    u2 = env2.unwrapped
+    u2._stall_remaining[0] = 999
+    arm_center2 = u2._data.xpos[u2._panda_hand_body_id].copy()
+    u2._obstacle_pos[0] = arm_center2 + np.array([0.25, 0.0, 0.0])  # = 0.20 + 0.05 clear
+    obs2, rew_half, _, _, info2 = env2.step(np.zeros(6, dtype=np.float32))
+    clear_half = info2["step_surface_clearance"]
+    assert abs(clear_half - 0.05) < 0.01, f"clear 应 ≈0.05, got {clear_half:.4f}"
+
+    # 同位移 / 同 action 下，proximity 差额应 ≈ 0.10
+    proximity_diff = (rew_sat - rew_half)
+    expected = PROXIMITY_REWARD_MAX * (1.0 - 0.5)  # = 0.10
+    # 同 seed + zero action 下 displacement / rotation / action_norm 项基本相等，
+    # 真实差额 ≈ proximity_max × 0.5 = 0.10。容忍 0.01 仍能容纳浮点误差和 ε 级 disp 漂移。
+    disp_diff = abs(info["displacement"] - info2["displacement"])
+    assert disp_diff < 1e-3, f"测试前提：相同 zero action 应 displacement 差 < 1e-3, got {disp_diff:.5f}"
+    assert abs(proximity_diff - expected) < 0.01, (
+        f"proximity diff (clear 0.10 vs 0.05) 应 ≈{expected:.3f}, got {proximity_diff:.4f}; "
+        f"rew_sat={rew_sat:.4f}, rew_half={rew_half:.4f}"
+    )
+    env.close()
+    env2.close()
+    print(f"  [PASS] V3 proximity reward: clear=0.10 saturates ({rew_sat:.3f}), "
+          f"clear=0.05 mid ({rew_half:.3f}), Δ={proximity_diff:.3f}")
+
+
+def test_v3_num_obstacles_2_works():
+    """V3 应支持 num_obstacles=2（虽然注册只用 1，env 不该限制）。
+    spawn 安全 + 多球碰撞都对每个 obstacle 检查。"""
+    env = PandaBackupPolicyEnv(
+        num_obstacles=2, enable_dr=False, seed=11,
+        use_arm_sphere_collision=True, use_full_arm_collision=True,
+        max_displacement=0.40, enforce_cartesian_bounds=False,
+    )
+    env.reset(seed=11)
+    u = env.unwrapped
+    # 两个 obstacle 都应满足所有 5 个臂球的安全距离
+    for obs_i in range(2):
+        for bid, sphere_r in u._arm_sphere_specs:
+            sphere_pos = u._data.xpos[bid].copy()
+            d = float(np.linalg.norm(u._obstacle_pos[obs_i] - sphere_pos))
+            threshold = sphere_r + OBSTACLE_RADIUS_V3
+            assert d >= threshold, (
+                f"obstacle[{obs_i}] vs {u._model.body(bid).name}: d={d:.3f} < {threshold:.3f}"
+            )
+    # 观测维度应升到 (18 + 2×10) × 3 = 114
+    obs, _ = env.reset(seed=11)
+    assert obs["agent_pos"].shape == (114,), f"expected (114,), got {obs['agent_pos'].shape}"
+    env.close()
+    print(f"  [PASS] V3 num_obstacles=2 spawn 安全 + obs shape (114,)")
+
+
+def test_v3_dr_path_proximity_stable():
+    """V3 + enable_dr=True：proximity reward 仍只依赖真实 xpos（不被 DR 噪声扰动），
+    确保 DR 不污染 reward 信号。"""
+    env = PandaBackupPolicyEnv(
+        num_obstacles=1, enable_dr=True, seed=12,
+        use_arm_sphere_collision=True, use_full_arm_collision=True,
+        max_displacement=0.40, enforce_cartesian_bounds=False,
+    )
+    env.reset(seed=12)
+    u = env.unwrapped
+    u._stall_remaining[0] = 999
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    # 放到 panda_hand 球外 0.30m → clear=10cm，proximity 应饱和
+    u._obstacle_pos[0] = arm_center + np.array([0.30, 0.0, 0.0])
+
+    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
+    assert not term
+    clear = info["step_surface_clearance"]
+    # surface_clearance 用真实 xpos（无 DR），应精确 ≈ 0.10m
+    assert abs(clear - 0.10) < 0.01, (
+        f"DR=True 下 step_surface_clearance 应仍用真实 xpos, ≈0.10; got {clear:.4f}"
+    )
+    env.close()
+    print(f"  [PASS] V3 + DR=True 下 proximity 信号稳定 (clear={clear:.4f})")
+
+
+def test_v3_requires_arm_sphere_collision():
+    """V3 强制要求 use_arm_sphere_collision=True（V3 在 V2 panda_hand 球基础上扩展）。
+    use_full_arm_collision=True + use_arm_sphere_collision=False 应 ValueError。"""
+    import pytest
+    with pytest.raises(ValueError, match="use_arm_sphere_collision"):
+        PandaBackupPolicyEnv(
+            num_obstacles=1, enable_dr=False, seed=13,
+            use_arm_sphere_collision=False,   # 反向依赖
+            use_full_arm_collision=True,
+        )
+    print(f"  [PASS] V3 拒绝 use_full_arm_collision=True + use_arm_sphere_collision=False")
+
+
+def test_v3_collision_reward_no_proximity():
+    """V3 collision 终止时 reward 应 == TERMINATION_PENALTY (-10.0)，
+    不应包含 proximity bonus（terminated 路径直接覆盖 reward）。"""
+    from frrl.envs.sim.panda_backup_policy_env import TERMINATION_PENALTY
+    env = _make_env_v3(seed=14)
+    u = env.unwrapped
+    u._stall_remaining[0] = 999
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    # 放到 0.15m < 0.20 阈值，必撞
+    u._obstacle_pos[0] = arm_center + np.array([0.15, 0.0, 0.0])
+
+    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
+    assert term, f"应触发碰撞终止, info={info}"
+    assert rew == TERMINATION_PENALTY, (
+        f"collision reward 应 == {TERMINATION_PENALTY}（不含 proximity 项）, got {rew}"
+    )
+    env.close()
+    print(f"  [PASS] V3 collision reward = {rew} (无 proximity 污染)")
+
+
+def test_v3_backward_compat_v2():
+    """V3 关掉 use_full_arm_collision 后行为应和 V2 完全一致（不影响旧 ckpt 训练）。"""
+    env_v2 = _make_env_v2(seed=10)
+    env_v3_off = PandaBackupPolicyEnv(
+        num_obstacles=1, enable_dr=False, seed=10,
+        use_arm_sphere_collision=True,
+        use_full_arm_collision=False,  # 显式关
+        max_displacement=0.30,
+        enforce_cartesian_bounds=False,
+    )
+    env_v3_off.reset(seed=10)
+    u_v2 = env_v2.unwrapped
+    u_v3 = env_v3_off.unwrapped
+    # spawn 距离应一致
+    arm_center_v2 = u_v2._data.xpos[u_v2._panda_hand_body_id]
+    arm_center_v3 = u_v3._data.xpos[u_v3._panda_hand_body_id]
+    d_v2 = float(np.linalg.norm(u_v2._obstacle_pos[0] - arm_center_v2))
+    d_v3 = float(np.linalg.norm(u_v3._obstacle_pos[0] - arm_center_v3))
+    assert abs(d_v2 - d_v3) < 1e-6, f"V2 vs V3-off spawn 不一致: V2={d_v2:.4f} V3-off={d_v3:.4f}"
+    # V3-off 不应解析 arm_sphere_specs
+    assert u_v3._arm_sphere_specs == [], "V3-off 不应初始化 _arm_sphere_specs"
+    env_v2.close()
+    env_v3_off.close()
+    print(f"  [PASS] V3 with use_full_arm_collision=False 行为 == V2 (spawn d={d_v2:.4f}m)")
+
+
 def main():
     print("=== Backup Env TRACKING-only 测试 ===")
     tests = [
@@ -316,6 +572,15 @@ def main():
         test_v2_rotation_does_not_reduce_arm_distance,
         test_v2_rotation_budget_termination,
         test_v2_rotation_penalty_applied,
+        test_v3_spawn_no_one_step_death,
+        test_v3_obstacle_radius_010,
+        test_v3_elbow_collision_terminates,
+        test_v3_proximity_reward_saturation,
+        test_v3_num_obstacles_2_works,
+        test_v3_dr_path_proximity_stable,
+        test_v3_requires_arm_sphere_collision,
+        test_v3_collision_reward_no_proximity,
+        test_v3_backward_compat_v2,
     ]
     for t in tests:
         try:

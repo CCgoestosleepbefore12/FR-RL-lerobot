@@ -7,10 +7,13 @@ Three-state FSM (driven by frrl.rl.supervisor):
              then hands control back to TASK (seamless resume).
 
 Transitions (center-to-center distance, matches sim training semantics):
-  TASK → BACKUP      : min_hand_dist < d_safe (0.30m hand_body_equiv ↔ bbox_center)
-  BACKUP → HOMING    : min_hand_dist > d_clear (0.35m) for clear_n_steps (3) steps
+  TASK → BACKUP      : min_hand_dist < d_safe (V2: 0.30m / V3: 0.40m, hand_body_equiv ↔ bbox_center)
+  BACKUP → HOMING    : min_hand_dist > d_clear (V2: 0.35m / V3: 0.45m) for clear_n_steps (3) steps
   HOMING → BACKUP    : hand returns (dist < d_safe); tcp_start retained
   HOMING → TASK      : pos_err < 2cm AND rot_err < 2.9° (6D converged)
+
+Pick (D_SAFE, D_CLEAR) via --ckpt-version {v2|v3} — must match the sim training geometry
+of the loaded checkpoint, otherwise BACKUP activates in OOD region of training distribution.
 
 Observation for BACKUP policy (per frame, 28D × 3 stack = 84D):
   robot_state (18D): q(7) + dq(7) + gripper(1) + noisy_tcp(3) — from /getstate_true
@@ -49,10 +52,17 @@ URL = "http://192.168.100.1:5000/"
 # HierarchicalSupervisor thresholds (Route A: center-to-center semantics)
 # Sim training uses hand_body-to-obstacle center distance with
 # ARM_COLLISION_DIST = 0.135m (hard termination) and spawn range 0.21-0.30m.
-# D_SAFE=0.30 lands BACKUP trigger right at sim's max spawn distance (fully
-# in-distribution); D_CLEAR=0.35 gives a 5cm hysteresis band.
-D_SAFE = 0.30          # m — center-to-center dist < d_safe → enter BACKUP
-D_CLEAR = 0.35         # m — center-to-center dist > d_clear → allow BACKUP → HOMING
+# D_SAFE / D_CLEAR are auto-configured by --ckpt-version CLI:
+#   v2: (0.30, 0.35) — V2 single-sphere, ARM_SPAWN_DIST=(0.21,0.30), spawn upper=0.30
+#   v3: (0.40, 0.45) — V3 multi-sphere + obstacle r=0.10, ARM_SPAWN_DIST_V3=(0.30,0.40)
+# Invariant: D_SAFE = sim_spawn_upper_bound (BACKUP enters at training distribution edge).
+# D_CLEAR = D_SAFE + 0.05 (5cm hysteresis band).
+D_SAFE_BY_VERSION = {"v2": 0.30, "v3": 0.40}
+D_CLEAR_BY_VERSION = {"v2": 0.35, "v3": 0.45}
+DEFAULT_CKPT_BY_VERSION = {
+    "v2": "checkpoints/backup_policy_s1_v2_newgeom_145k",
+    "v3": "checkpoints/backup_policy_s1_v3_newgeom",  # 占位，待 V3 训完落库后更新
+}
 CLEAR_N_STEPS = 3      # consecutive clear steps before BACKUP → HOMING
 HOMING_POS_TOL = 0.02  # m
 HOMING_ROT_TOL = 0.05  # rad (~2.9°)
@@ -167,7 +177,17 @@ def stack_frames(buf, single_dim=28):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", default="checkpoints/backup_policy_s1")
+    ap.add_argument("--ckpt-version", choices=["v2", "v3"], default="v3",
+                    help="picks (D_SAFE, D_CLEAR) and default checkpoint to match sim training "
+                         "geometry. v2: (0.30, 0.35) for V2 single-sphere ckpt. "
+                         "v3: (0.40, 0.45) for V3 multi-sphere ckpt. Mismatched combo would put "
+                         "BACKUP activation in OOD region of the loaded policy's training distribution.")
+    ap.add_argument("--checkpoint", default=None,
+                    help="path to checkpoint dir; if omitted uses DEFAULT_CKPT_BY_VERSION[--ckpt-version]")
+    ap.add_argument("--d-safe", type=float, default=None,
+                    help="override D_SAFE (m); leaves CLI default = D_SAFE_BY_VERSION[--ckpt-version]")
+    ap.add_argument("--d-clear", type=float, default=None,
+                    help="override D_CLEAR (m); leaves CLI default = D_CLEAR_BY_VERSION[--ckpt-version]")
     ap.add_argument("--dry-run", action="store_true", help="don't send /pose, just test obs/policy")
     ap.add_argument("--calibration", default="calibration_data/T_cam_to_robot.npy")
     ap.add_argument("--bias", type=str, default=None,
@@ -184,10 +204,24 @@ def main():
                     help="save the joint bias time series to this npz path on exit")
     args = ap.parse_args()
 
+    # --- Resolve ckpt + thresholds from --ckpt-version (with optional CLI override) ---
+    ckpt_path = args.checkpoint or DEFAULT_CKPT_BY_VERSION[args.ckpt_version]
+    d_safe = args.d_safe if args.d_safe is not None else D_SAFE_BY_VERSION[args.ckpt_version]
+    d_clear = args.d_clear if args.d_clear is not None else D_CLEAR_BY_VERSION[args.ckpt_version]
+    print(f"[OK] ckpt-version={args.ckpt_version} → D_SAFE={d_safe:.2f}m / D_CLEAR={d_clear:.2f}m")
+
+    # Sanity: V3 default ckpt path is a placeholder until V3 training lands; raise early
+    if args.ckpt_version == "v3" and not Path(ckpt_path).exists():
+        raise SystemExit(
+            f"[ERROR] v3 checkpoint not found: {ckpt_path}\n"
+            f"        V3 training pending; pass --checkpoint <path> explicitly, "
+            f"or use --ckpt-version v2 with the existing V2 ckpt for now."
+        )
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- Load policy ---
-    ckpt = Path(args.checkpoint)
+    ckpt = Path(ckpt_path)
     cfg = PreTrainedConfig.from_pretrained(str(ckpt))
     cfg.pretrained_path = str(ckpt)
     cfg.device = device
@@ -272,8 +306,8 @@ def main():
 
     # --- HierarchicalSupervisor (3-state FSM with 6D homing) ---
     supervisor = HierarchicalSupervisor(
-        d_safe=D_SAFE,
-        d_clear=D_CLEAR,
+        d_safe=d_safe,
+        d_clear=d_clear,
         clear_n_steps=CLEAR_N_STEPS,
         homing_pos_tol=HOMING_POS_TOL,
         homing_rot_tol=HOMING_ROT_TOL,
@@ -318,7 +352,7 @@ def main():
 
     print("\n=== Deployment Active ===")
     print("  TASK    (green)  — SpaceMouse controls arm + gripper (btn0=close, btn1=open)")
-    print(f"  BACKUP  (red)    — hand_body_equiv-to-bbox center-dist < {D_SAFE*100:.0f}cm triggers policy avoidance")
+    print(f"  BACKUP  (red)    — hand_body_equiv-to-bbox center-dist < {d_safe*100:.0f}cm triggers policy avoidance")
     print("  HOMING  (orange) — after 3 consecutive clear frames, return to tcp_start")
     if args.no_workspace_clamp:
         print("  !! WORKSPACE CLAMP DISABLED — target pose can go anywhere. E-STOP READY.")
@@ -508,8 +542,8 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, mode_color, 2)
 
             if hand_dist is not None:
-                dist_color = (0, 0, 255) if hand_dist < D_SAFE else (
-                    (0, 165, 255) if hand_dist < D_CLEAR else (0, 255, 0))
+                dist_color = (0, 0, 255) if hand_dist < d_safe else (
+                    (0, 165, 255) if hand_dist < d_clear else (0, 255, 0))
                 cv2.putText(vis,
                             f"center-dist: {hand_dist*1000:.0f}mm  "
                             f"(r_hand={r_hand_debug*1000:.0f}mm)",

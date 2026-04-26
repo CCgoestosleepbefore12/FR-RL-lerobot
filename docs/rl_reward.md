@@ -194,11 +194,59 @@ MAX_ROTATION   = π         # 约 180°，等效关闭硬终止
 
 ---
 
+## V5: Saturating proximity reward（V3 全臂避障配套，2026-04-26）
+
+**时间**：2026-04-26
+
+**修改原因**：V3 全臂避障引入 multi-sphere collision (link3/4/5/6/hand) + obstacle r=0.10 + hand 速度上限 0.030 m/step（vs V2 0.015）。hand 加速后，policy 仅靠 V4 reward (terminal -10 + survival 0.5 - disp 0.5) 学习"避让肘等其他部位"信号偏稀疏——大部分肘碰撞要等到撞上才有信号，训练收敛慢。
+
+**反思 V1 拒掉 proximity 的理由**："proximity reward 鼓励远离" → "与原地微调矛盾"。这个逻辑只对**未饱和**的 proximity 成立。**饱和**形式让 reward 在某个"足够安全"距离封顶，policy 退到那点就没动力再退。
+
+**V5 设计**（V3 配套）：
+
+```python
+PROXIMITY_REWARD_MAX = 0.20      # 上限（vs SURVIVAL=0.5，弱于 survival 信号）
+PROXIMITY_SAFE_DIST  = 0.10      # 饱和点：表面间隙 10cm
+
+surface_clearance = min_hand_dist - ARM_COLLISION_DIST   # >0 = 物理表面有间隙
+proximity = PROXIMITY_REWARD_MAX × clip(surface_clearance / PROXIMITY_SAFE_DIST, 0, 1)
+```
+
+每步 reward：
+```
+r = +0.5                     SURVIVAL
+  + proximity (0~+0.20)      ★ V5 新
+  - 0.5  × disp              位移软惩罚
+  - 0.2  × rotation          旋转软惩罚
+  - 0.01 × ||action||
+  - 0.01 × ||a − a_prev||
+```
+
+**梯度博弈分析**：
+- `clear < 10cm`：proximity 梯度 = 0.20 / 0.10 = +2.0/m（退让 = +）
+- disp 梯度 = -0.5/m（退让 = -）
+- 净激励 +1.5/m → policy 退让
+- `clear ≥ 10cm`：proximity 饱和，梯度=0；只剩 disp -0.5/m → policy 不再退让
+- **均衡点**：clear ≈ 10cm 时 policy 维持
+
+**和 V1 proximity 的关键区别**：
+| 项 | V1 (rejected) | V5 |
+|---|---|---|
+| 是否饱和 | ✗ 无饱和 | ✓ saturation 在 10cm |
+| 梯度 | 越退越多 | 退到 10cm 就 0 |
+| 行为 | 一直远离 → 与"原地微调"矛盾 | 维持 10cm → "原地微调"自然涌现 |
+
+**适用范围**：仅 V3 配套（`use_full_arm_collision=True`）。V2 145k ckpt 不引入此 reward，因为 V2 的 obstacle r=3.5cm 偏小、collision_dist=13.5cm 偏紧，加 proximity 会让 policy 维持过远（>20cm）。V3 obstacle r=0.10 让 collision_dist=0.20m，10cm 间隙是合理的"靠近但不撞"。
+
+**实测**：训练数据待补，初步预期 200-300k steps 收敛到 90-95% 满存活率（worst-case 5-10% fast hand + 近 spawn episode 不可解，详见 `docs/sim_exp_data.md` Backup S1 V3 段落）。
+
+---
+
 ## 设计原则总结
 
 1. **每步奖励必须非负**：保证存活永远优于碰撞终止
 2. **碰撞惩罚远大于存活总回报**：`|终止惩罚|` >> `存活总正回报`
 3. **位移需要硬约束**：软惩罚无法阻止极端行为，硬上限 + 终止才能真正约束（但**旋转**这种方向模糊的量改用软惩罚，见 V4）
 4. **discount = 1.0**：短 episode 中每步安全等价重要
-5. **不使用 proximity reward**：我们的目标是"原地微调"不是"远离障碍物"
-6. **硬 vs 软惩罚选择原则**：约束量越"方向明确、越界 = 任务失败"越适合硬终止（位移）；越"连续、量级不固定"越适合软惩罚（旋转）
+5. **Proximity reward 必须饱和才能和"原地微调"目标兼容**（V1 拒、V5 接受）：饱和点 = 期望均衡间隙；未饱和形式会诱导策略一直远离
+6. **硬 vs 软惩罚选择原则**：约束量越"方向明确、越界 = 任务失败"越适合硬终止（位移）；越"连续、量级不固定"越适合软惩罚（旋转 / proximity）

@@ -216,19 +216,30 @@ python scripts/real/deploy_backup_policy.py
 ```
 
 **关键参数**（scripts/real/deploy_backup_policy.py 顶部）：
-- `D_SAFE = 0.30m` — **center-to-center** 距离（hand_body_equiv ↔ bbox_center），触发 BACKUP
-- `D_CLEAR = 0.35m` — 允许 BACKUP → HOMING 的阈值（滞回，5cm 带宽）
+- `D_SAFE = 0.40m` — **center-to-center** 距离（hand_body_equiv ↔ bbox_center），触发 BACKUP
+- `D_CLEAR = 0.45m` — 允许 BACKUP → HOMING 的阈值（滞回，5cm 带宽）
 - `CLEAR_N_STEPS = 3` — 连续 3 帧 `dist > d_clear` 才切 HOMING（防抖动）
 - `HOMING_POS_TOL = 0.02m` / `HOMING_ROT_TOL = 0.05rad` — HOMING → TASK 收敛阈值
 
-> **Route A 对齐（2026-04-25）**：阈值语义从 surface-dist（+Minkowski）改为 center-dist，
-> 和 sim 训练的 `ARM_COLLISION_DIST=0.135m` + `ARM_SPAWN_DIST=(0.21, 0.30)m` 完全一致。
-> D_SAFE=0.30 正好落在 sim spawn 最远处，进 BACKUP 时样本完全 in-distribution。
+> **V3 对齐（2026-04-26）**：阈值升到 0.40/0.45 配合 V3 sim 训练（multi-sphere arm
+> + obstacle r=0.10 + `ARM_SPAWN_DIST_V3=(0.30, 0.40)`）。D_SAFE=0.40 正好 = sim spawn
+> 最远处，进 BACKUP 时 obstacle 位置在训练分布最远端，完全 in-distribution。
+>
+> **若加载 V2 ckpt** 需手动改回 `D_SAFE=0.30 / D_CLEAR=0.35`（V2 sim spawn 上限是 0.30m）。
+>
+> **Route A（2026-04-25）历史**：阈值语义从 surface-dist（+Minkowski）改为 center-dist，
+> 与 sim 训练 collision/spawn 几何 1:1 对齐；V3 沿用此语义但更新具体数值。
 
 **关键设计点**：
 - `tcp_start_pos/quat` 在 **TASK → BACKUP** 那一瞬间记录**一次**
 - BACKUP ↔ HOMING 之间来回切换**不更新** tcp_start（手反复进出时 homing 目标不变）
 - HOMING → TASK 完成后 tcp_start 清空
+
+> **FSM 距离判定保持单球（不引入 V3 多球）**：sim V3 训练时 collision 检测用 5 球
+> (link3/4/5/6/hand)，但部署 FSM 仅用 `hand_body_equiv` (panda_hand 球) 算 center-dist。
+> 理由：(1) FSM 只决定何时切 BACKUP，policy 自己有多球感知；(2) 真机不需要做
+> link3-link6 的 FK，避免引入 urdfpy/pinocchio 依赖；(3) 设计不变量
+> `D_SAFE = sim_spawn_upper_bound`（V3 = 0.40）仍成立。
 
 ### 3.2.1 HomingController（6D 位姿回归）
 
@@ -273,9 +284,11 @@ is_done: ||pos_err|| < pos_tol AND ||rot_err|| < rot_tol
 | Obstacle 点 | 障碍物几何中心（+ DR 噪声）| `bbox_center`（WiLoR raw 检测点）|
 | Policy `obstacle.pos` | 几何中心 | **bbox_center**（无 Minkowski）|
 | Policy `obstacle.rel_pos` | center − noisy_TCP | bbox_center − noisy_TCP |
-| Sim 碰撞终止 | `‖arm_center − obstacle‖ < 0.135m` | —（真机无 episode 终止）|
-| Real FSM `min_hand_dist` | — | `‖hand_body_equiv − bbox_center‖` = **center-to-center** |
-| FSM 阈值 | — | D_SAFE=0.30, D_CLEAR=0.35（center-dist）|
+| Sim 碰撞终止 (V2) | `‖arm_center − obstacle‖ < 0.135m` (单球) | —（真机无 episode 终止）|
+| Sim 碰撞终止 (V3) | `min over 5 球 (‖center − obstacle‖ − r) < 0.10m` (多球) | —（真机无 episode 终止）|
+| Real FSM `min_hand_dist` | — | `‖hand_body_equiv − bbox_center‖` = **center-to-center**（FSM 仍用单球判定）|
+| FSM 阈值 (V2) | — | D_SAFE=0.30, D_CLEAR=0.35 |
+| FSM 阈值 (V3) | — | **D_SAFE=0.40, D_CLEAR=0.45** |
 
 **关键常量**：
 - `TCP_OFFSET = 0.1034m`：Franka Hand 法兰→pinch_site 标准偏移
@@ -377,8 +390,8 @@ python scripts/real/deploy_backup_policy.py --no-workspace-clamp ...
 | `TASK_ROTATION_SCALE` | 0.040 rad/step | SpaceMouse 手腕灵敏度 |
 | `LOOKAHEAD` | 2.0 | 1.5-3.0；补阻抗跟踪滞后；对 backup rotation 起倍乘作用 |
 | `MAX_CART_SPEED` | 0.30 m/s | 单步 delta 速度硬上限 |
-| `D_SAFE` | **0.30m** | 触发 BACKUP 的 **center-to-center** 距离 (Route A) |
-| `D_CLEAR` | **0.35m** | 允许 BACKUP→HOMING 的滞回阈值（5cm 带宽）|
+| `D_SAFE` | **0.40m** | 触发 BACKUP 的 **center-to-center** 距离 (V3, = sim spawn 上限) |
+| `D_CLEAR` | **0.45m** | 允许 BACKUP→HOMING 的滞回阈值（5cm 带宽）|
 | `CLEAR_N_STEPS` | 3 | 连续清除帧数（防抖动）|
 | `HOMING_POS_TOL` | 0.02m | HOMING → TASK 位置容差 |
 | `HOMING_ROT_TOL` | 0.05rad | HOMING → TASK 姿态容差 (≈2.9°) |
@@ -596,11 +609,14 @@ python scripts/real/debug_aruco.py  # 保存一帧原图 + 尝试所有字典
 
 | 常量 | 值 | 来源 |
 |---|---|---|
-| `ARM_SPHERE_RADIUS` | 0.10m | sim V2 训练（`panda_backup_policy_env.py:88`）|
-| `ARM_COLLISION_DIST` | 0.135m | sim 硬终止：`ARM_SPHERE_RADIUS + 0.035`（obstacle 半径）|
+| `ARM_SPHERE_RADIUS` | 0.10m | sim V2/V3 panda_hand 球（`panda_backup_policy_env.py`）|
+| V3 `ARM_SPHERES_V3` | 5 球 (0.07/0.07/0.065/0.065/0.10) | sim V3 全臂多球（link3/4/5/6/hand）|
+| V2 `ARM_COLLISION_DIST` | 0.135m | sim V2 硬终止：`0.10 + 0.035`（obstacle r=3.5cm）|
+| V3 obstacle 半径 | 0.10m | 对齐真机 WiLoR hand bbox 等效半径（开掌 ~10cm） |
+| V3 panda_hand collision | 0.20m | sim V3 硬终止：`0.10 + 0.10` |
 | `TCP_OFFSET` | 0.1034m | Franka Hand 法兰→pinch_site，标准 URDF 值 |
-| `D_SAFE` | 0.30m | 真机 FSM 触发（≈ sim spawn 最远距，in-distribution 上限）|
-| `D_CLEAR` | 0.35m | `D_SAFE + 0.05` 滞回，防阈值抖动 |
+| `D_SAFE` (V3) | 0.40m | 真机 FSM 触发（= V3 sim spawn 最远距，in-distribution 上限）|
+| `D_CLEAR` (V3) | 0.45m | `D_SAFE + 0.05` 滞回，防阈值抖动 |
 
 **R_GRIPPER 已移除**：过去只用于 Minkowski 变换，Route A 后不再需要。可视化里 r_hand
 （bbox 对角线 / 2）仍保留用于展示，但不参与任何计算。

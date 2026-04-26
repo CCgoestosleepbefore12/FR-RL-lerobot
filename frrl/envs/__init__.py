@@ -260,6 +260,23 @@ register(
     },
 )
 
+# S1 V3 全臂避障：在 V2 基础上加 link3/4/5/6 4 个球（共 5 球），obstacle r 放大到 0.10
+# 对齐真机 hand bbox，spawn 距离 0.30-0.40 / hand 速度 0.015-0.030 m/step / max_disp 0.40。
+# 引入 proximity reward (PROXIMITY_REWARD_MAX=0.20, SAFE_DIST=0.10) 诱导 policy 维持
+# ~10cm 表面间隙；解决 V2 "policy 只学 EE 避让，肘/前臂仍会撞" 的问题。
+register(
+    id="gym_frrl/PandaBackupPolicyS1V3-v0",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=20,
+    kwargs={
+        "num_obstacles": 1,
+        "use_arm_sphere_collision": True,
+        "use_full_arm_collision": True,
+        "max_displacement": 0.40,
+        "enforce_cartesian_bounds": False,
+    },
+)
+
 # S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS2-v0",

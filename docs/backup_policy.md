@@ -178,6 +178,15 @@ if truncated: r += 5.0
 >
 > **参数化（2026-04-21 起）**：`MAX_DISPLACEMENT` 与 `SURVIVAL_BONUS` 已改为 `PandaBackupPolicyEnv` 构造参数（默认 0.15 / 5.0）。消融变体 `PandaBackupPolicyS1Relaxed-v0`（0.20 / 5.0）与 `PandaBackupPolicyS1Combo-v0`（0.20 / 10.0）用于探测"退远再停"策略的激励边界，详见 `docs/sim_exp_data.md`。
 >
+> **V3 proximity reward（2026-04-26 起）**：当 `use_full_arm_collision=True` 时，每步 reward 追加 saturating proximity bonus，诱导 policy 维持 ~10cm 表面间隙：
+>
+> ```python
+> proximity = PROXIMITY_REWARD_MAX × clip(surface_clearance / PROXIMITY_SAFE_DIST, 0, 1)
+> # 默认 0.20 / 0.10：clear=0 时 0, clear≥0.10 时饱和 0.20
+> ```
+>
+> 与 V2 相比每步 max reward 从 0.5 → 0.7。设计意图："手追近时退一点（梯度 2.0/m > disp 梯度 0.5/m），退到 10cm 间隙就停（饱和后 disp penalty 接管）"。参考 `docs/rl_reward.md` V5 段落。
+>
 > **V2 防作弊（2026-04-21 起）**：`PandaBackupPolicyS1V2-v0` 用 wrist+hand 单球（半径 10cm，球心 = mocap weld 点，对旋转 rigid）替代 TCP+指尖三检测点，配合旋转预算（≤0.5rad）和旋转惩罚（对称 DISPLACEMENT_COEFF），堵住 V1 下"剧烈转腕让末端躲开但腕部仍碰撞"的作弊路径。开关：`use_arm_sphere_collision`/`max_rotation`/`rotation_coeff`，默认关闭向后兼容。
 >
 > **V2 直线退让几何（2026-04-21 晚间定稿）**：早先 V2 用 0.20m 预算 + 收紧 TCP_INIT + 工作空间 clamp，但 30 ep eval 观察策略出现"贴边绕角""捉迷藏"的歪行为——因为工作空间把最短退让方向夹弯了。定稿方案：
@@ -199,8 +208,10 @@ if truncated: r += 5.0
 | 障碍物速度噪声 | N(0, 0.01) | 帧间差分抖动 |
 | 观测延迟 | U(0, 2) 步 | 检测+推理延迟 ~0-20ms |
 | 障碍物生成距离（V1 `HAND_SPAWN_DIST`）| U(0.15, 0.30) m | 不同进入距离 |
-| 障碍物生成距离（V2 `ARM_SPAWN_DIST`） | U(0.21, 0.30) m | 下限 >1.5×ARM_COLLISION_DIST(0.2025m) 防 1-step death |
-| 障碍物移动速度（`HAND_SPEED_RANGE`） | U(0.005, 0.015) m/step | 不同手速 |
+| 障碍物生成距离（V2 `ARM_SPAWN_DIST`） | U(0.21, 0.30) m | 下限 >1.5×ARM_COLLISION_DIST(0.135m) 防 1-step death |
+| 障碍物生成距离（V3 `ARM_SPAWN_DIST_V3`） | U(0.30, 0.40) m | 下限 = 1.5×ARM_COLLISION_DIST_V3(0.20m)；多球安全检查 |
+| 障碍物移动速度 V1/V2（`HAND_SPEED_RANGE`） | U(0.005, 0.015) m/step | 不同手速 |
+| 障碍物移动速度 V3（`HAND_SPEED_RANGE_V3`） | U(0.015, 0.030) m/step | 对齐真机 15-30cm/s 区间 |
 | TCP 位置噪声 | N(0, 0.005) | 已有，保留 |
 
 ### 观测延迟实现
@@ -224,20 +235,35 @@ obs_pos = pos_history[-(1 + delay)]
 - Episode 长度: **20 步**（2026-04-21 V2 从 10 步改 20，给 HOMING 阶段足够窗口）
 - 评估: 200 episodes 存活率统计
 
-| 参数 | S1 v0 | S1 V2（新几何 + rotation budget 软惩罚） | S2 |
-|------|------|------------------------------------|-----|
-| online_steps | 200,000 | 145,000（训练峰值 ckpt） | 200,000 |
-| max_episode_steps | 10 → 20（V2 起） | 20 | 10 |
-| online_buffer_capacity | 200,000 | 200,000 | 200,000 |
-| online_step_before_learning | 1,000 | 1,000 | 1,000 |
-| discount | 1.0 | 1.0 | 1.0 |
-| temperature_init | 0.1 | 0.1 | 0.1 |
-| critic_lr / actor_lr | 3e-4 | 3e-4 | 3e-4 |
-| utd_ratio | 4 | 4 | **4**（utd=8 会在 100k 崩，见 sim_exp_data Exp 7）|
-| batch_size | 256 | 256 | 256 |
-| `ROTATION_COEFF` | — | 0.2（旋转软惩罚） | — |
-| `MAX_ROTATION` | — | π（等效关闭硬终止） | — |
-| `ARM_SPHERE_RADIUS` | N/A（用三点 TCP+指尖） | 0.10 m（wrist+hand 单球） | N/A |
+| 参数 | S1 v0 | S1 V2（新几何 + rotation budget 软惩罚） | **S1 V3（全臂避障 + proximity reward）** | S2 |
+|------|------|------------------------------------|----------------------------------------|-----|
+| online_steps | 200,000 | 145,000（训练峰值 ckpt） | 300,000（默认 budget） | 200,000 |
+| max_episode_steps | 10 → 20（V2 起） | 20 | 20 | 10 |
+| online_buffer_capacity | 200,000 | 200,000 | 300,000 | 200,000 |
+| online_step_before_learning | 1,000 | 1,000 | 100 | 1,000 |
+| discount | 1.0 | 1.0 | 1.0 | 1.0 |
+| temperature_init | 0.1 | 0.1 | 0.1 | 0.1 |
+| critic_lr / actor_lr | 3e-4 | 3e-4 | 3e-4 | 3e-4 |
+| utd_ratio | 4 | 4 | 4（V3 84D 高维 + multi-sphere 信号更复杂，utd=8 风险高，参考 S2 教训） | **4**（utd=8 会在 100k 崩，见 sim_exp_data Exp 7）|
+| batch_size | 256 | 256 | 256 | 256 |
+| `ROTATION_COEFF` | — | 0.2（旋转软惩罚） | 0.2 | — |
+| `MAX_ROTATION` | — | π（等效关闭硬终止） | π | — |
+| `ARM_SPHERE_RADIUS` | N/A（用三点 TCP+指尖） | 0.10 m（wrist+hand 单球） | 5 球 (0.07/0.07/0.065/0.065/0.10) | N/A |
+| obstacle radius | 0.035 | 0.035 | **0.10**（对齐真机 hand bbox） | 0.035 |
+| `ARM_SPAWN_DIST` | (0.15, 0.30) TCP | (0.21, 0.30) panda_hand | **(0.30, 0.40) panda_hand** | (0.15, 0.30) TCP |
+| `HAND_SPEED_RANGE` | (0.005, 0.015) | (0.005, 0.015) | **(0.015, 0.030)**（对齐真机 15-30cm/s） | (0.005, 0.015) |
+| `max_displacement` | 0.15 | 0.30 | **0.40** | 0.15 |
+| `PROXIMITY_REWARD_MAX` | — | — | **0.20**（饱和上限） | — |
+| `PROXIMITY_SAFE_DIST` | — | — | **0.10**（饱和点：表面间隙 10cm） | — |
+
+**预期 eval 成功率**：
+
+| 版本 | sim eval 满存活率 | 真机已知问题 |
+|---|---|---|
+| S1 V2 (145k ckpt) | 100% | **肘/前臂可能撞**（V2 collision 只查 panda_hand 单球）|
+| S1 V3（待训完）| 92-95%（worst-case 5-10% 不可解，fast hand + 近 spawn 同时发生时位移预算不够） | 全臂避障，无肘撞问题 |
+
+V2 → V3 sim 数字略降但**真机肘撞失效模式被根除**——是质的改进。worst-case 推导见 [`sim_exp_data.md`](sim_exp_data.md) Backup S1 V3 段落 "Worst-case 可解性"。
 
 ---
 
@@ -263,16 +289,19 @@ obs_pos = pos_history[-(1 + delay)]
 frrl/envs/sim/panda_backup_policy_env.py          ✓
   - S1/S2 场景，28D/38D 观测
   - V2 几何（wrist+hand 单球 R=0.10m）+ rotation budget 软惩罚
+  - V3 几何（5 球 link3/4/5/6/hand）+ obstacle r=0.10 + proximity reward
+    （开关：use_arm_sphere_collision / use_full_arm_collision）
   - 4 种运动模式（LINEAR/ARC/STOP_GO/PASSING）
   - 位移 + 动作幅度 + 平滑惩罚
   - DR：位置噪声、速度噪声、观测延迟
   - 编码器偏差路径（使用 get_robot_state()）
 
 frrl/envs/__init__.py                          ✓ 已注册
-  - S1 / S2 / NoDR / BiasJ1 / V2 / Relaxed / Combo 等变体
+  - S1 / S2 / NoDR / BiasJ1 / V2 / V3 / Relaxed / Combo 等变体
 
 scripts/configs/train_hil_sac_backup_s1.json      ✓（S1 v0）
 scripts/configs/train_hil_sac_backup_s1_v2.json   ✓（V2 新几何 + 软惩罚）
+scripts/configs/train_hil_sac_backup_s1_v3.json   ✓（V3 全臂 5 球 + obstacle r=0.10 + proximity reward）
 scripts/configs/train_hil_sac_backup_s1_tracking*.json  ✓（tracking/tracking_combo/tracking_relaxed）
 scripts/configs/train_hil_sac_backup_s2.json      ✓（38D S2）
 scripts/sim/eval_backup_policy.py                 ✓（运动模式+奖励统计）
@@ -346,5 +375,8 @@ python scripts/sim/check_backup_env.py --num_obstacles 2 --no_dr
 
 1. 标定相机: `python scripts/tools/calibrate_cam_to_robot.py`（SVD 点对齐）
 2. 验证 HandDetector 精度: 手部位置误差 < 4cm
-3. 部署 V2 checkpoint（`checkpoints/backup_policy_s1_v2_newgeom_35k` 或 `_145k`），人手进入 → 验证主动闪避
+3. 部署 checkpoint（**ckpt 版本必须与 D_SAFE/D_CLEAR 阈值匹配**）：
+   - V2 ckpt: `python scripts/real/deploy_backup_policy.py --ckpt-version v2`（自动配 D_SAFE=0.30 / D_CLEAR=0.35）
+   - V3 ckpt（训完后）: `python scripts/real/deploy_backup_policy.py --ckpt-version v3`（D_SAFE=0.40 / D_CLEAR=0.45）
+   - 阈值版本错配会让 BACKUP 在训练分布外激活 → policy OOD
 4. 验证策略切换: Task → Backup → Homing → Task 流畅过渡（详见 `docs/backup_policy_deployment.md`）

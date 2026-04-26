@@ -116,6 +116,7 @@ frrl/
 **[real] Backup Policy 真机部署**
 - HierarchicalSupervisor（TASK / BACKUP / HOMING 三态）+ HomingController 已实装
 - V2 几何：`ARM_SPHERE_RADIUS=0.10`、`ROTATION_COEFF=0.2`、`MAX_ROTATION=π`（软惩罚）
+- **V3 全臂避障改造（2026-04-26 设计定稿）**：sim 加 5 球 (link3/4/5/6/hand) + obstacle r=0.10 + spawn (0.30,0.40) + hand_speed (0.015,0.030) + max_disp 0.40 + saturating proximity reward；FSM D_SAFE/D_CLEAR 升 0.40/0.45。解决 V2 "policy 只学 EE 避让，肘/前臂仍会撞"问题。env/config/test/script/docs 改完，训练待开始。详见 [`docs/sim_exp_data.md`](sim_exp_data.md) Backup S1 V3 段落。
 - BiasMonitor 实时可视化 + 数据存盘，已集成进 `scripts/real/deploy_backup_policy.py`
 - 相机-基座标定：`scripts/tools/calibrate_cam_to_robot.py` 默认用 SVD 点对齐，hand-eye 作为诊断
 - 详见 [`backup_policy_deployment.md`](backup_policy_deployment.md)
@@ -203,6 +204,35 @@ Checkpoints：
 - `checkpoints/backup_policy_s1_v2_50k` — V2 50k 训练版
 - `checkpoints/backup_policy_s1_v2_newgeom_35k` — 真机实验首选（小 ckpt）
 - `checkpoints/backup_policy_s1_v2_newgeom_145k` — 训练峰值，真机备用
+
+### 3.6.5 [sim] Backup S1 V3（全臂避障 + obstacle r=0.10 + proximity reward）— 设计定稿，训练待开始
+
+V3 解决 V2 真机部署观察到的失效：policy 学会 EE 避让，但肘/前臂仍可能撞手。
+
+改动总览（详见 `sim_exp_data.md` Backup S1 V3 段落）：
+- arm collision: 单球 → 5 球 (link3:0.07, link4:0.07, link5:0.065, link6:0.065, hand:0.10)
+- obstacle r: 0.035 → **0.10**（对齐真机 hand bbox 等效半径）
+- spawn dist: (0.21, 0.30) → **(0.30, 0.40)**
+- hand speed: (0.005, 0.015) → **(0.015, 0.030)** m/step
+- max_displacement: 0.30 → **0.40**
+- reward: 加 saturating proximity bonus（饱和 0.20 @ clearance 0.10）
+- FSM `D_SAFE`/`D_CLEAR`: 0.30/0.35 → **0.40/0.45**
+
+实施状态（2026-04-26）：
+- ✅ env / 注册 / config / 启动脚本 / 单测 (17/17 pass) / FSM (CLI `--ckpt-version` 自动配阈值) / 文档
+- ⏳ 训练首跑（端口 50055, seed 1004, 300k steps, utd=4）
+- ⏳ Eval ckpt 落库
+
+预期对比（V3 vs V2 145k）：
+
+| 指标 | V2 (sim 100%, 真机存在肘撞) | V3 (sim 92-95%, 全臂避障) |
+|---|---|---|
+| Sim 满存活率 | 100% | 92-95%（worst-case 5-10% 不可解）|
+| 真机肘/前臂撞 | **存在**（V2 collision 仅查 panda_hand 单球）| 根除（5 球全臂检测）|
+| Reward 设计 | V4 (无 proximity) | V5 (saturating proximity，详见 `rl_reward.md`) |
+| 真机部署阈值 | D_SAFE=0.30 / D_CLEAR=0.35 | D_SAFE=0.40 / D_CLEAR=0.45 |
+
+V2→V3 sim 数字略降但**真机失效模式被根除**——质的改进。worst-case 推导见 `sim_exp_data.md` Backup S1 V3 段落。
 
 ### 3.7 [real] 真机实验（未开始）
 
@@ -385,9 +415,10 @@ H4 [real]: 仿真训练策略能零样本/少样本迁移到真机              
 |------|------|------|
 | `checkpoints/backup_policy_s1/` | Exp 3 Backup S1 DR，200k | 99.0% |
 | `checkpoints/backup_policy_s1_v2_50k/` | V2 几何 50k | 训练中期 |
-| `checkpoints/backup_policy_s1_v2_newgeom_35k/` | V2 新几何，真机实验首选 | 真机首选 |
-| `checkpoints/backup_policy_s1_v2_newgeom_145k/` | V2 新几何训练峰值 | 真机备用 |
+| `checkpoints/backup_policy_s1_v2_newgeom_35k/` | V2 新几何 | 部署用 `--ckpt-version v2` (D_SAFE=0.30/D_CLEAR=0.35) |
+| `checkpoints/backup_policy_s1_v2_newgeom_145k/` | V2 新几何训练峰值 | 部署用 `--ckpt-version v2` (D_SAFE=0.30/D_CLEAR=0.35) |
 | `checkpoints/backup_policy_s2/` | Exp 7 Backup S2 多障碍，200k | 83-91% |
+| `checkpoints/backup_policy_s1_v3_*` | V3 全臂避障（待训完）| 部署用 `--ckpt-version v3` (D_SAFE=0.40/D_CLEAR=0.45) |
 
 ### 9.2 本地训练输出（`outputs/`，**不入 git**）
 

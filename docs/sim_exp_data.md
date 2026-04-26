@@ -132,7 +132,7 @@
 | 障碍物位置噪声 | N(0, 0.03) | MediaPipe + D455 深度 累计 ±3cm |
 | 障碍物速度噪声 | N(0, 0.01) | 帧间差分抖动 |
 | 观测延迟 | U(0, 2) 步 | 检测+推理延迟 ~0-20ms |
-| 障碍物生成距离 | U(0.12, 0.25) m | 不同进入距离 |
+| 障碍物生成距离 | U(0.15, 0.30) m | 不同进入距离（与代码 `HAND_SPAWN_DIST` 一致） |
 | 障碍物移动速度 | U(0.005, 0.015) m/step | 不同手速 |
 | TCP 位置噪声 | N(0, 0.005) | 原有 |
 
@@ -878,6 +878,93 @@ V2 10k steps 眼检可视化发现奇异行为：满存活率仅 20%、60% episo
 - `scripts/sim/eval_backup_policy.py`：默认 max_steps 10→20；inline imports 上移到模块级
 - `tests/test_backup_env_tracking.py`：rotation budget 机制测试显式传 `max_rotation=0.5`（硬终止链路仍可用）
 - `scripts/sim/run_homing_integration.py`：新增 backup + homing 集成测试脚本
+
+---
+
+## Backup S1 V3 全臂避障 + obstacle r=0.10 + proximity reward（2026-04-26 设计定稿，训练待开始）
+
+**动机**：V2 145k ckpt 真机部署时观察到失效模式——policy 学会让 EE（panda_hand 球）避开手，但 link4 (肘) / link5 (前臂) 仍可能撞手。根因是 V2 collision 检测**只查 panda_hand 一个球**，肘/前臂对 collision/reward 不可见，policy 没有梯度学习避让这些部位。
+
+### V2 → V3 改造对比
+
+| 类别 | V2 | **V3** |
+|---|---|---|
+| arm 碰撞球 | 1 球 (panda_hand, R=10cm) | **5 球** (link3:0.07, link4:0.07, link5:0.065, link6:0.065, hand:0.10) |
+| obstacle 半径 | 0.035 (乒乓球大小) | **0.10**（对齐真机 hand bbox 等效半径，开掌 ~10cm 外接球）|
+| `ARM_SPAWN_DIST` | (0.21, 0.30) m | **(0.30, 0.40)** m（保 1.5×collision_dist 防 1-step death）|
+| `HAND_SPEED_RANGE` | (0.005, 0.015) m/step | **(0.015, 0.030)**（对齐真机 15-30cm/s）|
+| `max_displacement` | 0.30 | **0.40**（hand 加速后 policy 需要更大退让预算）|
+| Reward proximity bonus | ✗ | **+ saturating clip(clear/0.10) × 0.20** |
+| FSM `D_SAFE`/`D_CLEAR` | 0.30 / 0.35 | **0.40 / 0.45** |
+
+### Reward 设计：诱导"维持 ~10cm 表面间隙"
+
+```python
+PROXIMITY_REWARD_MAX = 0.20    # 上限
+PROXIMITY_SAFE_DIST  = 0.10    # 饱和点（surface clearance）
+proximity = PROXIMITY_REWARD_MAX × clip(surface_clearance / PROXIMITY_SAFE_DIST, 0, 1)
+```
+
+- **clear=0**: proximity=0（紧接 -10 终止）
+- **clear=5cm**: proximity=0.10（梯度 2.0/m vs disp 0.5/m → 退）
+- **clear≥10cm**: proximity=0.20 饱和（再退只剩 disp penalty → 停）
+
+设计意图："手追近时 policy 退一点（梯度方向利退让）；退到 10cm 间隙就停（饱和后 disp 主导，不会逃跑）"。spawn 起始 clear=10-20cm 已在饱和点附近，**起步无强烈退让动机**；hand 追近后 clear<10cm 才有梯度。
+
+### Worst-case 可解性（设计妥协）
+
+sim 训练 `ACTION_SCALE=0.03 m/step` 给 policy 单步退让上限 0.030 m/step（与 v_hand 上限相等）。但**位移预算 max_disp=0.40m 才是真正约束**：20 步 episode 内累积位移上限 = 0.40m，**平均每步 ≤ 0.020 m/step** 才能熬到终末。
+
+worst-case 推导（按位移预算反推）：
+- 平均每步可退 = 0.40m / 20 步 = **0.020 m/step**
+- 若 v_hand 也 ≤ 0.020 → closure rate ≤ 0，policy 直退就赢
+- 若 v_hand > 0.020（典型 fast hand 0.025-0.030）→ closure 持续 +0.005~0.010 m/step
+- spawn clear 起始 10-20cm，终末 clear ≈ 起始 − 20 × closure
+- 最坏组合 `v_hand=0.030 + spawn=0.30 (clear=10cm)`：终末 clear = 0.10 − 20×0.010 = **−0.10m → 撞**
+
+接受 **~5-10% worst-case 失败**（fast hand 0.025-0.030 + 近 spawn 0.30-0.32 同时发生），SAC 能从这些 fail 中学到"判别哪类 episode 该退多少"。最终 eval 成功率预期 92-95%（vs V2 100%）——backup policy 作为 emergency 兜底，95% 完全够用，且真机偶发"30cm/s 直冲"概率极低（人手怼到 EE 区域的 dwell 时间通常 < 1s）。
+
+### FSM 部署仍用单球（关键设计决策）
+
+V3 多球 collision 仅作 **sim 训练 reward / 终止信号**；真机 FSM (`HierarchicalSupervisor`) 仍用单球距离判定 `‖hand_body_equiv − bbox_center‖`。理由：
+
+1. FSM 只决定何时切 BACKUP，policy 自身已经通过多球训练学到了"避让肘等部位"的能力
+2. 真机不需要做 link3-link6 的 FK（避免引入 urdfpy/pinocchio 依赖）
+3. 设计不变量 `D_SAFE = sim_spawn_upper_bound`（V3 = 0.40m）仍成立
+
+详见 [`backup_policy_deployment.md`](backup_policy_deployment.md) §3.2。
+
+### 实施清单（2026-04-26）
+
+- ✅ env 改造：`frrl/envs/sim/panda_backup_policy_env.py` 加 `use_full_arm_collision` flag + 5 球 collision + proximity reward + 新常量段
+- ✅ 注册：`PandaBackupPolicyS1V3-v0` (gym_frrl) + eval 脚本 choices
+- ✅ 训练 config：`scripts/configs/train_hil_sac_backup_s1_v3.json` (端口 50055, seed 1004, 300k steps)
+- ✅ 启动脚本：`bash scripts/real/train_hil_sac.sh backup_v3 {learner,actor}`
+- ✅ FSM 更新：`scripts/real/deploy_backup_policy.py` D_SAFE 0.30→0.40, D_CLEAR 0.35→0.45
+- ✅ 单测：`tests/test_backup_env_tracking.py` +5 V3 测试 (17/17 pass)
+- ⏳ 训练首跑（待开始）
+- ⏳ Eval 数据 + ckpt 落库（待训完）
+
+### 可复现命令
+
+```bash
+# V3 训练（300k, 端口 50055, 独立 seed 1004）
+bash scripts/real/train_hil_sac.sh backup_v3 learner      # 终端 1
+bash scripts/real/train_hil_sac.sh backup_v3 actor        # 终端 2
+
+# V3 eval（与 V2 145k 对照）
+python scripts/sim/eval_backup_policy.py \
+  --checkpoint outputs/.../pretrained_model \
+  --env_task PandaBackupPolicyS1V3-v0 \
+  --n_episodes 200
+```
+
+### 训练后 TODO
+
+- [ ] 50/100/150/200/250/300k ckpt 中间 eval，找最稳点
+- [ ] eval 时统计 `hand_collision` 终止里 link3-6 占比（验证多球碰撞确实被 policy 学到避让）
+- [ ] 最佳 ckpt 落 `checkpoints/backup_policy_s1_v3_<best>k/`
+- [ ] 更新 `scripts/real/deploy_backup_policy.py` default checkpoint 到 V3
 
 ---
 

@@ -90,6 +90,33 @@ ARM_COLLISION_DIST = ARM_SPHERE_RADIUS + 0.035   # + obstacle 球半径 = 0.135m
 ROTATION_COEFF = 0.2                  # 旋转软惩罚系数
 MAX_ROTATION = np.pi                  # ≈180°，等效关闭硬上限
 
+# V3 全臂多球避障：解决 "policy 只学 EE 避让，肘/前臂仍会撞" 的问题
+# 沿 Franka 链 5 个 link body 各放一个球，min over 算最近距离；
+# obstacle 半径放大到 0.10 对齐真机 hand bbox 等效半径 (~10cm 外接球)，
+# 让 sim 训练边界 = 真机最坏 case (开掌伸出) 接触边界。
+ARM_SPHERES_V3 = [
+    ("link3", 0.07),                  # 上臂
+    ("link4", 0.07),                  # 肘 (最容易被撞)
+    ("link5", 0.065),                 # 前臂
+    ("link6", 0.065),                 # 腕前
+    ("hand",  0.10),                  # 腕+手 (= ARM_SPHERE_RADIUS, 沿用)
+]
+OBSTACLE_RADIUS_V3 = 0.10             # m，对齐真机 WiLoR bbox 等效半径
+ARM_COLLISION_DIST_V3 = 0.10 + OBSTACLE_RADIUS_V3   # = 0.20m（panda_hand 球的最严阈值，
+                                                     # 5 球中半径最大者 0.10 + obstacle 0.10）
+ARM_SPAWN_DIST_V3 = (0.30, 0.40)      # 相对 panda_hand body；下限 = 1.5×ARM_COLLISION_DIST_V3
+                                       #   = 1.5 × 0.20 = 0.30，配合 _spawn_obstacle_pos 的
+                                       #   1.5× 拒绝采样系数刚好不留 1-step death 风险
+HAND_SPEED_RANGE_V3 = (0.015, 0.030)  # m/step，对齐真机人手 15-30cm/s 区间
+MAX_DISPLACEMENT_V3 = 0.40            # 给 policy 更大退让预算 (V2 是 0.30)
+
+# V3 proximity reward：诱导 "维持 ~10cm 表面间隙"
+# - clear=0: 0 (碰撞，紧接 -10 终止)
+# - clear<10cm: 线性增长，梯度 PROXIMITY_REWARD_MAX/PROXIMITY_SAFE_DIST = 2.0/m
+# - clear>=10cm: 饱和 +0.20 (退到此处即可，再退只剩 disp penalty)
+PROXIMITY_REWARD_MAX = 0.20
+PROXIMITY_SAFE_DIST  = 0.10
+
 # DR 噪声参数
 DR_OBS_POS_STD = 0.03
 DR_OBS_VEL_STD = 0.01
@@ -115,6 +142,10 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         survival_bonus: 存活完整 episode（truncated）时追加的终局 bonus。
         use_arm_sphere_collision: True → 用腕+手单球（半径 10cm，球心在 mocap weld 点）
             做唯一避障碰撞体；False（默认）→ 保留 TCP+左右指尖三检测点。V2 防作弊开关。
+        use_full_arm_collision: True → V3 模式，沿臂 5 球 (link3/4/5/6/hand) 全臂避障，
+            obstacle 半径放大到 0.10 对齐真机 hand bbox，spawn 距离 (0.30, 0.40)，
+            hand 速度 (0.015, 0.030) m/step，引入 proximity reward 诱导维持 ~10cm
+            表面间隙。要求 use_arm_sphere_collision=True（V3 在 V2 panda_hand 球基础上扩展）。
         max_rotation: 姿态旋转预算硬上限 (rad)，当 use_arm_sphere_collision=True 时生效。
             超过即 terminate（防"转手腕躲避"作弊）。
         rotation_coeff: 旋转幅度负奖励系数（与 DISPLACEMENT_COEFF 对称），仅在
@@ -139,6 +170,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         max_displacement: float = MAX_DISPLACEMENT,
         survival_bonus: float = SURVIVAL_BONUS,
         use_arm_sphere_collision: bool = False,
+        use_full_arm_collision: bool = False,
         max_rotation: float = MAX_ROTATION,
         rotation_coeff: float = ROTATION_COEFF,
         enforce_cartesian_bounds: bool = True,
@@ -149,6 +181,12 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._max_displacement = float(max_displacement)
         self._survival_bonus = float(survival_bonus)
         self._use_arm_sphere_collision = bool(use_arm_sphere_collision)
+        self._use_full_arm_collision = bool(use_full_arm_collision)
+        if self._use_full_arm_collision and not self._use_arm_sphere_collision:
+            raise ValueError(
+                "use_full_arm_collision=True requires use_arm_sphere_collision=True "
+                "(V3 builds on V2 panda_hand sphere)."
+            )
         self._max_rotation = float(max_rotation)
         self._rotation_coeff = float(rotation_coeff)
         self._enforce_cartesian_bounds = bool(enforce_cartesian_bounds)
@@ -180,6 +218,12 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._obstacle_geom_ids = [self._model.geom(n).id for n in HAND_GEOM_NAMES]
         # V2 腕+手避障的球心：mocap weld 点 (panda hand body)
         self._panda_hand_body_id = self._model.body("hand").id
+        # V3 全臂多球：解析 link3/4/5/6 + hand 各球的 body_id 和半径
+        self._arm_sphere_specs: list[Tuple[int, float]] = []
+        if self._use_full_arm_collision:
+            self._arm_sphere_specs = [
+                (self._model.body(name).id, float(r)) for name, r in ARM_SPHERES_V3
+            ]
 
         # 障碍物状态
         self._obstacle_pos = [HIDDEN_POS.copy() for _ in range(self._num_obstacles)]
@@ -199,6 +243,9 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._tcp_start = np.zeros(3)
         self._tcp_start_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)  # shape: (4,) [w,x,y,z]
         self._action_prev = np.zeros(6, dtype=np.float32)
+        # V3 当步表面间隙（min over arm_spheres of (center_dist − sphere_r − obstacle_r)）
+        # 仅 V3 使用；step() 内由 _check_multi_safety 写入，再被 proximity reward 读取
+        self._step_surface_clearance = float("inf")
 
         # 帧堆叠
         self._single_obs_dim = 18 + self._num_obstacles * 10
@@ -234,6 +281,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         self._tcp_start = np.zeros(3)
         self._tcp_start_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self._action_prev = np.zeros(6, dtype=np.float32)
+        self._step_surface_clearance = float("inf")
         self._obs_history.clear()
 
         super().reset(seed=seed)
@@ -246,11 +294,22 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         # 记录 episode 起点末端姿态（V2 旋转预算基准）
         self._tcp_start_quat = np.asarray(self._data.mocap_quat[0], dtype=np.float64).copy()
 
-        # 追踪速度 per-episode 随机
-        self._obstacle_speed = self._random.uniform(*HAND_SPEED_RANGE)
+        # 追踪速度 per-episode 随机；V3 用更快的速度区间匹配真机
+        speed_range = HAND_SPEED_RANGE_V3 if self._use_full_arm_collision else HAND_SPEED_RANGE
+        self._obstacle_speed = self._random.uniform(*speed_range)
 
-        # 所有障碍都采用 TRACKING 模式；spawn 基点 + 距离范围按碰撞体分支
-        if self._use_arm_sphere_collision:
+        # 所有障碍都采用 TRACKING 模式；spawn 基点 + 距离范围 + 安全检查按 V3/V2/V1 三档
+        safety_spheres: Optional[list] = None
+        if self._use_full_arm_collision:
+            # V3: spawn 基点为 panda_hand body，但安全距离对所有 5 个臂球都验证
+            spawn_center = self._data.xpos[self._panda_hand_body_id].copy()
+            spawn_range = ARM_SPAWN_DIST_V3
+            spawn_collision_dist = 0.0    # safety_spheres 路径走多球检查，此值不被使用
+            safety_spheres = [
+                (self._data.xpos[bid].copy(), r + OBSTACLE_RADIUS_V3)
+                for bid, r in self._arm_sphere_specs
+            ]
+        elif self._use_arm_sphere_collision:
             spawn_center = self._data.xpos[self._panda_hand_body_id].copy()
             spawn_range = ARM_SPAWN_DIST
             spawn_collision_dist = ARM_COLLISION_DIST
@@ -261,6 +320,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         for i in range(self._num_obstacles):
             self._obstacle_pos[i] = self._spawn_obstacle_pos(
                 spawn_center, spawn_range, spawn_collision_dist,
+                safety_spheres=safety_spheres,
             )
             self._obstacle_prev_pos[i] = self._obstacle_pos[i].copy()
 
@@ -339,6 +399,11 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             )
             if self._use_arm_sphere_collision:
                 reward -= self._rotation_coeff * rotation
+            if self._use_full_arm_collision:
+                # V3 proximity reward：诱导维持 ~10cm 表面间隙；超过即饱和
+                clear = max(0.0, self._step_surface_clearance)
+                proximity = PROXIMITY_REWARD_MAX * min(1.0, clear / PROXIMITY_SAFE_DIST)
+                reward += proximity
             if truncated:
                 reward += self._survival_bonus
 
@@ -355,6 +420,10 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             "motion_mode": self._motion_mode.name,
             **safety_info,
         }
+        # V3 才有意义的字段；V1/V2 路径下 _step_surface_clearance 永远 inf，避免下游
+        # logger/jsonl/BiasMonitor 序列化脏值
+        if self._use_full_arm_collision:
+            info["step_surface_clearance"] = self._step_surface_clearance
         return obs, reward, terminated, truncated, info
 
     # ================================================================
@@ -421,23 +490,54 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         center: np.ndarray,
         dist_range: Tuple[float, float],
         collision_dist: float,
+        safety_spheres: Optional[list] = None,
     ) -> np.ndarray:
         """在指定中心附近球面随机方向生成障碍物位置。
 
         Args:
-            center: 采样基点（V1=TCP，V2=arm_sphere_center）
+            center: 采样基点（V1=TCP，V2/V3=panda_hand body xpos）
             dist_range: 采样距离范围 (m)
-            collision_dist: 碰撞阈值（retry 判断用 1.5× 该值）
+            collision_dist: 单球碰撞阈值（V1/V2 用 1.5× 该值做拒绝采样）
+            safety_spheres: V3 用，list of (sphere_pos, threshold)；
+                若提供，则要求采样位置离**所有**臂球都 > 1.5× 阈值（防 1-step death）。
+
+        失败回退：20 次拒绝采样仍不满足时，沿最远方向 fallback 到 spawn 上限处
+        （`center + dir × dist_range[1]`），保证起码不在 spawn 中心球内；warn 一次。
         """
+        last_pos = center.copy()
+        last_dir = np.array([1.0, 0.0, 0.0])
+        success = False
         for _ in range(20):
             raw_dir = self._random.normal(size=3)
             raw_dir /= np.linalg.norm(raw_dir) + 1e-8
             dist = self._random.uniform(*dist_range)
             pos = center + raw_dir * dist
             pos = np.clip(pos, *self._cartesian_bounds)
-            if np.linalg.norm(pos - center) > collision_dist * 1.5:
-                break
-        return pos
+            last_pos = pos
+            last_dir = raw_dir
+            if safety_spheres is not None:
+                # V3: 对所有臂球都做安全距离检查
+                if all(
+                    np.linalg.norm(pos - sp_pos) > thr * 1.5
+                    for sp_pos, thr in safety_spheres
+                ):
+                    success = True
+                    break
+            else:
+                if np.linalg.norm(pos - center) > collision_dist * 1.5:
+                    success = True
+                    break
+        if not success:
+            # Fallback：用最后一次方向 + spawn 上限，至少远离 spawn 中心
+            import warnings
+            warnings.warn(
+                f"_spawn_obstacle_pos: 20 retries failed (safety_spheres={safety_spheres is not None}); "
+                f"fallback to far end of dist_range. May indicate workspace too tight or arm pose extreme.",
+                stacklevel=2,
+            )
+            fallback_pos = center + last_dir * dist_range[1]
+            last_pos = np.clip(fallback_pos, *self._cartesian_bounds)
+        return last_pos
 
     def _check_multi_safety(self) -> Tuple[bool, Dict[str, Any]]:
         """碰撞检测：
@@ -445,6 +545,9 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         V1（默认）：TCP + 左右指尖三检测点，阈值 HAND_COLLISION_DIST。
         V2（use_arm_sphere_collision=True）：腕+手单球，球心在 panda hand body
             （= mocap weld 点，对旋转 rigid），阈值 ARM_COLLISION_DIST。
+        V3（use_full_arm_collision=True）：5 球沿臂 (link3/4/5/6/hand)，逐球
+            阈值 = sphere_r + OBSTACLE_RADIUS_V3，min over 5 球做最近距离 +
+            碰撞判定。同时写 _step_surface_clearance 供 proximity reward 读取。
         """
         tcp = self._data.site_xpos[self._pinch_site_id].copy()
 
@@ -458,7 +561,23 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             safety_info = {"safety_violation": True, "violation_type": "zone_c_intrusion"}
             return terminated, safety_info
 
-        if self._use_arm_sphere_collision:
+        if self._use_full_arm_collision:
+            # V3：5 球沿臂迭代，min over center distance + min over surface clearance
+            step_surface_clear = float("inf")
+            for bid, sphere_r in self._arm_sphere_specs:
+                sphere_pos = self._data.xpos[bid].copy()
+                threshold = sphere_r + OBSTACLE_RADIUS_V3
+                for i in range(self._num_obstacles):
+                    d = float(np.linalg.norm(sphere_pos - self._obstacle_pos[i]))
+                    self._min_hand_dist = min(self._min_hand_dist, d)
+                    surface_clear = d - threshold
+                    step_surface_clear = min(step_surface_clear, surface_clear)
+                    if not terminated and d < threshold:
+                        self._hand_collisions += 1
+                        terminated = True
+                        safety_info = {"safety_violation": True, "violation_type": "hand_collision"}
+            self._step_surface_clearance = step_surface_clear
+        elif self._use_arm_sphere_collision:
             # V2：单球避障，球心 = panda hand body xpos（rotation invariant）
             arm_sphere_center = self._data.xpos[self._panda_hand_body_id].copy()
             collision_dist = ARM_COLLISION_DIST

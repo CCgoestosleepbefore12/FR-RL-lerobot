@@ -20,6 +20,12 @@ Backup Policy 评估脚本
 
   # 无 DR 对比（测试策略在精确观测下的表现）
   python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS1NoDR-v0
+
+  # V2 防作弊几何评估
+  python scripts/sim/eval_backup_policy.py --checkpoint checkpoints/backup_policy_s1_v2_newgeom_145k --env_task PandaBackupPolicyS1V2-v0
+
+  # V3 全臂避障评估（5 球 + obstacle r=0.10 + proximity reward）
+  python scripts/sim/eval_backup_policy.py --checkpoint outputs/.../pretrained_model --env_task PandaBackupPolicyS1V3-v0
 """
 
 import argparse
@@ -219,6 +225,7 @@ if __name__ == "__main__":
                             "PandaBackupPolicyS1Relaxed-v0",
                             "PandaBackupPolicyS1Combo-v0",
                             "PandaBackupPolicyS1V2-v0",
+                            "PandaBackupPolicyS1V3-v0",
                             "PandaBackupPolicyS2-v0",
                             "PandaBackupPolicyS1NoDR-v0",
                             "PandaBackupPolicyS1BiasJ1-v0",
