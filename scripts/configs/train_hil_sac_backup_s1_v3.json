@@ -45,6 +45,8 @@
         "online_buffer_capacity": 300000,
         "offline_buffer_capacity": 0,
         "online_step_before_learning": 100,
+        "offline_warmup_steps": 0,
+        "offline_pretrain_steps": 0,
         "discount": 1.0,
         "temperature_init": 0.1,
         "num_critics": 2,
