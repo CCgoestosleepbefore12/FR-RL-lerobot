@@ -277,6 +277,25 @@ register(
     },
 )
 
+# S1 V3c：在 V3 (max_disp=0.50) 基础上把 hand 追的目标从 pinch_site 改成 panda_hand body
+# (= flange = collision 球心)，配合 D_TIGHT_ARM=25cm 让 hand dwell 行为成为**可达样本**。
+# V3 TCP-tracking 下 D_TIGHT=8cm 实质 unreachable (hand 在 D_TIGHT 时已 < collision_dist=20cm
+# 的几何范围内)，policy 学到的是"避免到那个区域"；V3c 下 hand 在 25cm > collision 20cm 处停顿，
+# policy 可以学到"hand 停了我也停"，更贴近真机"人手伸近停下观察"的部署场景。
+register(
+    id="gym_frrl/PandaBackupPolicyS1V3c-v0",
+    entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
+    max_episode_steps=20,
+    kwargs={
+        "num_obstacles": 1,
+        "use_arm_sphere_collision": True,
+        "use_full_arm_collision": True,
+        "tracking_target": "arm_center",   # ★ V3c 核心改动
+        "max_displacement": 0.50,
+        "enforce_cartesian_bounds": False,
+    },
+)
+
 # S2: 2 移动障碍物（38D 观测）；旧 checkpoint 兼容保留 10 步 episode
 register(
     id="gym_frrl/PandaBackupPolicyS2-v0",

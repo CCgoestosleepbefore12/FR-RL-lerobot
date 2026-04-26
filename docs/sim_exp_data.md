@@ -1025,6 +1025,70 @@ bash scripts/real/train_hil_sac.sh backup_v3 actor
 
 ---
 
+## Backup S1 V3c：tracking_target=arm_center + D_TIGHT_ARM=25cm（2026-04-27 设计定稿）
+
+**动机**：V3/V3b TCP-tracking 下 D_TIGHT=8cm 实质 **unreachable kill zone**。
+
+几何分析：hand 在 D_TIGHT (8cm 距 TCP) 时离 arm_center 的距离取决于来向：
+- 沿 ẑ+ (gripper 朝外) 方向 approach: |10.34 − 8| = 2.3cm
+- 沿 ẑ− (从 arm 方向) approach: |10.34 + 8| = 18.3cm
+- ⊥ gripper 轴 approach: √(10.34² + 8²) = 13.1cm
+
+**所有方向都 < V3 collision_dist 20cm**——hand 一旦真到 D_TIGHT，几何上必然撞。V3b 95% 存活其实是 policy 学会"避免到那个区域"，而不是"在那里安全停顿"。dwell 行为在 V3 几乎触发不到。
+
+### V3c 改造
+
+`hand 追 panda_hand body (= flange = collision 球心)` + `D_TIGHT_ARM = 25cm > collision_dist 20cm`：
+
+| 项 | V3b | **V3c** |
+|---|---|---|
+| `tracking_target` | "tcp" (默认) | **"arm_center"** |
+| 追的目标 | `pinch_site` xpos | `panda_hand body` xpos (= flange) |
+| `D_TIGHT` 实际值 | 0.08m (距 TCP) | **0.25m (距 arm_center)** |
+| Hand 在 D_TIGHT 时 hand→arm_center | 2.3-18.3cm（< 20cm，撞）| **25cm（> 20cm，不撞）** |
+| Dwell 行为可达性 | 几乎不可达 | **完全可达** |
+| Policy 学到的 | "避免到 kill zone"（一直退）| "hand 停了我也停"（停留维持）|
+
+### Sim2real 对齐
+
+V3c 训练分布**更贴近真机部署语义**——"人手伸近停下观察机器人反应"：
+- 真机 FSM 用 `hand_body_equiv` (= flange) 算距离 → V3c sim hand 追的也是 flange ✓
+- 真机 D_SAFE = 0.40m 触发 BACKUP (sim spawn 上限) → 不变
+- 真机 collision_dist = 20cm → V3c sim hand 在 25cm 处停顿，留 5cm 安全余量
+
+### 实施清单（2026-04-27）
+
+- ✅ env: `tracking_target` flag + `D_TIGHT_ARM=0.25` 常量 (`panda_backup_policy_env.py`)
+- ✅ 注册: `PandaBackupPolicyS1V3c-v0` (gym_frrl) + eval 脚本 choices
+- ✅ 训练 config: `scripts/configs/train_hil_sac_backup_s1_v3c.json` (port 50056, seed 1005)
+- ✅ 启动脚本: `bash scripts/real/train_hil_sac.sh backup_v3c {learner,actor}`
+- ✅ 单测: 4 个 V3c 测试 (25/25 pass)
+- ⏳ 训练 300k 待启动
+- ⏳ 与 V3b 对比 (sim 数字 + 行为模式)
+
+### 预期
+
+V3b 训完 95% 存活率，但**行为偏"逃跑"**（excessive_displacement 5.5%，hand_collision 3% 都来自"退不够快撞上"或"退过头"）。V3c 训完预期：
+- Sim 存活率 ≥ V3b（dwell 可达让训练分布更"benign"）
+- excessive_displacement 显著降低（policy 不需要持续退到位移上限）
+- hand_collision 接近持平或略低
+- **行为更稳定**：hand 来 → 退到舒适距离 → 停 → hand 也停 → policy 维持 → hand 走
+
+### 可复现命令
+
+```bash
+bash scripts/real/train_hil_sac.sh backup_v3c learner   # 端口 50056
+bash scripts/real/train_hil_sac.sh backup_v3c actor
+
+# Eval
+python scripts/sim/eval_backup_policy.py \
+  --checkpoint outputs/.../pretrained_model \
+  --env_task PandaBackupPolicyS1V3c-v0 \
+  --n_episodes 200
+```
+
+---
+
 ## 附录：可复现命令
 
 ### Exp 5 eval 复现

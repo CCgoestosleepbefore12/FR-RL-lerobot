@@ -10,11 +10,13 @@ from frrl.envs.sim.panda_backup_policy_env import (
     PandaBackupPolicyEnv,
     MotionMode,
     D_TIGHT,
+    D_TIGHT_ARM,
     STALL_STEPS_RANGE,
     HAND_SPAWN_DIST,
     MAX_EPISODE_STEPS,
     ROT_ACTION_SCALE,
     ARM_COLLISION_DIST,
+    ARM_COLLISION_DIST_V3,
     MAX_ROTATION,
     ARM_SPHERES_V3,
     OBSTACLE_RADIUS_V3,
@@ -59,6 +61,23 @@ def _make_env_v3(num_obstacles=1, seed=0):
         use_arm_sphere_collision=True,
         use_full_arm_collision=True,
         max_displacement=0.50,   # = 注册 kwargs (Path A: 0.40 → 0.50)
+        enforce_cartesian_bounds=False,
+    )
+    env.reset(seed=seed)
+    return env
+
+
+def _make_env_v3c(num_obstacles=1, seed=0):
+    """V3c: 同 V3 但 tracking_target='arm_center' + D_TIGHT_ARM=25cm。
+    kwargs 与 PandaBackupPolicyS1V3c-v0 注册对齐。"""
+    env = PandaBackupPolicyEnv(
+        num_obstacles=num_obstacles,
+        enable_dr=False,
+        seed=seed,
+        use_arm_sphere_collision=True,
+        use_full_arm_collision=True,
+        tracking_target="arm_center",   # ★ V3c 核心
+        max_displacement=0.50,
         enforce_cartesian_bounds=False,
     )
     env.reset(seed=seed)
@@ -531,6 +550,110 @@ def test_v3_collision_reward_no_proximity():
     print(f"  [PASS] V3 collision reward = {rew} (无 proximity 污染)")
 
 
+def test_v3c_tracks_arm_center_not_tcp():
+    """V3c: hand 朝 panda_hand body (=arm_center) 移，不朝 pinch_site (=TCP)。
+    放手在已知偏置位置，单步后看 hand 朝哪个方向走。"""
+    env = _make_env_v3c(seed=20)
+    u = env.unwrapped
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    tcp = u._data.site_xpos[u._pinch_site_id].copy()
+    # 把 hand 放在已知位置：arm_center 上方 50cm（远离 D_TIGHT_ARM 0.25）
+    u._obstacle_pos[0] = arm_center + np.array([0.0, 0.0, 0.50])
+
+    # 计算朝两个 target 移动后的预期方向
+    dir_to_arm = arm_center - u._obstacle_pos[0]; dir_to_arm /= np.linalg.norm(dir_to_arm)
+    dir_to_tcp = tcp - u._obstacle_pos[0]; dir_to_tcp /= np.linalg.norm(dir_to_tcp)
+    # 因为 TCP 比 arm_center 低 ~10cm，两个方向有可观差异
+
+    pre = u._obstacle_pos[0].copy()
+    u._move_obstacle(0)
+    post = u._obstacle_pos[0].copy()
+    delta = post - pre
+    speed = np.linalg.norm(delta)
+    if speed > 1e-8:
+        actual_dir = delta / speed
+        # actual_dir 应更接近 dir_to_arm 而非 dir_to_tcp
+        cos_arm = float(actual_dir @ dir_to_arm)
+        cos_tcp = float(actual_dir @ dir_to_tcp)
+        assert cos_arm > cos_tcp, (
+            f"V3c hand 应朝 arm_center 移而非 TCP；"
+            f"cos(actual, arm)={cos_arm:.3f} vs cos(actual, tcp)={cos_tcp:.3f}"
+        )
+        assert cos_arm > 0.99, f"V3c hand 应几乎正好朝 arm_center, cos={cos_arm:.4f}"
+    env.close()
+    print(f"  [PASS] V3c hand 移动方向匹配 arm_center (cos {cos_arm:.4f} > tcp cos {cos_tcp:.4f})")
+
+
+def test_v3c_dwell_at_d_tight_arm_no_collision():
+    """V3c: hand 在距 arm_center 25cm (= D_TIGHT_ARM) 时进 dwell；
+    25cm > collision_dist (0.20) → surface_clearance > 0 → 不会撞。"""
+    env = _make_env_v3c(seed=21)
+    u = env.unwrapped
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    # 把 hand 精准放在 D_TIGHT_ARM = 25cm 距离
+    u._obstacle_pos[0] = arm_center + np.array([D_TIGHT_ARM - 1e-6, 0.0, 0.0])
+
+    # 触发 _move_obstacle: hand 距 arm_center < D_TIGHT_ARM → 应进 stall
+    u._stall_remaining[0] = 0  # 清零，让 _move_obstacle 走 dwell 检查
+    pre = u._obstacle_pos[0].copy()
+    u._move_obstacle(0)
+    # stall_remaining 应被设为 STALL_STEPS_RANGE 内的值
+    assert u._stall_remaining[0] >= STALL_STEPS_RANGE[0], (
+        f"V3c 在 D_TIGHT_ARM 内应触发 stall; stall_remaining={u._stall_remaining[0]}"
+    )
+    # hand 不动
+    assert np.allclose(u._obstacle_pos[0], pre), "stall 时 hand 不应移动"
+
+    # 走一步 step（policy 不动），检查不撞
+    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
+    if term and info.get("violation_type") == "hand_collision":
+        # 失败：D_TIGHT_ARM 在 collision_dist 之内会报这个错
+        raise AssertionError(
+            f"V3c 在 D_TIGHT_ARM={D_TIGHT_ARM}m 处不应触发碰撞；"
+            f"collision_dist={ARM_COLLISION_DIST_V3}m, info={info}"
+        )
+    env.close()
+    print(f"  [PASS] V3c dwell 在 {D_TIGHT_ARM}m > collision {ARM_COLLISION_DIST_V3}m 处无碰撞")
+
+
+def test_v3c_requires_arm_sphere_collision():
+    """V3c tracking_target='arm_center' 要求 use_arm_sphere_collision=True
+    (arm_center 即 panda_hand body，必须开 V2/V3 球心几何)。"""
+    import pytest
+    with pytest.raises(ValueError, match="use_arm_sphere_collision"):
+        PandaBackupPolicyEnv(
+            num_obstacles=1, enable_dr=False, seed=22,
+            use_arm_sphere_collision=False,   # 反向依赖
+            tracking_target="arm_center",
+        )
+    print(f"  [PASS] V3c 拒绝 tracking_target=arm_center + use_arm_sphere_collision=False")
+
+
+def test_v3_default_tracking_target_is_tcp():
+    """V3 默认 tracking_target='tcp' 行为不变（向后兼容）。"""
+    env = _make_env_v3(seed=23)
+    u = env.unwrapped
+    assert u._tracking_target == "tcp", f"V3 默认应是 'tcp', got {u._tracking_target!r}"
+    assert u._d_tight == D_TIGHT, f"V3 默认 d_tight 应 = D_TIGHT (8cm), got {u._d_tight}"
+    # 验证 _move_obstacle 走 TCP 路径（hand 朝 pinch_site 移）
+    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
+    tcp = u._data.site_xpos[u._pinch_site_id].copy()
+    u._obstacle_pos[0] = arm_center + np.array([0.0, 0.0, 0.50])
+    pre = u._obstacle_pos[0].copy()
+    u._move_obstacle(0)
+    post = u._obstacle_pos[0].copy()
+    delta = post - pre
+    if np.linalg.norm(delta) > 1e-8:
+        actual = delta / np.linalg.norm(delta)
+        dir_to_tcp = (tcp - pre) / np.linalg.norm(tcp - pre)
+        dir_to_arm = (arm_center - pre) / np.linalg.norm(arm_center - pre)
+        cos_tcp = float(actual @ dir_to_tcp)
+        cos_arm = float(actual @ dir_to_arm)
+        assert cos_tcp > cos_arm, f"V3 默认应朝 TCP, cos_tcp={cos_tcp} cos_arm={cos_arm}"
+    env.close()
+    print(f"  [PASS] V3 默认 tracking_target='tcp' (向后兼容)")
+
+
 def test_v3_backward_compat_v2():
     """V3 关掉 use_full_arm_collision 后行为应和 V2 完全一致（不影响旧 ckpt 训练）。"""
     env_v2 = _make_env_v2(seed=10)
@@ -581,6 +704,10 @@ def main():
         test_v3_requires_arm_sphere_collision,
         test_v3_collision_reward_no_proximity,
         test_v3_backward_compat_v2,
+        test_v3c_tracks_arm_center_not_tcp,
+        test_v3c_dwell_at_d_tight_arm_no_collision,
+        test_v3c_requires_arm_sphere_collision,
+        test_v3_default_tracking_target_is_tcp,
     ]
     for t in tests:
         try:

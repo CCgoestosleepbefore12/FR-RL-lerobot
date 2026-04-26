@@ -127,6 +127,12 @@ case "$VARIANT" in
         TASK_ID="PandaBackupPolicyS1V3-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v3"
         ;;
+    backup_v3c)
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_backup_s1_v3c.json"
+        echo "=== Backup Policy S1-V3c arm_center tracking: 同 V3 但 hand 追 panda_hand body (=collision 球心) + D_TIGHT_ARM=25cm（hand 在 25cm > collision 20cm 处停顿，dwell 可达；端口 50056）==="
+        TASK_ID="PandaBackupPolicyS1V3c-v0"
+        EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v3c"
+        ;;
     task_real)
         CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_task_real.json"
         echo "=== Task Policy 真机 HIL 训练: Franka + SpaceMouse + keyboard reward + J1 bias ==="
@@ -142,7 +148,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "未知任务: $VARIANT"
-        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, backup_v3, task_real, custom"
+        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, backup_v3, backup_v3c, task_real, custom"
         exit 1
         ;;
 esac

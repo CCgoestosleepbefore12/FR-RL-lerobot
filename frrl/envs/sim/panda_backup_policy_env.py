@@ -58,7 +58,14 @@ HAND_SPEED_RANGE = (0.005, 0.015)
 HIDDEN_POS = np.array([0.4, 0.5, 0.05])
 
 # TRACKING 参数
-D_TIGHT = 0.08                   # 贴近 TCP 的停顿距离（"怼脸"）
+D_TIGHT = 0.08                   # 贴近 TCP 的停顿距离（"怼脸"）。注：因 TCP 距 panda_hand
+                                  # body 10.34cm，hand 在 D_TIGHT 实际离 arm_center 仅 2-18cm
+                                  # （取决于来向），已在 V3 collision_dist=20cm 内——意味着
+                                  # V3 TCP-tracking 下 D_TIGHT 实质 unreachable，policy 实际
+                                  # 学到的是"避免到这个区域"而非"在这里安全停顿"。
+D_TIGHT_ARM = 0.25               # V3c arm_center tracking 的停顿距离：> ARM_COLLISION_DIST_V3
+                                  # (0.20) + 5cm 缓冲，让 dwell 行为成为可达的训练样本，
+                                  # policy 学到"hand 停了我也停"而非"一味远离"。
 STALL_STEPS_RANGE = (3, 8)       # 每次贴近后停顿的步数范围
 
 HAND_BODY_NAMES = ["human_hand", "human_hand_2", "human_hand_3"]
@@ -147,6 +154,12 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
             obstacle 半径放大到 0.10 对齐真机 hand bbox，spawn 距离 (0.30, 0.40)，
             hand 速度 (0.015, 0.030) m/step，引入 proximity reward 诱导维持 ~10cm
             表面间隙。要求 use_arm_sphere_collision=True（V3 在 V2 panda_hand 球基础上扩展）。
+        tracking_target: hand 追的目标参考点。
+            "tcp"        : 追 pinch_site (V1/V2/V3 默认)
+            "arm_center" : 追 panda_hand body xpos = flange (V3c, 要求
+                          use_arm_sphere_collision=True)。配合 D_TIGHT_ARM=25cm 使
+                          hand dwell 行为成为可达样本（V3 TCP-tracking 下 D_TIGHT
+                          实质 unreachable，因 hand 在 D_TIGHT 时已 < collision_dist）。
         max_rotation: 姿态旋转预算硬上限 (rad)，当 use_arm_sphere_collision=True 时生效。
             超过即 terminate（防"转手腕躲避"作弊）。
         rotation_coeff: 旋转幅度负奖励系数（与 DISPLACEMENT_COEFF 对称），仅在
@@ -172,6 +185,7 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
         survival_bonus: float = SURVIVAL_BONUS,
         use_arm_sphere_collision: bool = False,
         use_full_arm_collision: bool = False,
+        tracking_target: Literal["tcp", "arm_center"] = "tcp",
         max_rotation: float = MAX_ROTATION,
         rotation_coeff: float = ROTATION_COEFF,
         enforce_cartesian_bounds: bool = True,
@@ -188,6 +202,17 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
                 "use_full_arm_collision=True requires use_arm_sphere_collision=True "
                 "(V3 builds on V2 panda_hand sphere)."
             )
+        # V3c: arm_center tracking 要求 V2/V3 几何（球心 = panda_hand body xpos）
+        if tracking_target not in ("tcp", "arm_center"):
+            raise ValueError(f"tracking_target must be 'tcp' or 'arm_center', got {tracking_target!r}")
+        if tracking_target == "arm_center" and not self._use_arm_sphere_collision:
+            raise ValueError(
+                "tracking_target='arm_center' requires use_arm_sphere_collision=True "
+                "(arm_center 指 panda_hand body xpos = V2/V3 collision 球心)。"
+            )
+        self._tracking_target = tracking_target
+        # 配套 D_TIGHT：tcp tracking 用 D_TIGHT (8cm 距 TCP)，arm_center 用 D_TIGHT_ARM (25cm 距 flange)
+        self._d_tight = D_TIGHT if tracking_target == "tcp" else D_TIGHT_ARM
         self._max_rotation = float(max_rotation)
         self._rotation_coeff = float(rotation_coeff)
         self._enforce_cartesian_bounds = bool(enforce_cartesian_bounds)
@@ -432,27 +457,35 @@ class PandaBackupPolicyEnv(PandaPickPlaceSafeEnv):
     # ================================================================
 
     def _move_obstacle(self, idx: int):
-        """TRACKING：追踪当前 TCP，贴近后停顿。
+        """TRACKING：追踪 target（TCP 或 arm_center），贴近后停顿。
 
         逻辑：
           1. 若仍在停顿计数内，本步不动
-          2. 每步重算方向 = normalize(current_TCP - obstacle_pos)
-          3. 若距离 < D_TIGHT，触发新一轮停顿（3-8 步），本步不动
+          2. 每步重算方向 = normalize(target - obstacle_pos)
+              tracking_target='tcp':       target = pinch_site (V1/V2/V3 默认)
+              tracking_target='arm_center': target = panda_hand body xpos = flange (V3c)
+          3. 若距离 < self._d_tight，触发新一轮停顿（3-8 步），本步不动
+              tcp 路径：D_TIGHT=8cm（实质 unreachable，详见常量注释）
+              arm_center 路径：D_TIGHT_ARM=25cm（> collision 20cm，可达 dwell）
           4. 否则沿方向前进 obstacle_speed（受工作空间 clip）
         """
         if self._stall_remaining[idx] > 0:
             self._stall_remaining[idx] -= 1
             return
 
-        tcp = self._data.site_xpos[self._pinch_site_id].copy()  # shape: (3,)
-        to_tcp = tcp - self._obstacle_pos[idx]                  # shape: (3,)
-        dist = float(np.linalg.norm(to_tcp))
+        # V3c: 选择追的目标参考点
+        if self._tracking_target == "arm_center":
+            target = self._data.xpos[self._panda_hand_body_id].copy()   # flange
+        else:
+            target = self._data.site_xpos[self._pinch_site_id].copy()    # TCP
+        to_target = target - self._obstacle_pos[idx]                    # shape: (3,)
+        dist = float(np.linalg.norm(to_target))
 
-        if dist < D_TIGHT:
+        if dist < self._d_tight:
             self._stall_remaining[idx] = int(self._random.randint(*STALL_STEPS_RANGE))
             return
 
-        direction = to_tcp / (dist + 1e-8)                       # shape: (3,)
+        direction = to_target / (dist + 1e-8)                            # shape: (3,)
         self._obstacle_pos[idx] += direction * self._obstacle_speed
         self._obstacle_pos[idx] = np.clip(self._obstacle_pos[idx], *self._cartesian_bounds)
 
