@@ -108,7 +108,8 @@ ARM_SPAWN_DIST_V3 = (0.30, 0.40)      # 相对 panda_hand body；下限 = 1.5×A
                                        #   = 1.5 × 0.20 = 0.30，配合 _spawn_obstacle_pos 的
                                        #   1.5× 拒绝采样系数刚好不留 1-step death 风险
 HAND_SPEED_RANGE_V3 = (0.015, 0.030)  # m/step，对齐真机人手 15-30cm/s 区间
-MAX_DISPLACEMENT_V3 = 0.40            # 给 policy 更大退让预算 (V2 是 0.30)
+MAX_DISPLACEMENT_V3 = 0.50            # 给 policy 更大退让预算 (V2 是 0.30; V3 首训 71.5% 后
+                                       # 0.40 → 0.50，针对 14.5% excessive_displacement 失效模式)
 
 # V3 proximity reward：诱导 "维持 ~10cm 表面间隙"
 # - clear=0: 0 (碰撞，紧接 -10 终止)

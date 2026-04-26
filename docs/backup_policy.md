@@ -252,7 +252,7 @@ obs_pos = pos_history[-(1 + delay)]
 | obstacle radius | 0.035 | 0.035 | **0.10**（对齐真机 hand bbox） | 0.035 |
 | `ARM_SPAWN_DIST` | (0.15, 0.30) TCP | (0.21, 0.30) panda_hand | **(0.30, 0.40) panda_hand** | (0.15, 0.30) TCP |
 | `HAND_SPEED_RANGE` | (0.005, 0.015) | (0.005, 0.015) | **(0.015, 0.030)**（对齐真机 15-30cm/s） | (0.005, 0.015) |
-| `max_displacement` | 0.15 | 0.30 | **0.40** | 0.15 |
+| `max_displacement` | 0.15 | 0.30 | **0.50** (V3 首训 71.5% 后 0.40→0.50, 救 excessive_displacement) | 0.15 |
 | `PROXIMITY_REWARD_MAX` | — | — | **0.20**（饱和上限） | — |
 | `PROXIMITY_SAFE_DIST` | — | — | **0.10**（饱和点：表面间隙 10cm） | — |
 

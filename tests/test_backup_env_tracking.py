@@ -58,7 +58,7 @@ def _make_env_v3(num_obstacles=1, seed=0):
         seed=seed,
         use_arm_sphere_collision=True,
         use_full_arm_collision=True,
-        max_displacement=0.40,
+        max_displacement=0.50,   # = 注册 kwargs (Path A: 0.40 → 0.50)
         enforce_cartesian_bounds=False,
     )
     env.reset(seed=seed)
@@ -452,7 +452,7 @@ def test_v3_num_obstacles_2_works():
     env = PandaBackupPolicyEnv(
         num_obstacles=2, enable_dr=False, seed=11,
         use_arm_sphere_collision=True, use_full_arm_collision=True,
-        max_displacement=0.40, enforce_cartesian_bounds=False,
+        max_displacement=0.50, enforce_cartesian_bounds=False,
     )
     env.reset(seed=11)
     u = env.unwrapped
@@ -478,7 +478,7 @@ def test_v3_dr_path_proximity_stable():
     env = PandaBackupPolicyEnv(
         num_obstacles=1, enable_dr=True, seed=12,
         use_arm_sphere_collision=True, use_full_arm_collision=True,
-        max_displacement=0.40, enforce_cartesian_bounds=False,
+        max_displacement=0.50, enforce_cartesian_bounds=False,
     )
     env.reset(seed=12)
     u = env.unwrapped

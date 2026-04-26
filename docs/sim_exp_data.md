@@ -893,7 +893,7 @@ V2 10k steps 眼检可视化发现奇异行为：满存活率仅 20%、60% episo
 | obstacle 半径 | 0.035 (乒乓球大小) | **0.10**（对齐真机 hand bbox 等效半径，开掌 ~10cm 外接球）|
 | `ARM_SPAWN_DIST` | (0.21, 0.30) m | **(0.30, 0.40)** m（保 1.5×collision_dist 防 1-step death）|
 | `HAND_SPEED_RANGE` | (0.005, 0.015) m/step | **(0.015, 0.030)**（对齐真机 15-30cm/s）|
-| `max_displacement` | 0.30 | **0.40**（hand 加速后 policy 需要更大退让预算）|
+| `max_displacement` | 0.30 | **0.50**（V3 首训 71.5% 后 0.40 → 0.50；针对 14.5% `excessive_displacement` 失效模式）|
 | Reward proximity bonus | ✗ | **+ saturating clip(clear/0.10) × 0.20** |
 | FSM `D_SAFE`/`D_CLEAR` | 0.30 / 0.35 | **0.40 / 0.45** |
 
@@ -959,12 +959,39 @@ python scripts/sim/eval_backup_policy.py \
   --n_episodes 200
 ```
 
-### 训练后 TODO
+### V3 首训结果（2026-04-26, 300k learner step, 6.5h）
 
-- [ ] 50/100/150/200/250/300k ckpt 中间 eval，找最稳点
-- [ ] eval 时统计 `hand_collision` 终止里 link3-6 占比（验证多球碰撞确实被 policy 学到避让）
-- [ ] 最佳 ckpt 落 `checkpoints/backup_policy_s1_v3_<best>k/`
-- [ ] 更新 `scripts/real/deploy_backup_policy.py` default checkpoint 到 V3
+- ✅ 落库 `checkpoints/backup_policy_s1_v3_300k_71pct/`
+- ✅ Eval 200 episodes：**71.5% 满存活率**，平均奖励 +8.02 ± 8.04，平均最近距离 0.247m，平均终止位移 0.324m
+- 终止原因：survived 66.5% / hand_collision **17.5%** / excessive_displacement **14.5%** / zone_c 1.0% / block_dropped 0.5%
+
+**与预测对比**：meta agent 预测 92-95%，实测 **71.5%（−20-23%）**。差距来自：
+- **14.5% excessive_displacement** 远超预期——`max_disp=0.40` 偏紧，policy 退到 0.32m 平均仍想退更多
+- **17.5% hand_collision** 略超预期——5 球检测让 link3/4/5 几何避让比单球难，policy 反应慢半拍
+- actor log 显示 140k 后 online 成功率稳定在 64%，**不是 step 不够**，是 capacity 上限
+
+### Path A 重训：`max_displacement` 0.40 → 0.50（2026-04-26 启动）
+
+放宽位移预算针对最大失效模式：
+- spawn 范围 (0.30, 0.40) 不变
+- closure rate 不变
+- max_disp +0.10m → 给 policy 多 25% 退让空间
+- 预期 14.5% excessive_displacement 大半救回，目标 **80% 存活率**
+
+可复现命令：
+```bash
+bash scripts/real/train_hil_sac.sh backup_v3 learner   # 端口 50055
+bash scripts/real/train_hil_sac.sh backup_v3 actor
+```
+
+### 后续 TODO
+
+- [x] 首训 300k + offline eval 200 ep → 71.5% 落档
+- [ ] Path A 重训（max_disp 0.50）→ eval 比较
+- [ ] 若 Path A 仍 < 80%，考虑 Path B（v_hand 0.030 → 0.025）或 Path C（A+B）
+- [ ] 中间 ckpt 50/100/150/200/250k 选最稳点（首训只 eval 了 300k，可能不是最优）
+- [ ] 真机端到端首跑（用当前 71.5% ckpt 或 Path A 改进版）
+- [ ] eval 统计 hand_collision 终止里 link3-6 占比（验证多球确实被 policy 用上）
 
 ---
 

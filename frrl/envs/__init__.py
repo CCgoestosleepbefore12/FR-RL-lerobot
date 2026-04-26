@@ -272,7 +272,7 @@ register(
         "num_obstacles": 1,
         "use_arm_sphere_collision": True,
         "use_full_arm_collision": True,
-        "max_displacement": 0.40,
+        "max_displacement": 0.50,    # V3 首训 71.5%: 0.40 → 0.50, 救 14.5% excessive_displacement
         "enforce_cartesian_bounds": False,
     },
 )
