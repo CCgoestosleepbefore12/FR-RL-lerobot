@@ -294,6 +294,15 @@ class BiasMonitor:
 
         try:
             import matplotlib.pyplot as plt
+            # 禁掉 matplotlib 默认按键，否则与 KeyboardRewardListener 冲突：
+            #   's' (save figure dialog) ↔ S (start episode)  ← 用户报告的弹窗根因
+            #   'q' (close figure)        ↔ 一般退出快捷键
+            #   'f'/'F' (fullscreen)      ↔ 用户可能误触
+            #   'r'    (reset zoom)
+            for _km in ("keymap.save", "keymap.quit", "keymap.quit_all",
+                        "keymap.fullscreen", "keymap.home"):
+                if _km in plt.rcParams:
+                    plt.rcParams[_km] = []
             plt.ion()
             n = len(active)
             fig, axes = plt.subplots(n, 1, figsize=(9, 2.3 * n), sharex=True)
