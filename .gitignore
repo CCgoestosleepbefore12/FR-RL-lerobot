@@ -14,6 +14,7 @@ checkpoints/
 !checkpoints/backup_policy_s1_v3_300k_71pct/
 !checkpoints/backup_policy_s1_v3b_115k_90pct/
 !checkpoints/backup_policy_s1_v3b_300k_95pct/
+!checkpoints/backup_policy_s1_v3c_r3_300k_94pct/
 *.pt
 *.pth
 

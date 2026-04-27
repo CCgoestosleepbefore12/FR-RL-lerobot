@@ -1025,70 +1025,80 @@ bash scripts/real/train_hil_sac.sh backup_v3 actor
 
 ---
 
-## Backup S1 V3c：tracking_target=arm_center 单参数 ablation（2026-04-27 r3）
+## Backup S1 V3c：tracking_target=arm_center 单参数 ablation（2026-04-27/28，三版完成）
 
-### 设计演进史
+### V3c 演进史 + 完整 cross-eval 结果
 
-V3c 试过三版，最终回归"最小变更"：
+V3c 经历三版迭代，最终 r3 是和 V3b 唯一差异 tracking_target 的单参数 ablation：
 
-| 版本 | tracking_target | D_TIGHT_ARM | hand speed | episode | cross-eval (V3/own) | 结论 |
-|---|---|---|---|---|---|---|
-| V3c-r1 (early) | arm_center | 0.23 (dwell 可达) | (0.015, 0.030) | 20 | 65% / 94% | brittle (dwell-only 训练) |
-| V3c-r2 (加压) | arm_center | 0.08 (无 dwell) | (0.020, 0.040) | 25 | 87% / 62% | 训练不收敛 (太严) |
-| **V3c-r3 (本设计)** | **arm_center** | **0.08 (= V3 等价)** | **(0.015, 0.030) 同 V3** | **20 (同 V3)** | 待测 | **单参数 ablation** |
+| 版本 | tracking_target | D_TIGHT_ARM | hand_speed | episode | V3 env | V3c env | min |
+|---|---|---|---|---|---|---|---|
+| **V3b 300k_95pct** | tcp | 0.08 (距 TCP) | (0.015, 0.030) | 20 | 95.0% | 96.0% | **95.0%** ⭐ |
+| V3c r1 (dwell, 190k) | arm_center | 0.23 (dwell 可达) | (0.015, 0.030) | 20 | 65.0% | 94.0% | 65.0% (brittle) |
+| V3c r2 (加压, 400k) | arm_center | 0.08 (无 dwell) | (0.020, 0.040) | 25 | 86.5% | 61.5% | 61.5% (没收敛) |
+| **V3c r3 (单参数, 300k)** | **arm_center** | 0.08 (= V3 等价) | (0.015, 0.030) | 20 | **96.5%** | 93.5% (own) | **93.5%** |
 
-### V3c-r3 vs V3b 完整对比
+### V3c r3 vs V3b 详细数字
 
-V3c r3 与 V3b **唯一差异**：
-
-| 参数 | V3 / V3b | **V3c-r3** |
+| 指标 | V3b 300k | V3c r3 300k |
 |---|---|---|
-| `tracking_target` | "tcp" | **"arm_center"** ★ 唯一差异 |
-| 追的目标 | `pinch_site` (TCP) | `panda_hand body` (= flange = collision 球心) |
-| `D_TIGHT` (effective) | 0.08m (距 TCP, 几何上不可达) | 0.08m (距 arm_center, 几何上不可达) |
-| `HAND_SPEED_RANGE` | (0.015, 0.030) | (0.015, 0.030) |
-| `max_displacement` | 0.50 | 0.50 |
-| `max_episode_steps` | 20 | 20 |
+| V3 env eval | 95.0% | **96.5%** ✓ 反超 1.5% |
+| V3c env eval | **96.0%** ✓ | 93.5% |
+| V3 env hand_collision | 3.0% | 3.5% |
+| V3c env hand_collision | 2.5% | 5.0% |
+| 平均累计奖励 (V3 env) | +11.41 ± 4.84 | +12.33 ± 3.87 |
+| 平均累计奖励 (V3c env) | +11.78 ± 4.23 | +11.48 ± 5.43 |
+| 平均最近距离 | ~0.27m | ~0.27m |
+| **min(两 env)** | **95.0%** | **93.5%** |
 
-### 设计意义
+### Actor 训练曲线（每 20k bucket）
 
-V3c-r3 是**最干净的单参数 ablation**——验证 "hand 追 flange (collision 球心) 而不是 TCP" 这一改动对 policy 的影响。
+V3c r3 收敛健康（区别于 r2 卡死）：
 
-预期结果分两种：
+| step | V3b | V3c r3 |
+|---|---|---|
+|  0-20k | 47.9% | 55.2% |
+| 20-40k | 64.6% | 74.5% |
+| 40-60k | 79.8% | 78.8% |
+| 80-100k | — | 85.6% |
+| 100-150k | ~85% | 84-87% |
+| 200-300k | 91-95% | 89-90% |
 
-**情况 A**：V3c-r3 cross-eval ≥ V3b min(95%) → 切 V3c 真机部署
-- 沟通价值：tracking_target=arm_center 让 sim 训练几何与真机 FSM (用 hand_body_equiv) 1:1 对齐，sim2real 更顺
-- 性能上和 V3b 相当或略好
+V3c r3 同 step 数下与 V3b 接近（前 100k 甚至略高），后期 V3b 因为 sim env 与 ckpt 训练 env 一致而略占上风。
 
-**情况 B**：V3c-r3 cross-eval ≈ V3b 但不超过 → V3b 仍真机首选
-- 论文价值：清晰的单参数 ablation 表明 tracking target 选择对 policy 影响很小
-- V3b TCP-tracking 的 sim2real 错位可通过 FSM 反推 hand_body_equiv 弥补，sim 训练 target 不必跟真机 FSM 对齐
+### 结论：V3b 真机首选保持
 
-**情况 C**（不预期）：V3c-r3 比 V3b 显著差 → arm_center tracking 对 SAC 学习不利
+V3c 三版完整结果证明：
 
-### 实施清单（2026-04-27 r3）
+1. **tracking_target 选择对 policy 质量影响微小** (~1-2%)
+2. **sim 训练 target (TCP/flange) 不必跟真机 FSM 反推点 1:1 对齐**——V3b TCP-tracking 的"几何错位"可由 FSM 反推 `hand_body_equiv = TCP - 0.1034 × gripper_z` 完美弥补
+3. **训练分布的 "balanced harshness" 比几何对齐更重要**：r1 太 benign brittle / r2 太严不收敛 / r3 适中收敛与 V3b 接近
 
-- ✅ env: 删除 `HAND_SPEED_RANGE_V3C` 常量，arm_center tracking 用 V3 速度范围
-- ✅ V3c 注册 `max_episode_steps=20` (回到 V3b 一致)
-- ✅ 测试更新: `test_v3c_uses_v3_speed_range` (V3c 用 V3 范围) + `test_v3c_v3b_single_axis_diff` (验证唯一差异是 tracking_target)
-- ✅ 单测 27/27 pass
-- ⏳ 训练 300k （回到 V3b 同预算，因为不再加压）
-
-### 启动命令
+### 真机部署
 
 ```bash
-bash scripts/real/train_hil_sac.sh backup_v3c learner   # 端口 50056
-bash scripts/real/train_hil_sac.sh backup_v3c actor
+# 默认仍用 V3b（min 高 1.5%）
+python scripts/real/deploy_backup_policy.py --ckpt-version v3
+# = checkpoints/backup_policy_s1_v3b_300k_95pct
 
-# 训完跑 cross-eval
-for ENV in PandaBackupPolicyS1V3-v0 PandaBackupPolicyS1V3c-v0; do
-  python scripts/sim/eval_backup_policy.py \
-    --checkpoint outputs/.../pretrained_model \
-    --env_task $ENV --n_episodes 200
-done
+# Fallback / 论文 ablation 验证：用 V3c r3
+python scripts/real/deploy_backup_policy.py \
+  --ckpt-version v3 \
+  --checkpoint checkpoints/backup_policy_s1_v3c_r3_300k_94pct
 ```
 
-注：训练 step 应回退到 300k （V3b 同预算）。下面任务：把 train_hil_sac_backup_s1_v3c.json 的 `online_steps` 改回 300000。
+D_SAFE=0.40 / D_CLEAR=0.45 与 V3b 共用（sim ARM_SPAWN_DIST_V3 一致）。
+
+### 落库 ckpt
+
+| 路径 | 用途 |
+|---|---|
+| `checkpoints/backup_policy_s1_v3b_300k_95pct/` | **真机首选** ⭐ (min 95%) |
+| `checkpoints/backup_policy_s1_v3c_r3_300k_94pct/` | 单参数 ablation 对照 (min 93.5%) |
+| `checkpoints/backup_policy_s1_v3_300k_71pct/` | V3 baseline (max_disp=0.40)，max_disp ablation |
+| `checkpoints/backup_policy_s1_v3b_115k_90pct/` | V3b 中段，训练曲线记录 |
+
+V3c r1 (190k early) 和 r2 (400k 加压) 已废弃，未落库。
 
 ---
 
