@@ -258,8 +258,8 @@
     "save_freq": 1000,
     "save_checkpoint": true,
     "wandb": {
-        "enable": false,
-        "project": "fr-rl",
+        "enable": true,
+        "project": "real_fr_rl",
         "entity": null
     }
 }

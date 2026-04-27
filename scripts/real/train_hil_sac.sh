@@ -158,13 +158,13 @@ case "$ROLE" in
     learner)
         echo "启动 Learner (GPU训练进程)..."
         python -m frrl.rl.core.learner \
-            --config_path "$CONFIG" $EXTRA_ARGS
+            --config_path "$CONFIG" $EXTRA_ARGS "${@:3}"
         ;;
     actor)
         echo "启动 Actor (环境交互 + 键盘遥操)..."
         echo "请确保 Learner 已在另一个终端启动"
         python -m frrl.rl.core.actor \
-            --config_path "$CONFIG" $EXTRA_ARGS
+            --config_path "$CONFIG" $EXTRA_ARGS "${@:3}"
         ;;
     record)
         # task_real 不走 shell record（demo 用独立脚本，schema 是 hil-serl pickle）
