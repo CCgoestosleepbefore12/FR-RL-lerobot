@@ -96,11 +96,14 @@ class WandBLogger:
             save_code=False,
             # TODO(rcadene): split train and eval, and run async eval with job_type="eval"
             job_type="train_eval",
-            # resume="must" 要求 wandb_run_id 必须存在；如果 fs 没找到旧 run
-            # （fresh resume from cp'd ckpt dir），wandb_run_id 是 None，此时
-            # 必须改 resume=None（或 "allow"）让 wandb 开新 run，否则 wandb
-            # 报 "resume='must' for run that has not been initialized"。
-            resume="must" if (cfg.resume and wandb_run_id is not None) else None,
+            # 用 "allow" 而不是 "must"：
+            #   - id 存在且服务端有该 run → resume 续接 ✓
+            #   - id 存在但服务端无（前次 init 中途失败留下的 partial run）→
+            #     "must" 会 raise，"allow" 用同 id 开新 run ✓
+            #   - id 是 None → 开新 random id run ✓
+            # "must" 容错差，遇到失败重启会卡住；wipe HIL 训练经常需要中断重启，
+            # "allow" 是更稳健的策略。
+            resume="allow" if cfg.resume else None,
             mode=self.cfg.mode if self.cfg.mode in ["online", "offline", "disabled"] else "online",
         )
         run_id = wandb.run.id

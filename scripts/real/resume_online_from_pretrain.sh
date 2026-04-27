@@ -43,7 +43,10 @@ case "$ROLE" in
         else
             ONLINE_DIR="checkpoints/wipe_online_$(date +%Y%m%d_%H%M%S)"
             echo "[INFO] 建新 online dir: $ONLINE_DIR"
-            cp -r "$PRETRAIN_DIR" "$ONLINE_DIR"
+            # 跳过 wandb/ 和 logs/ 子目录：pretrain 的 wandb 历史 / log 文件
+            # 不该带过来，否则 online learner 启动时 wandb 会试图 resume pretrain
+            # 的旧 run（partial init 失败 → wandb 报 resume='must' invalid）。
+            rsync -a --exclude='wandb' --exclude='logs' "$PRETRAIN_DIR/" "$ONLINE_DIR/"
             # 用 online config 覆盖 ckpt 内的 train_config.json
             cp "$ONLINE_CONFIG" \
                "$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json"
