@@ -39,14 +39,20 @@ def cfg_to_group(cfg: TrainPipelineConfig, return_list: bool = False) -> list[st
     return lst if return_list else "-".join(lst)
 
 
-def get_wandb_run_id_from_filesystem(log_dir: Path) -> str:
-    # Get the WandB run ID.
+def get_wandb_run_id_from_filesystem(log_dir: Path) -> str | None:
+    """Try to recover prev WandB run ID from log_dir/wandb/latest-run/run-*.wandb.
+
+    Returns None when no previous wandb run exists (e.g. resume from a fresh
+    cp'd ckpt dir that never logged to wandb). Caller is expected to interpret
+    None as "start a new wandb run instead of resuming the previous one"
+    rather than treating it as an error.
+    """
     paths = glob(str(log_dir / "wandb/latest-run/run-*"))
     if len(paths) != 1:
-        raise RuntimeError("Couldn't get the previous WandB run ID for run resumption.")
+        return None
     match = re.search(r"run-([^\.]+).wandb", paths[0].split("/")[-1])
     if match is None:
-        raise RuntimeError("Couldn't get the previous WandB run ID for run resumption.")
+        return None
     wandb_run_id = match.groups(0)[0]
     return wandb_run_id
 
