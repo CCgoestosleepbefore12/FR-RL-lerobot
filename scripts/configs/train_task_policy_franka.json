@@ -63,6 +63,7 @@
         "demo_pickle_paths": [],
         "demo_key_map": {
             "agent_pos": "observation.state",
+            "environment_state": "observation.environment_state",
             "pixels.front": "observation.images.front",
             "pixels.wrist": "observation.images.wrist"
         },

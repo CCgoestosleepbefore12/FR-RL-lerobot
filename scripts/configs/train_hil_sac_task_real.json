@@ -72,9 +72,10 @@
         "offline_warmup_steps": 500,
         "offline_only_mode": false,
         "offline_pretrain_steps": 5000,
-        "demo_pickle_paths": [],
+        "demo_pickle_paths": ["data/task_policy_demos/*.pkl"],
         "demo_key_map": {
             "agent_pos": "observation.state",
+            "environment_state": "observation.environment_state",
             "pixels.front": "observation.images.front",
             "pixels.wrist": "observation.images.wrist"
         },

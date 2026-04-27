@@ -665,8 +665,17 @@ def step_env_and_process_transition(
     # GripperPenalty 类 step 读取（execution 之前的位置 + 本步 action 组成判断依据）。
     if raw_joint_positions:
         complementary_data["raw_joint_positions"] = raw_joint_positions
-    new_info = processed_action_transition[TransitionKey.INFO].copy()
-    new_info.update(info)
+    # info merge 顺序：env.step 的 info 先 set，teleop info 后写覆盖。
+    # AddTeleopEventsAsInfoStep 在 action_processor 阶段把 SpaceMouse 实时
+    # is_intervention=True 写进 processed_action_transition.info；env.step 内
+    # FrankaRealEnv._is_intervention_pending 默认 False，online HIL 不调
+    # set_intervention(True)。如果让 env info 后写覆盖，teleop 真值会被覆盖成
+    # False → 干预 transition 永不路由到 prior buffer，HIL 信号链断。
+    # 只有 `is_intervention` 字段冲突；env 独有的 succeed/discard/teleop_action/
+    # intervene_action 和 teleop 独有的 terminate_episode/success/rerecord_episode
+    # 互不覆盖。
+    new_info = dict(info)
+    new_info.update(processed_action_transition[TransitionKey.INFO])
 
     new_transition = create_transition(
         observation=obs,

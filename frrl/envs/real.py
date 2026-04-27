@@ -637,7 +637,14 @@ class FrankaRealEnv(gym.Env):
         夹爪复位行为由 ``config.gripper_locked`` 决定：
           - "none" / "open" → 张开（pick-place 默认）
           - "closed"        → 闭合（wipe 任务，保持海绵被夹住）
+
+        ⚠️ 调用约定：调用方（如 reset()）负责在调用前 clear_encoder_bias，
+        否则首行 _update_currpos 拿到的是 biased pose，发给 unbiased frame
+        controller 会让 EE 飞 ~7cm。reset() 已实施这个约定（commit b499c4c）。
         """
+        # 第一行 _update_currpos 必须在 unbiased 状态下读，self.currpos 才是
+        # 真实物理位置；下一行 _send_pos_command(self.currpos) 让 controller
+        # hold 在当前实际位置 → impedance error 0 → 不动。
         self._update_currpos()
         self._send_pos_command(self.currpos)
         time.sleep(0.3)

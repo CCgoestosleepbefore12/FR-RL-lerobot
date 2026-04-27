@@ -1545,8 +1545,12 @@ def process_transitions(
             if replay_buffer.size % 100 == 0:
                 logging.info(f"[DEBUG] Replay buffer size: {len(replay_buffer)}")
 
-            # 人类干预的数据额外加入offline buffer
-            if dataset_repo_id is not None and is_intervention:
+            # 人类干预的数据额外加入 offline buffer
+            # 之前 gate 用 `dataset_repo_id is not None` —— online HIL 配置
+            # `dataset: null` 让 gate 永 False，干预永远不进 offline buffer，
+            # HIL-SERL "human demos accumulate" 语义破坏。改成 mirror line 593
+            # 的 fix：只要 offline buffer 存在（pickle 加载或 dataset 都行）就路由。
+            if offline_replay_buffer is not None and is_intervention:
                 offline_replay_buffer.add(**transition)
 
 
