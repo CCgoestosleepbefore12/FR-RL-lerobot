@@ -198,14 +198,26 @@ class FrankaRealEnv(gym.Env):
         )
 
         # 先清掉上一 episode 残留的 bias，让 _go_to_reset 在 unbiased 状态下
-        # 跑，物理 EE 真到 reset_pose。否则 controller 跟踪 biased_FK，物理位
-        # 置偏离 target（J1 bias 0.2 rad 约 7cm）。
-        # bias 切换是 ROS topic 即时替换（无 filter），从 ±0.2 突变到 0 时
-        # controller 内部 q_biased 跳变 → impedance transient，sleep 0.5s 让
-        # 阻抗 settling 再开始 reset 路径。
+        # 跑，物理 EE 真到 reset_pose。
+        #
+        # ⚠️ 单纯 clear_bias 不够 —— 上一 step 留下的 cartesian setpoint 是
+        # biased frame 的 pose_biased。clear bias 后 controller 的 q_biased
+        # 视图突变成 q_true，但 setpoint 还是 pose_biased，impedance 计算
+        # unbiased_FK(q_true) ≠ pose_biased（误差约等于 bias 推算的物理偏移
+        # 7cm @ J1=0.2 rad），controller 拼命把 EE 推到 inverse_FK(pose_biased)
+        # → 物理乱晃。
+        #
+        # 解决：clear bias 后立刻把 setpoint 也切到 unbiased frame：发当前真
+        # 实物理位置（/getstate_true）作为新 setpoint，controller 看到 setpoint
+        # = 当前位置 → 误差 0 → 不动。
         if self.bias_injector is not None:
+            # 读 unbiased 物理位置（即将作为新 setpoint）
+            state_true = self._http_post("getstate_true").json()
+            real_pose = np.array(state_true["pose"], dtype=np.float64)
+            # 紧贴：clear bias + 立刻覆盖 setpoint 到 unbiased frame
             self._set_encoder_bias([0.0] * 7)
-            time.sleep(0.5)
+            self._send_pos_command(real_pose)
+            time.sleep(0.5)  # 等阻抗 settling
 
         self._recover()
         self._go_to_reset(joint_reset=joint_reset)
