@@ -47,9 +47,19 @@ case "$ROLE" in
             # 不该带过来，否则 online learner 启动时 wandb 会试图 resume pretrain
             # 的旧 run（partial init 失败 → wandb 报 resume='must' invalid）。
             rsync -a --exclude='wandb' --exclude='logs' "$PRETRAIN_DIR/" "$ONLINE_DIR/"
-            # 用 online config 覆盖 ckpt 内的 train_config.json
-            cp "$ONLINE_CONFIG" \
-               "$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json"
+            # 用 online config 覆盖 ckpt 内的 train_config.json，但同时把 output_dir
+            # 字段改成 ONLINE_DIR：lerobot resume 走 ckpt 内 train_config.json 作为
+            # cfg，不在 RESUMABLE_POLICY_OVERRIDES 白名单的字段会被 ckpt 覆盖
+            # （含 output_dir）。如果 paste 进去时 output_dir 是 train_hil_sac_task_real.json
+            # 顶层默认值 "checkpoints/task_policy_real"，learner load training_state
+            # 时会去那个错路径找不到 → 必须把 output_dir patch 成 ONLINE_DIR 自身。
+            python3 -c "
+import json, sys
+with open(sys.argv[1]) as f: cfg = json.load(f)
+cfg['output_dir'] = sys.argv[2]
+with open(sys.argv[3], 'w') as f: json.dump(cfg, f, indent=4)
+" "$ONLINE_CONFIG" "$ONLINE_DIR" \
+                "$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json"
             # 保存 ONLINE_DIR 给 actor 终端读
             echo "$ONLINE_DIR" > "$STATE_FILE"
             echo "[INFO] online config 已 paste 到 $ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json"

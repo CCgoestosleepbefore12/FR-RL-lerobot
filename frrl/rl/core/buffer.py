@@ -583,8 +583,21 @@ class ReplayBuffer:
             ValueError: if no transitions are loaded or capacity is too small.
             KeyError: if any transition is missing a required key.
         """
+        # Glob expand：caller 传 ["data/task_policy_demos/*.pkl"] 时这里展开成
+        # 实际文件列表。学界通行的"路径或 glob 都能传"语义；不 glob 时同等价于
+        # 字面路径 pass-through。
+        import glob as _glob
+        expanded: list[str] = []
+        for p in pickle_paths:
+            sp = str(p)
+            matches = sorted(_glob.glob(sp))
+            if matches:
+                expanded.extend(matches)
+            else:
+                expanded.append(sp)  # 让下面 open 报有意义的 FileNotFoundError
+
         all_transitions: list[dict] = []
-        for path in pickle_paths:
+        for path in expanded:
             with open(path, "rb") as f:
                 batch = pkl.load(f)
             if not isinstance(batch, list):
