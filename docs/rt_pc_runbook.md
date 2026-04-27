@@ -103,6 +103,37 @@ curl -X POST http://192.168.100.1:5000/getstate
 
 ---
 
+## Gripper Homing（首次启动 / 闭合不到位时）
+
+Franka gripper 用 absolute encoder，零点需要 homing 校准。**症状**：`close_gripper`
+后 `gripper_pos ≈ 0` 但 finger 物理仍有 gap（典型 ~2cm），无法贴合。说明启动时
+auto-homing 失败（finger 间被附件 / 工件挡住）或 encoder 漂移。
+
+**流程**（GPU 端 curl 即可，2026-04-27 后 `/reset_gripper` 路由真正发 ROS homing
+action）：
+
+```bash
+# 1. 拆下任何 fingertip 附件（海绵 / 自定义夹具 / silicon pad），裸 finger
+# 2. 从 GPU 端触发 homing
+curl -X POST http://192.168.100.1:5000/reset_gripper
+
+# 3. 等 3-4 秒，finger 会先全张到 80mm 再全合到 0
+sleep 5
+
+# 4. 验证 close 到位
+curl -X POST http://192.168.100.1:5000/close_gripper
+sleep 2
+curl -X POST http://192.168.100.1:5000/getstate | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print('gripper_pos:', d['gripper_pos'])"
+# 预期 gripper_pos ≈ 0.0，且 finger 物理完全贴合
+```
+
+⚠️ **homing 时 finger 间必须无任何物体**——海绵 / fingertip 附件 / 工件都会让
+homing 失败且零位反而校到错误位置。Homing 完后再装上海绵继续作业，海绵厚度不
+影响 encoder 零点（encoder 仍是裸 finger 的 0）。
+
+---
+
 ## 正常关机
 
 1. 终端 **Ctrl+C**（不要 Ctrl+Z！）停 `franka_server.py`

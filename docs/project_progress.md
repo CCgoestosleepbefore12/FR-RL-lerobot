@@ -547,3 +547,4 @@ session 末 4 agent（独立 review / vs sim / vs hil-serl 原仓库 / meta-revi
 | R5-7 | wipe 任务 action[6] 锁定 -1 → dataset_stats min=max → MIN_MAX 归一化 (x-min)/0=NaN | `compute_dataset_stats.py` 检测 (max-min) < 1e-6 const channel，自动 max=min+1，归一化恒等于 0 不爆 NaN |
 | R5-8 | front workspace ROI 非正方形 412×326（z_plane 投影 4 角太扁），SAC encoder resize 失真 | 新增 `scripts/hw_check/select_workspace_roi.py` 鼠标拖拽框选 + auto-square + 写回 workspace.json，避免依赖几何投影 |
 | R5-9 | BiasMonitor subplot 标题写死第一个 episode bias，后续 episode 切换不更新 | `mark_episode_boundary` 每次刷新 active subplot title 为当前 ep bias 值 |
+| R5-10 | Franka gripper close 后 `gripper_pos ≈ 0` 但 finger 物理仍有 ~2cm gap | `FrankaGripperServer` 之前没 override `reset_gripper`（base class no-op，对 Franka 完全不起作用），改 `reset_gripper` 发 `/franka_gripper/homing/goal` action 跑 ROS homing。`docs/rt_pc_runbook.md` 加 §Gripper Homing 操作流程，明确 finger 间必须无附件才能跑 homing |
