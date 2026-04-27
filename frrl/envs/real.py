@@ -197,11 +197,10 @@ class FrankaRealEnv(gym.Env):
             and self.cycle_count % self.config.joint_reset_period == 0
         )
 
-        # 先清掉上一 episode 残留的 bias，再做物理 reset。否则带着 bias 跑
-        # _go_to_reset 时 controller 跟踪 biased_FK，物理 EE 实际到达位置 ≠
-        # target reset_pose（J1 bias 0.2 rad 约 7cm 偏移），且偏离量随 episode
-        # 变化 → reset 后物理位置每次都不同。
-        # bias 切换是 ROS topic 即时替换（无 filter），从 ±0.2 rad 突变到 0 时
+        # 先清掉上一 episode 残留的 bias，让 _go_to_reset 在 unbiased 状态下
+        # 跑，物理 EE 真到 reset_pose。否则 controller 跟踪 biased_FK，物理位
+        # 置偏离 target（J1 bias 0.2 rad 约 7cm）。
+        # bias 切换是 ROS topic 即时替换（无 filter），从 ±0.2 突变到 0 时
         # controller 内部 q_biased 跳变 → impedance transient，sleep 0.5s 让
         # 阻抗 settling 再开始 reset 路径。
         if self.bias_injector is not None:
@@ -213,8 +212,20 @@ class FrankaRealEnv(gym.Env):
         self._recover()
         self.curr_path_length = 0
 
-        # 编码器偏差注入：物理 reset 完成后再 sample + 注入新 bias，让 episode
-        # 起点的物理位置始终是 unbiased reset_pose，仅 obs 里的 q/pose 带 bias。
+        self.terminate = False
+
+        # Keyboard backend: clear any stale outcome and block until human presses S.
+        # 注意：等人按 S 期间 controller 仍在 unbiased（bias=0）状态 hold 在
+        # reset_pose，机械臂物理位置稳定不漂移。
+        if self._keyboard_reward is not None:
+            self._keyboard_reward.mark_episode_ended()
+            logging.info("等待操作者按 S 开始 episode（Enter=成功 / Space=失败 / Backspace=作废）")
+            self._keyboard_reward.wait_for_start()
+
+        # 操作者按 S 之后才注入新 bias —— 这样 wait_for_start 期间机械臂保持
+        # 在物理 reset_pose（unbiased），episode 起点的物理位置在所有 episode
+        # 间一致。注入后 controller q_biased 视图突变 → impedance transient，
+        # sleep 0.3s 等 q_true 微抖动 settling 再读 obs。
         if self.bias_injector is not None:
             self.bias_injector.on_episode_start(num_joints=7)
             bias = self.bias_injector.current_bias
@@ -227,21 +238,8 @@ class FrankaRealEnv(gym.Env):
                     )
             else:
                 self._set_encoder_bias([0.0] * 7)
+            time.sleep(0.3)
 
-        self.terminate = False
-
-        # Keyboard backend: clear any stale outcome and block until human presses S.
-        # This is after all robot reset so the operator has time to arrange the scene.
-        if self._keyboard_reward is not None:
-            self._keyboard_reward.mark_episode_ended()
-            logging.info("等待操作者按 S 开始 episode（Enter=成功 / Space=失败 / Backspace=作废）")
-            self._keyboard_reward.wait_for_start()
-
-        # 在 wait_for_start 之后再 _update_currpos：
-        #   1. 新 bias 是 ROS topic 即时替换（无 filter），impedance transient
-        #      ~100-300ms。wait_for_start 阻塞至少几秒，settling 完已经稳定。
-        #   2. 操作者按 S 期间手可能在 workspace 内布置物体，机械臂物理位置可能
-        #      被微推；obs 在按 S 那一刻读才是 episode 真正起点。
         self._update_currpos()
         self._update_currpos_true()
 
