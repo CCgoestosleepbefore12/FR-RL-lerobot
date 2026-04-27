@@ -618,43 +618,49 @@ def test_v3c_dwell_disabled():
     print(f"  [PASS] V3c D_TIGHT_ARM=0.08 关 dwell：hand 在该距离立刻 hand_collision")
 
 
-def test_v3c_uses_v3c_speed_range():
-    """V3c 用 HAND_SPEED_RANGE_V3C (0.020, 0.040)，V3/V3b 用 HAND_SPEED_RANGE_V3 (0.015, 0.030)。
-    通过 reset 多次采样验证范围。"""
-    from frrl.envs.sim.panda_backup_policy_env import HAND_SPEED_RANGE_V3C
+def test_v3c_uses_v3_speed_range():
+    """V3c r3：和 V3b 一样用 HAND_SPEED_RANGE_V3 (0.015, 0.030)，不再独立加压。
+    V3c 唯一与 V3b 的差异是 tracking_target='arm_center'。"""
     speeds_v3c = []
     for seed in range(50):
         env = _make_env_v3c(seed=seed)
         speeds_v3c.append(env.unwrapped._obstacle_speed)
         env.close()
-    assert min(speeds_v3c) >= HAND_SPEED_RANGE_V3C[0] - 1e-6
-    assert max(speeds_v3c) <= HAND_SPEED_RANGE_V3C[1] + 1e-6
-    # V3 仍用 V3 范围
-    speeds_v3 = []
-    for seed in range(50):
-        env = _make_env_v3(seed=seed)
-        speeds_v3.append(env.unwrapped._obstacle_speed)
-        env.close()
-    assert min(speeds_v3) >= HAND_SPEED_RANGE_V3[0] - 1e-6
-    assert max(speeds_v3) <= HAND_SPEED_RANGE_V3[1] + 1e-6
-    print(f"  [PASS] V3c speed ∈ [{min(speeds_v3c):.4f}, {max(speeds_v3c):.4f}] ⊂ V3C range; "
-          f"V3 ∈ [{min(speeds_v3):.4f}, {max(speeds_v3):.4f}] ⊂ V3 range")
+    assert min(speeds_v3c) >= HAND_SPEED_RANGE_V3[0] - 1e-6, \
+        f"V3c speed should use V3 range; got min={min(speeds_v3c)}"
+    assert max(speeds_v3c) <= HAND_SPEED_RANGE_V3[1] + 1e-6, \
+        f"V3c speed should use V3 range; got max={max(speeds_v3c)}"
+    print(f"  [PASS] V3c speed ∈ [{min(speeds_v3c):.4f}, {max(speeds_v3c):.4f}] = V3 range "
+          f"[{HAND_SPEED_RANGE_V3[0]}, {HAND_SPEED_RANGE_V3[1]}]")
 
 
-def test_v3c_episode_length_25():
-    """V3c env 注册 max_episode_steps=25（V3/V3b 是 20）。"""
+def test_v3c_v3b_single_axis_diff():
+    """V3c r3 设计契约：和 V3b 唯一差异是 tracking_target，其它全等。"""
     import gymnasium as gym
     import frrl.envs  # noqa
-    env = gym.make("gym_frrl/PandaBackupPolicyS1V3c-v0")
-    # gym 的 max_episode_steps 暴露在 spec.max_episode_steps 或 _max_episode_steps
-    spec_steps = env.spec.max_episode_steps if env.spec else None
-    assert spec_steps == 25, f"V3c max_episode_steps 应是 25, got {spec_steps}"
-    env.close()
-    # 对照：V3 应仍是 20
     env_v3 = gym.make("gym_frrl/PandaBackupPolicyS1V3-v0")
-    assert env_v3.spec.max_episode_steps == 20, f"V3 max_episode_steps 应是 20"
-    env_v3.close()
-    print(f"  [PASS] V3c episode=25, V3 episode=20")
+    env_v3c = gym.make("gym_frrl/PandaBackupPolicyS1V3c-v0")
+    # max_episode_steps 应一致
+    assert env_v3.spec.max_episode_steps == env_v3c.spec.max_episode_steps == 20, (
+        f"V3/V3c episode mismatch: V3={env_v3.spec.max_episode_steps}, "
+        f"V3c={env_v3c.spec.max_episode_steps}"
+    )
+    # 同一 seed 下，spawn 距离应该一致（因为 spawn 不依赖 tracking_target）
+    obs_v3, _ = env_v3.reset(seed=42)
+    obs_v3c, _ = env_v3c.reset(seed=42)
+    arm_v3 = env_v3.unwrapped._data.xpos[env_v3.unwrapped._panda_hand_body_id]
+    arm_v3c = env_v3c.unwrapped._data.xpos[env_v3c.unwrapped._panda_hand_body_id]
+    obs_dist_v3 = float(np.linalg.norm(env_v3.unwrapped._obstacle_pos[0] - arm_v3))
+    obs_dist_v3c = float(np.linalg.norm(env_v3c.unwrapped._obstacle_pos[0] - arm_v3c))
+    # 应该都在 ARM_SPAWN_DIST_V3 (0.30, 0.40) 内
+    assert 0.295 < obs_dist_v3 < 0.405, f"V3 spawn dist out of range: {obs_dist_v3}"
+    assert 0.295 < obs_dist_v3c < 0.405, f"V3c spawn dist out of range: {obs_dist_v3c}"
+    # 关键：tracking_target 应不同
+    assert env_v3.unwrapped._tracking_target == "tcp"
+    assert env_v3c.unwrapped._tracking_target == "arm_center"
+    env_v3.close(); env_v3c.close()
+    print(f"  [PASS] V3 vs V3c 单参数差异: tracking_target only "
+          f"(V3 spawn={obs_dist_v3:.3f}, V3c spawn={obs_dist_v3c:.3f})")
 
 
 def test_v3c_requires_arm_sphere_collision():
@@ -759,8 +765,8 @@ def main():
         test_v3_backward_compat_v2,
         test_v3c_tracks_arm_center_not_tcp,
         test_v3c_dwell_disabled,
-        test_v3c_uses_v3c_speed_range,
-        test_v3c_episode_length_25,
+        test_v3c_uses_v3_speed_range,
+        test_v3c_v3b_single_axis_diff,
         test_v3c_requires_arm_sphere_collision,
         test_default_tracking_target_is_tcp,
     ]

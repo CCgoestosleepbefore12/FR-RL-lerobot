@@ -277,20 +277,21 @@ register(
     },
 )
 
-# S1 V3c (2026-04-27 重设计)：tracking_target=arm_center 保 sim2real FSM 几何对齐，
-# D_TIGHT_ARM=0.08 关 dwell（dwell 训练让 policy brittle，V3c 早版在 V3 env 仅 65%），
-# 改回 V3-style 持续追逼 + 加压：HAND_SPEED_RANGE_V3C=(0.020, 0.040) > V3 范围；
-# max_episode_steps=25 > V3 (20)，给 worst-case 更长 closure 累积时间。
-# 目标：V3c policy 在 V3 env 上也 ≥ V3b 95%（cross-eval min(两 env) 高）+ 真机 FSM 对齐。
+# S1 V3c (r3, 2026-04-27 简化)：和 V3b 完全一样，**唯一**差异是 tracking_target='arm_center'。
+# 早版 (dwell 0.23) 训了 brittle (V3 env 65%)；重设计 (加压速度+长 episode) 训不收敛 (own 61%)。
+# r3 回归最小变更：V3b 配置 + arm_center tracking。这是 V3b vs V3c 最干净的单参数 ablation：
+# 验证"hand 追 flange (collision 球心) 还是 TCP (pinch_site)"对 policy 的影响。
+# D_TIGHT_ARM=0.08 (= V3 D_TIGHT 行为等价：dwell 几何不可达，hand 持续追逼)；
+# HAND_SPEED_RANGE 用 V3 范围 (0.015, 0.030)；max_episode_steps=20 (V3b 一致)。
 register(
     id="gym_frrl/PandaBackupPolicyS1V3c-v0",
     entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=25,
+    max_episode_steps=20,
     kwargs={
         "num_obstacles": 1,
         "use_arm_sphere_collision": True,
         "use_full_arm_collision": True,
-        "tracking_target": "arm_center",   # ★ 保 V3c 核心：sim2real FSM 几何对齐
+        "tracking_target": "arm_center",   # ★ V3c 唯一核心改动 vs V3b
         "max_displacement": 0.50,
         "enforce_cartesian_bounds": False,
     },

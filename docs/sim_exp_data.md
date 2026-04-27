@@ -1025,59 +1025,62 @@ bash scripts/real/train_hil_sac.sh backup_v3 actor
 
 ---
 
-## Backup S1 V3c：arm_center tracking + 持续追逼加压版（2026-04-27 重设计）
+## Backup S1 V3c：tracking_target=arm_center 单参数 ablation（2026-04-27 r3）
 
-### 设计演进
+### 设计演进史
 
-**V3c 早版（dwell-based, D_TIGHT_ARM=0.23）已废弃**。原想法是"hand 追 arm_center
-+ 在 23cm 真 dwell"让 policy 学到 stop-go 而非一直退。早版训到 190k 时 cross-eval：
+V3c 试过三版，最终回归"最小变更"：
 
-| ckpt \ env | V3 env (TCP/0.08) | V3c env (arm/0.23) |
+| 版本 | tracking_target | D_TIGHT_ARM | hand speed | episode | cross-eval (V3/own) | 结论 |
+|---|---|---|---|---|---|---|
+| V3c-r1 (early) | arm_center | 0.23 (dwell 可达) | (0.015, 0.030) | 20 | 65% / 94% | brittle (dwell-only 训练) |
+| V3c-r2 (加压) | arm_center | 0.08 (无 dwell) | (0.020, 0.040) | 25 | 87% / 62% | 训练不收敛 (太严) |
+| **V3c-r3 (本设计)** | **arm_center** | **0.08 (= V3 等价)** | **(0.015, 0.030) 同 V3** | **20 (同 V3)** | 待测 | **单参数 ablation** |
+
+### V3c-r3 vs V3b 完整对比
+
+V3c r3 与 V3b **唯一差异**：
+
+| 参数 | V3 / V3b | **V3c-r3** |
 |---|---|---|
-| V3b 300k_95pct | 95.0% (训练 env) | **96.0%** ✓ 泛化好 |
-| V3c-early 190k | **65.0%** ✗ brittle | 94.0% (训练 env) |
+| `tracking_target` | "tcp" | **"arm_center"** ★ 唯一差异 |
+| 追的目标 | `pinch_site` (TCP) | `panda_hand body` (= flange = collision 球心) |
+| `D_TIGHT` (effective) | 0.08m (距 TCP, 几何上不可达) | 0.08m (距 arm_center, 几何上不可达) |
+| `HAND_SPEED_RANGE` | (0.015, 0.030) | (0.015, 0.030) |
+| `max_displacement` | 0.50 | 0.50 |
+| `max_episode_steps` | 20 | 20 |
 
-**问题诊断**：V3c-early dwell 训练分布太 benign（hand 经常停），policy 没学到应对持续追逼。在 V3 env 持续追逼分布外暴露，36.5% hand_collision 直接失败。V3b 反而能完美处理两种 env（escape avoid 训练分布更广）。
+### 设计意义
 
-### V3c 重设计目标
+V3c-r3 是**最干净的单参数 ablation**——验证 "hand 追 flange (collision 球心) 而不是 TCP" 这一改动对 policy 的影响。
 
-保留 V3c 核心价值（**arm_center tracking 让 sim2real FSM 几何对齐**），但训练分布**改为比 V3 更激进**，迫使 policy 学到"V3-style escape avoid + 加压能力"：
+预期结果分两种：
 
-| 参数 | V3 env (TCP-tracking) | **V3c env (重设计)** |
-|---|---|---|
-| `tracking_target` | "tcp" | **"arm_center"** ★ FSM 对齐 |
-| `D_TIGHT_ARM` (effective) | n/a | **0.08m**（< collision 0.20，关 dwell）|
-| `HAND_SPEED_RANGE` | (0.015, 0.030) | **(0.020, 0.040)** ★ 加压 |
-| Worst-case closure rate | 0 (v_arm = v_hand max) | **+0.010 m/step** (v_hand > v_arm) |
-| `max_episode_steps` | 20 | **25** ★ 累积 closure 时间 +25% |
-| Worst-case 累积 closure | 20×0 = 0m | **25×0.010 = 0.25m** |
+**情况 A**：V3c-r3 cross-eval ≥ V3b min(95%) → 切 V3c 真机部署
+- 沟通价值：tracking_target=arm_center 让 sim 训练几何与真机 FSM (用 hand_body_equiv) 1:1 对齐，sim2real 更顺
+- 性能上和 V3b 相当或略好
 
-### 实施清单（2026-04-27 重设计）
+**情况 B**：V3c-r3 cross-eval ≈ V3b 但不超过 → V3b 仍真机首选
+- 论文价值：清晰的单参数 ablation 表明 tracking target 选择对 policy 影响很小
+- V3b TCP-tracking 的 sim2real 错位可通过 FSM 反推 hand_body_equiv 弥补，sim 训练 target 不必跟真机 FSM 对齐
 
-- ✅ env: `D_TIGHT_ARM=0.08`, 加 `HAND_SPEED_RANGE_V3C=(0.020, 0.040)`，reset() 按 tracking_target 选速度区间
-- ✅ 注册: `PandaBackupPolicyS1V3c-v0` `max_episode_steps=25`，kwargs 不变
-- ✅ 训练 config: 端口 50056, seed 1005, 400k step, utd=4
-- ✅ 单测：`test_v3c_dwell_disabled` + `test_v3c_uses_v3c_speed_range` + `test_v3c_episode_length_25` 共 27/27 pass
-- ⏳ 重训 400k （V3c-early 190k ckpt 已弃用）
+**情况 C**（不预期）：V3c-r3 比 V3b 显著差 → arm_center tracking 对 SAC 学习不利
 
-### 预期效果
+### 实施清单（2026-04-27 r3）
 
-V3c 重设计训练分布严于 V3 env，理论上 policy 学到的 escape avoid 能力 ⊇ V3b：
+- ✅ env: 删除 `HAND_SPEED_RANGE_V3C` 常量，arm_center tracking 用 V3 速度范围
+- ✅ V3c 注册 `max_episode_steps=20` (回到 V3b 一致)
+- ✅ 测试更新: `test_v3c_uses_v3_speed_range` (V3c 用 V3 范围) + `test_v3c_v3b_single_axis_diff` (验证唯一差异是 tracking_target)
+- ✅ 单测 27/27 pass
+- ⏳ 训练 300k （回到 V3b 同预算，因为不再加压）
 
-- V3c policy 在 V3 env：理论上 ≥ V3b 95%（V3c 训练分布更难）
-- V3c policy 在 V3c env：可能 80-90%（自家 env 难度更高）
-- min(两 env) 是真机决策准则——目标 V3c min ≥ V3b min (95%) 才能取代 V3b
-
-如果 V3c 重设计 min ≥ 95% → 真机切 V3c（FSM 对齐 + 鲁棒）。
-如果 V3c min < 95% → 仍用 V3b，V3c 作 ablation。
-
-### 可复现命令
+### 启动命令
 
 ```bash
 bash scripts/real/train_hil_sac.sh backup_v3c learner   # 端口 50056
 bash scripts/real/train_hil_sac.sh backup_v3c actor
 
-# Eval（cross-eval 必做）
+# 训完跑 cross-eval
 for ENV in PandaBackupPolicyS1V3-v0 PandaBackupPolicyS1V3c-v0; do
   python scripts/sim/eval_backup_policy.py \
     --checkpoint outputs/.../pretrained_model \
@@ -1085,14 +1088,7 @@ for ENV in PandaBackupPolicyS1V3-v0 PandaBackupPolicyS1V3c-v0; do
 done
 ```
 
-### Early-stop 策略
-
-worst-case 累积 closure 0.25m + spawn min 0.30m → 终末 0.05m 边缘，policy 必须退满 max_disp 0.50 才稳——训练初期 collision 比例可能 20-30%。决策点：
-
-- **100k**：online success < 60% → stop，可能太难
-- **200k**：online success < 80% → 警告，但继续
-- **300k**：cross-eval V3 env 若 < 85% → 警告，可能不及 V3b
-- **400k**：final cross-eval，min(两 env) 最高 ckpt 落库
+注：训练 step 应回退到 300k （V3b 同预算）。下面任务：把 train_hil_sac_backup_s1_v3c.json 的 `online_steps` 改回 300000。
 
 ---
 
