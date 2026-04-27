@@ -197,12 +197,24 @@ class FrankaRealEnv(gym.Env):
             and self.cycle_count % self.config.joint_reset_period == 0
         )
 
+        # 先清掉上一 episode 残留的 bias，再做物理 reset。否则带着 bias 跑
+        # _go_to_reset 时 controller 跟踪 biased_FK，物理 EE 实际到达位置 ≠
+        # target reset_pose（J1 bias 0.2 rad 约 7cm 偏移），且偏离量随 episode
+        # 变化 → reset 后物理位置每次都不同。
+        # bias 切换是 ROS topic 即时替换（无 filter），从 ±0.2 rad 突变到 0 时
+        # controller 内部 q_biased 跳变 → impedance transient，sleep 0.5s 让
+        # 阻抗 settling 再开始 reset 路径。
+        if self.bias_injector is not None:
+            self._set_encoder_bias([0.0] * 7)
+            time.sleep(0.5)
+
         self._recover()
         self._go_to_reset(joint_reset=joint_reset)
         self._recover()
         self.curr_path_length = 0
 
-        # 编码器偏差注入
+        # 编码器偏差注入：物理 reset 完成后再 sample + 注入新 bias，让 episode
+        # 起点的物理位置始终是 unbiased reset_pose，仅 obs 里的 q/pose 带 bias。
         if self.bias_injector is not None:
             self.bias_injector.on_episode_start(num_joints=7)
             bias = self.bias_injector.current_bias
