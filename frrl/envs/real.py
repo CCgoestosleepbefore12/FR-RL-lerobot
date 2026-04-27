@@ -678,12 +678,23 @@ class FrankaRealEnv(gym.Env):
 
         self.interpolate_move(lift_pose, timeout=0.5)
         self.interpolate_move(transit_pose, timeout=1.5)
-        self.interpolate_move(reset_pose, timeout=1.0)
+        # descend 段 timeout 2.0s（vs 旧 1.0s）：首次启动时 lift_z 可能高
+        # （max(currpos.z+0.1, reset.z) ≈ 0.4），降到 reset.z=0.21 行程 19cm，
+        # 阻抗 stiffness=2000 + 滞后 ~200ms，1 秒不够 settling。
+        self.interpolate_move(reset_pose, timeout=2.0)
+
+        # 额外 settle polling：descend 完后等 xyz 收敛到位，最多 1.5 秒。避免
+        # 阻抗滞后导致 readback 校验时还在路上 → 假阴性 raise。
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            self._update_currpos()
+            if float(np.linalg.norm(self.currpos[:3] - reset_pose[:3])) < 0.02:
+                break
+            time.sleep(0.1)
 
         # P0-B：reset 完毕回读 currpos 校验真到位。clearerr 假成功 / server-side
         # libfranka 拒绝 reset 时，currpos 仍卡在上一 episode 终点，policy 会以为
         # 自己回到 reset 然后发更大 action。容差 5cm（线性插值 + 阻抗 0.01 clip）。
-        self._update_currpos()
         xyz_err = float(np.linalg.norm(self.currpos[:3] - reset_pose[:3]))
         if xyz_err > 0.05:
             raise RuntimeError(
