@@ -629,22 +629,33 @@ class ReplayBuffer:
         resize_map = resize_images or {}
         normalize_set = set(normalize_to_unit or [])
 
+        # 只保留 state_keys 里声明的 obs key —— online actor 端 processor 输出的
+        # transition.state 通常只含 input_features 的 key（如 observation.state /
+        # observation.images.{front,wrist}），demo pickle 可能多出 placeholder
+        # 通道（如 environment_state plate_pos placeholder）。如果不过滤，offline
+        # buffer 会预分配多余 key，online transition 进 offline buffer 时
+        # add() 走 `for key in self.states: state[key]` 报 KeyError。
+        keep_keys = set(state_keys) if state_keys else None
+
+        def _drop_extra(d: dict) -> dict:
+            return {k: v for k, v in d.items() if (keep_keys is None or k in keep_keys)}
+
         for t in all_transitions:
             _require_keys(t, ("observations", "actions", "next_observations", "rewards", "dones"))
-            state = _remap_and_transform(
+            state = _drop_extra(_remap_and_transform(
                 _flatten_obs_to_tensor_dict(t["observations"]),
                 key_map=key_map,
                 transpose_set=transpose_set,
                 resize_map=resize_map,
                 normalize_set=normalize_set,
-            )
-            next_state = _remap_and_transform(
+            ))
+            next_state = _drop_extra(_remap_and_transform(
                 _flatten_obs_to_tensor_dict(t["next_observations"]),
                 key_map=key_map,
                 transpose_set=transpose_set,
                 resize_map=resize_map,
                 normalize_set=normalize_set,
-            )
+            ))
             action = _to_batched_tensor(t["actions"])
 
             # Preserve complementary_info schema so subsequent online-phase
