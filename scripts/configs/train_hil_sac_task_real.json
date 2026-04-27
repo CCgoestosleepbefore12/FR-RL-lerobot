@@ -21,7 +21,7 @@
         "franka_config": {
             "reward_backend": "keyboard",
             "enable_bias_monitor": true,
-            "display_image": false,
+            "display_image": true,
             "encoder_bias_config": {
                 "enable": true,
                 "error_probability": 1.0,
