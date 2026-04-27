@@ -1,5 +1,5 @@
 import rospy
-from franka_gripper.msg import GraspActionGoal, MoveActionGoal
+from franka_gripper.msg import GraspActionGoal, MoveActionGoal, HomingActionGoal
 from sensor_msgs.msg import JointState
 import numpy as np
 
@@ -15,10 +15,22 @@ class FrankaGripperServer(GripperServer):
         self.grippergrasppub = rospy.Publisher(
             "/franka_gripper/grasp/goal", GraspActionGoal, queue_size=1
         )
+        self.gripperhomingpub = rospy.Publisher(
+            "/franka_gripper/homing/goal", HomingActionGoal, queue_size=1
+        )
         self.gripper_sub = rospy.Subscriber(
             "/franka_gripper/joint_states", JointState, self._update_gripper
         )
         self.binary_gripper_pose = 0
+
+    def reset_gripper(self):
+        """Homing：让 finger 跑到机械极限再定零，校准 absolute encoder。
+        必须在 finger 之间无任何物体（无海绵/工件/夹具）时跑，否则中途卡住
+        homing 失败 → encoder 零位偏移 → close_gripper 后 width 报 0 但实际有 gap。
+        """
+        msg = HomingActionGoal()
+        self.gripperhomingpub.publish(msg)
+        # Homing 实测 ~3-4 秒（全开到全合两次），调用方应在调用后等待。
 
     def open(self):
         if self.binary_gripper_pose == 0:
