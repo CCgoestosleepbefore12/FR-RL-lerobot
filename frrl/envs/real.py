@@ -228,8 +228,6 @@ class FrankaRealEnv(gym.Env):
             else:
                 self._set_encoder_bias([0.0] * 7)
 
-        self._update_currpos()
-        self._update_currpos_true()
         self.terminate = False
 
         # Keyboard backend: clear any stale outcome and block until human presses S.
@@ -238,6 +236,14 @@ class FrankaRealEnv(gym.Env):
             self._keyboard_reward.mark_episode_ended()
             logging.info("等待操作者按 S 开始 episode（Enter=成功 / Space=失败 / Backspace=作废）")
             self._keyboard_reward.wait_for_start()
+
+        # 在 wait_for_start 之后再 _update_currpos：
+        #   1. 新 bias 是 ROS topic 即时替换（无 filter），impedance transient
+        #      ~100-300ms。wait_for_start 阻塞至少几秒，settling 完已经稳定。
+        #   2. 操作者按 S 期间手可能在 workspace 内布置物体，机械臂物理位置可能
+        #      被微推；obs 在按 S 那一刻读才是 episode 真正起点。
+        self._update_currpos()
+        self._update_currpos_true()
 
         obs = self._compute_observation()
         return obs, {}
