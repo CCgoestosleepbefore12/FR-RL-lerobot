@@ -54,10 +54,11 @@ case "$ROLE" in
         fi
 
         echo "[INFO] 启动 Learner..."
+        # lerobot parse_arg 只认 --key=value，不认 --key value（空格）
         python -m frrl.rl.core.learner \
-            --config_path "$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json" \
-            --output_dir "$ONLINE_DIR" \
-            --resume true
+            "--config_path=$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json" \
+            "--output_dir=$ONLINE_DIR" \
+            "--resume=true"
         ;;
     actor)
         if [ ! -f "$STATE_FILE" ]; then
@@ -68,9 +69,9 @@ case "$ROLE" in
         echo "[INFO] 复用 online dir: $ONLINE_DIR"
         echo "[INFO] 启动 Actor..."
         python -m frrl.rl.core.actor \
-            --config_path "$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json" \
-            --output_dir "$ONLINE_DIR" \
-            --resume true
+            "--config_path=$ONLINE_DIR/checkpoints/last/pretrained_model/train_config.json" \
+            "--output_dir=$ONLINE_DIR" \
+            "--resume=true"
         ;;
     *)
         echo "未知 ROLE: $ROLE （需要 learner 或 actor）"
