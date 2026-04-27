@@ -277,20 +277,20 @@ register(
     },
 )
 
-# S1 V3c：在 V3 (max_disp=0.50) 基础上把 hand 追的目标从 pinch_site 改成 panda_hand body
-# (= flange = collision 球心)，配合 D_TIGHT_ARM=25cm 让 hand dwell 行为成为**可达样本**。
-# V3 TCP-tracking 下 D_TIGHT=8cm 实质 unreachable (hand 在 D_TIGHT 时已 < collision_dist=20cm
-# 的几何范围内)，policy 学到的是"避免到那个区域"；V3c 下 hand 在 25cm > collision 20cm 处停顿，
-# policy 可以学到"hand 停了我也停"，更贴近真机"人手伸近停下观察"的部署场景。
+# S1 V3c (2026-04-27 重设计)：tracking_target=arm_center 保 sim2real FSM 几何对齐，
+# D_TIGHT_ARM=0.08 关 dwell（dwell 训练让 policy brittle，V3c 早版在 V3 env 仅 65%），
+# 改回 V3-style 持续追逼 + 加压：HAND_SPEED_RANGE_V3C=(0.020, 0.040) > V3 范围；
+# max_episode_steps=25 > V3 (20)，给 worst-case 更长 closure 累积时间。
+# 目标：V3c policy 在 V3 env 上也 ≥ V3b 95%（cross-eval min(两 env) 高）+ 真机 FSM 对齐。
 register(
     id="gym_frrl/PandaBackupPolicyS1V3c-v0",
     entry_point="frrl.envs.sim.panda_backup_policy_env:PandaBackupPolicyEnv",
-    max_episode_steps=20,
+    max_episode_steps=25,
     kwargs={
         "num_obstacles": 1,
         "use_arm_sphere_collision": True,
         "use_full_arm_collision": True,
-        "tracking_target": "arm_center",   # ★ V3c 核心改动
+        "tracking_target": "arm_center",   # ★ 保 V3c 核心：sim2real FSM 几何对齐
         "max_displacement": 0.50,
         "enforce_cartesian_bounds": False,
     },

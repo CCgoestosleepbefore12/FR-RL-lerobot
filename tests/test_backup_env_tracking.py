@@ -596,97 +596,65 @@ def test_v3c_tracks_arm_center_not_tcp():
           f"(arm cos={cos_arm:.4f} > tcp cos={cos_tcp:.4f}, Δ={cos_arm-cos_tcp:.4f})")
 
 
-def test_v3c_dwell_at_d_tight_arm_no_collision_panda_hand_only():
-    """V3c: hand 沿 +x 方向（远离 link5/6 方向）在 D_TIGHT_ARM 处 dwell，
-    距 panda_hand 球 D_TIGHT_ARM > collision_dist → 不撞。
+def test_v3c_dwell_disabled():
+    """V3c 重设计 (2026-04-27)：D_TIGHT_ARM=0.08 < collision_dist=0.20，dwell trigger
+    永远进不去 (hand 在 D_TIGHT_ARM 时已撞)，policy 看到的是 V3-style 持续追逼。
 
-    本测试**仅**验证 panda_hand 球安全。link3-6 方向的安全验证见
-    `test_v3c_dwell_safe_for_all_arm_spheres`。"""
+    验证：把 hand 放在 D_TIGHT_ARM 处，触发 _move_obstacle 应**不进 stall**
+    （dwell 区域和 collision 区域已重叠，hand 早被 collision 终止）。"""
     env = _make_env_v3c(seed=21)
     u = env.unwrapped
     arm_center = u._data.xpos[u._panda_hand_body_id].copy()
-    # +x 远离 panda_hand 但 link5/link6 在另一侧不影响
+    # 把 hand 放在 D_TIGHT_ARM 处（沿 +x 方向，远 link3-6）
     u._obstacle_pos[0] = arm_center + np.array([D_TIGHT_ARM - 1e-6, 0.0, 0.0])
-
-    u._stall_remaining[0] = 0  # 清零，让 _move_obstacle 走 dwell 检查
-    pre = u._obstacle_pos[0].copy()
-    u._move_obstacle(0)
-    assert u._stall_remaining[0] >= STALL_STEPS_RANGE[0], (
-        f"V3c 在 D_TIGHT_ARM 内应触发 stall; stall_remaining={u._stall_remaining[0]}"
-    )
-    assert np.allclose(u._obstacle_pos[0], pre), "stall 时 hand 不应移动"
-
-    obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
-    if term and info.get("violation_type") == "hand_collision":
-        raise AssertionError(
-            f"V3c 在 D_TIGHT_ARM={D_TIGHT_ARM}m (panda_hand 方向) 不应碰撞；"
-            f"collision_dist={ARM_COLLISION_DIST_V3}m, info={info}"
-        )
-    env.close()
-    print(f"  [PASS] V3c +x dwell 在 {D_TIGHT_ARM}m 距 panda_hand 不撞")
-
-
-def test_v3c_dwell_safe_for_all_arm_spheres():
-    """V3c 多球安全检查：obstacle 在 D_TIGHT_ARM 距 panda_hand 时，必须保证距
-    link3/4/5/6 也都 > 各自 collision_dist (sphere_r + obstacle_r=0.10)。
-
-    机制：reset() 的 spawn 拒绝采样保证 spawn 位置满足；hand 在 dwell 内不动，
-    所以 dwell 期间安全。这个测试验证：在 spawn 后让 hand 沿"接近某个 link 球"
-    方向 dwell 不会撞那个 link 球。如果出现这种情况，说明 V3c 几何设计有缺陷
-    (D_TIGHT_ARM 不能仅基于 panda_hand 球决定，要 min over 所有球)。"""
-    env = _make_env_v3c(seed=22)
-    u = env.unwrapped
-    arm_center = u._data.xpos[u._panda_hand_body_id].copy()
-
-    # 找最近的非 panda_hand 球
-    closest_link_pos = None
-    closest_link_name = None
-    closest_dist = float("inf")
-    for bid, sphere_r in u._arm_sphere_specs:
-        name = u._model.body(bid).name
-        if name == "hand": continue
-        link_pos = u._data.xpos[bid].copy()
-        d = float(np.linalg.norm(link_pos - arm_center))
-        if d < closest_dist:
-            closest_dist = d; closest_link_pos = link_pos; closest_link_name = name
-
-    # 在 panda_hand 球面 D_TIGHT_ARM 上、且尽量靠近 closest link 方向
-    # placement: arm_center → closest_link 方向，距离 D_TIGHT_ARM (- ε 触发 dwell)
-    direction = (closest_link_pos - arm_center) / np.linalg.norm(closest_link_pos - arm_center)
-    u._obstacle_pos[0] = arm_center + direction * (D_TIGHT_ARM - 1e-6)
-
-    # 检查这个 placement 下到所有 arm 球的距离
-    fail_spheres = []
-    for bid, sphere_r in u._arm_sphere_specs:
-        name = u._model.body(bid).name
-        sp_pos = u._data.xpos[bid].copy()
-        d = float(np.linalg.norm(u._obstacle_pos[0] - sp_pos))
-        threshold = sphere_r + OBSTACLE_RADIUS_V3
-        if d < threshold:
-            fail_spheres.append((name, d, threshold))
-
-    # 如果某 link 距离 < 阈值，触发 dwell 当步可能 collision
     u._stall_remaining[0] = 0
+    # 此 placement 下 hand 距 arm_center = 0.08 < collision_dist 0.20 → step 立刻 collision
     obs, rew, term, trunc, info = env.step(np.zeros(6, dtype=np.float32))
-
-    if fail_spheres:
-        # 这种 placement 下，dwell 几何不安全——validate 测试至少 catches 这个
-        if not term or info.get("violation_type") != "hand_collision":
-            print(f"  [WARN] V3c 朝 {closest_link_name} 方向 dwell 在 D_TIGHT_ARM 距 "
-                  f"{[(n, f'{d:.3f}') for n,d,_ in fail_spheres]} < 各自 threshold "
-                  f"{[f'{t:.3f}' for _,_,t in fail_spheres]}，但 step 没触发 collision——可能因为 hand 沿球面分布"
-                  f" (info={info})")
-    else:
-        # placement 下所有球都安全
-        if term and info.get("violation_type") == "hand_collision":
-            raise AssertionError(
-                f"V3c 朝 {closest_link_name} 方向 dwell 在 D_TIGHT_ARM 应不撞；"
-                f"placement 距各球: {[(u._model.body(bid).name, float(np.linalg.norm(u._obstacle_pos[0]-u._data.xpos[bid]))) for bid,_ in u._arm_sphere_specs]}, "
-                f"info={info}"
-            )
+    assert term and info.get("violation_type") == "hand_collision", (
+        f"V3c D_TIGHT_ARM=0.08 < collision 0.20，hand 在 D_TIGHT_ARM 处必撞；"
+        f"info={info}"
+    )
     env.close()
-    print(f"  [PASS] V3c 朝 {closest_link_name} dwell 几何检查 "
-          f"(closest_dist={closest_dist:.3f}, fail_spheres={len(fail_spheres)})")
+    print(f"  [PASS] V3c D_TIGHT_ARM=0.08 关 dwell：hand 在该距离立刻 hand_collision")
+
+
+def test_v3c_uses_v3c_speed_range():
+    """V3c 用 HAND_SPEED_RANGE_V3C (0.020, 0.040)，V3/V3b 用 HAND_SPEED_RANGE_V3 (0.015, 0.030)。
+    通过 reset 多次采样验证范围。"""
+    from frrl.envs.sim.panda_backup_policy_env import HAND_SPEED_RANGE_V3C
+    speeds_v3c = []
+    for seed in range(50):
+        env = _make_env_v3c(seed=seed)
+        speeds_v3c.append(env.unwrapped._obstacle_speed)
+        env.close()
+    assert min(speeds_v3c) >= HAND_SPEED_RANGE_V3C[0] - 1e-6
+    assert max(speeds_v3c) <= HAND_SPEED_RANGE_V3C[1] + 1e-6
+    # V3 仍用 V3 范围
+    speeds_v3 = []
+    for seed in range(50):
+        env = _make_env_v3(seed=seed)
+        speeds_v3.append(env.unwrapped._obstacle_speed)
+        env.close()
+    assert min(speeds_v3) >= HAND_SPEED_RANGE_V3[0] - 1e-6
+    assert max(speeds_v3) <= HAND_SPEED_RANGE_V3[1] + 1e-6
+    print(f"  [PASS] V3c speed ∈ [{min(speeds_v3c):.4f}, {max(speeds_v3c):.4f}] ⊂ V3C range; "
+          f"V3 ∈ [{min(speeds_v3):.4f}, {max(speeds_v3):.4f}] ⊂ V3 range")
+
+
+def test_v3c_episode_length_25():
+    """V3c env 注册 max_episode_steps=25（V3/V3b 是 20）。"""
+    import gymnasium as gym
+    import frrl.envs  # noqa
+    env = gym.make("gym_frrl/PandaBackupPolicyS1V3c-v0")
+    # gym 的 max_episode_steps 暴露在 spec.max_episode_steps 或 _max_episode_steps
+    spec_steps = env.spec.max_episode_steps if env.spec else None
+    assert spec_steps == 25, f"V3c max_episode_steps 应是 25, got {spec_steps}"
+    env.close()
+    # 对照：V3 应仍是 20
+    env_v3 = gym.make("gym_frrl/PandaBackupPolicyS1V3-v0")
+    assert env_v3.spec.max_episode_steps == 20, f"V3 max_episode_steps 应是 20"
+    env_v3.close()
+    print(f"  [PASS] V3c episode=25, V3 episode=20")
 
 
 def test_v3c_requires_arm_sphere_collision():
@@ -790,8 +758,9 @@ def main():
         test_v3_collision_reward_no_proximity,
         test_v3_backward_compat_v2,
         test_v3c_tracks_arm_center_not_tcp,
-        test_v3c_dwell_at_d_tight_arm_no_collision_panda_hand_only,
-        test_v3c_dwell_safe_for_all_arm_spheres,
+        test_v3c_dwell_disabled,
+        test_v3c_uses_v3c_speed_range,
+        test_v3c_episode_length_25,
         test_v3c_requires_arm_sphere_collision,
         test_default_tracking_target_is_tcp,
     ]
