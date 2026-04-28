@@ -1518,6 +1518,11 @@ def process_transitions(
         dataset_repo_id: Repository ID for dataset
         shutdown_event: Event to signal shutdown
     """
+    # Per-batch counters：每个 transition_list 重置，单独打 log。配合现有
+    # log_freq（默认 100）能看到「最近 100 步里有多少干预」、buffer 增长多少。
+    n_total = 0
+    n_intervention = 0
+    n_routed_to_offline = 0
     while not transition_queue.empty() and not shutdown_event.is_set():
         transition_list = transition_queue.get()
         transition_list = bytes_to_transitions(buffer=transition_list)
@@ -1538,6 +1543,12 @@ def process_transitions(
 
             is_intervention = transition.get("info", {}).get(TeleopEvents.IS_INTERVENTION.value) or \
                               transition.get("complementary_info", {}).get(TeleopEvents.IS_INTERVENTION.value)
+            # tensor(True/False) 经 `or` 会保留 tensor 形态；显式 bool(...) 拍平防 routing 边界 bug。
+            is_intervention = bool(is_intervention) if is_intervention is not None else False
+
+            n_total += 1
+            if is_intervention:
+                n_intervention += 1
 
             # 所有transition都进online buffer
             replay_buffer.add(**transition)
@@ -1552,6 +1563,17 @@ def process_transitions(
             # 的 fix：只要 offline buffer 存在（pickle 加载或 dataset 都行）就路由。
             if offline_replay_buffer is not None and is_intervention:
                 offline_replay_buffer.add(**transition)
+                n_routed_to_offline += 1
+
+    # Batch summary：若有数据流入则打一行，方便肉眼判断 routing 是否健康。
+    if n_total > 0:
+        rate = 100.0 * n_intervention / n_total
+        offline_size = len(offline_replay_buffer) if offline_replay_buffer is not None else 0
+        logging.info(
+            f"[ROUTE] {n_total} transitions: {n_intervention} intervention "
+            f"({rate:.1f}%), {n_routed_to_offline} routed → offline_buffer "
+            f"(now size={offline_size}); online_buffer size={len(replay_buffer)}"
+        )
 
 
 def process_interaction_messages(
