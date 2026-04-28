@@ -16,7 +16,7 @@ what the online phase will pick up.
 Usage:
     python scripts/tools/pretrain_task_policy.py \\
         --config scripts/configs/train_task_policy_franka.json \\
-        --demo-paths "data/task_policy_demos/*.pkl" \\
+        --demo-paths "data/wipe_demos/*.pkl" \\
         --steps 5000 \\
         --output-dir checkpoints/task_policy_pretrain
 """
@@ -54,7 +54,7 @@ def main():
     )
     ap.add_argument(
         "--demo-paths", nargs="+", required=True,
-        help="One or more pickle paths or globs (e.g. 'data/task_policy_demos/*.pkl')"
+        help="One or more pickle paths or globs (e.g. 'data/wipe_demos/*.pkl')"
     )
     ap.add_argument(
         "--steps", type=int, default=5000,

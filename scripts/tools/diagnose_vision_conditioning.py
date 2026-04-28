@@ -14,7 +14,7 @@
 用法：
   python scripts/tools/diagnose_vision_conditioning.py \
       --ckpt checkpoints/wipe_pretrain_2k_20260427_161127/checkpoints/last/pretrained_model \
-      --demos data/task_policy_demos/*.pkl
+      --demos data/wipe_demos/*.pkl
 """
 import argparse
 import glob

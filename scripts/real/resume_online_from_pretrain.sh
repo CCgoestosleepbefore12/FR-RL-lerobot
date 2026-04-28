@@ -9,15 +9,17 @@
 #
 # 流程：
 #   1. cp pretrain ckpt 到独立 online 目录（避免污染 pretrain）
-#   2. 用 train_hil_sac_task_real.json 覆盖 ckpt 内的 train_config.json
+#   2. 用 task 对应的 train_hil_sac_<task>_real.json 覆盖 ckpt 内的 train_config.json
 #      （保留 model.safetensors + training_state，仅切训练 meta）
 #   3. resume 这个 online 目录
 #
 # 用法：
-#   bash scripts/real/resume_online_from_pretrain.sh PRETRAIN_DIR ROLE
+#   bash scripts/real/resume_online_from_pretrain.sh PRETRAIN_DIR ROLE [TASK]
 #
 #   PRETRAIN_DIR: pretrain output dir，例如 checkpoints/wipe_pretrain_20260427_144114
 #   ROLE:         learner / actor
+#   TASK:         可选，wipe / pickup / ...，决定 ONLINE_CONFIG。默认 wipe
+#                 兼容历史调用。配 ONLINE_CONFIG 环境变量也可手动指定 path。
 #
 # 第一次跑 ROLE=learner 会建 online dir（保存到 .online_dir 里给 actor 读）；
 # 第二次跑 ROLE=actor 复用同一个 online dir。
@@ -26,11 +28,14 @@ set -e
 
 PRETRAIN_DIR="${1:?需要 pretrain dir 作第 1 个参数}"
 ROLE="${2:?需要 learner 或 actor 作第 2 个参数}"
+TASK="${3:-wipe}"
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ONLINE_CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_task_real.json"
 STATE_FILE="$PRETRAIN_DIR/.online_dir"
 
+# ONLINE_CONFIG 仅 learner 第一次建 online_dir 时需要（用来覆盖 ckpt 内 train_config.json）。
+# actor 始终从 ckpt 内 patched train_config.json 启动，跟 ONLINE_CONFIG 无关。
+# learner 复用 STATE_FILE 时也跳过校验：config 已经 paste 过。
 case "$ROLE" in
     learner)
         if [ -f "$STATE_FILE" ]; then
@@ -40,8 +45,21 @@ case "$ROLE" in
                 echo "[ERR] $STATE_FILE 指向 $ONLINE_DIR，但目录不存在；删 .online_dir 重跑"
                 exit 1
             fi
+            # 用户复用现有 online_dir 时再传 $3 TASK 容易误以为能切任务，但 paste
+            # 已发生且 ckpt train_config.json 已固化 — 这里显式 warn。
+            if [ "$#" -ge 3 ]; then
+                echo "[WARN] 第 3 个参数 TASK='$TASK' 被忽略 — online_dir 已存在，"
+                echo "       ckpt 内 train_config.json 已 paste 完毕。要切 task 必须删除 $STATE_FILE 重起 learner。"
+            fi
         else
-            ONLINE_DIR="checkpoints/wipe_online_$(date +%Y%m%d_%H%M%S)"
+            ONLINE_CONFIG="${ONLINE_CONFIG:-$PROJECT_DIR/scripts/configs/train_hil_sac_${TASK}_real.json}"
+            if [ ! -f "$ONLINE_CONFIG" ]; then
+                echo "[ERR] online config 不存在: $ONLINE_CONFIG"
+                echo "      可用 task: $(cd "$PROJECT_DIR/scripts/configs" && ls train_hil_sac_*_real.json | sed 's/train_hil_sac_//;s/_real.json//' | xargs)"
+                exit 1
+            fi
+            echo "[INFO] task=$TASK, online_config=$ONLINE_CONFIG"
+            ONLINE_DIR="checkpoints/${TASK}_online_$(date +%Y%m%d_%H%M%S)"
             echo "[INFO] 建新 online dir: $ONLINE_DIR"
             # 跳过 wandb/ 和 logs/ 子目录：pretrain 的 wandb 历史 / log 文件
             # 不该带过来，否则 online learner 启动时 wandb 会试图 resume pretrain
@@ -50,9 +68,10 @@ case "$ROLE" in
             # 用 online config 覆盖 ckpt 内的 train_config.json，但同时把 output_dir
             # 字段改成 ONLINE_DIR：lerobot resume 走 ckpt 内 train_config.json 作为
             # cfg，不在 RESUMABLE_POLICY_OVERRIDES 白名单的字段会被 ckpt 覆盖
-            # （含 output_dir）。如果 paste 进去时 output_dir 是 train_hil_sac_task_real.json
-            # 顶层默认值 "checkpoints/task_policy_real"，learner load training_state
-            # 时会去那个错路径找不到 → 必须把 output_dir patch 成 ONLINE_DIR 自身。
+            # （含 output_dir）。如果 paste 进去时 output_dir 是 task config 顶层
+            # 默认值（如 "checkpoints/wipe_real" / "checkpoints/pickup_real"），
+            # learner load training_state 时会去那个错路径找不到 → 必须把
+            # output_dir patch 成 ONLINE_DIR 自身。
             python3 -c "
 import json, sys
 with open(sys.argv[1]) as f: cfg = json.load(f)

@@ -57,25 +57,58 @@ class TestBuildActionFromSpacemouse:
 
 class TestMakeConfig:
     def test_bias_disabled_has_no_injector(self):
-        cfg = make_config(use_bias=False)
+        cfg = make_config(task="wipe", use_bias=False)
         assert cfg.encoder_bias_config is None
         assert cfg.reward_backend == "keyboard"
 
     def test_bias_enabled_targets_j1(self):
-        cfg = make_config(use_bias=True)
+        cfg = make_config(task="wipe", use_bias=True)
         assert cfg.encoder_bias_config is not None
         assert cfg.encoder_bias_config.enable is True
         assert cfg.encoder_bias_config.target_joints == [0]
         assert cfg.encoder_bias_config.bias_mode == "random_uniform"
 
     def test_bias_range_is_symmetric_02(self):
-        cfg = make_config(use_bias=True)
+        cfg = make_config(task="wipe", use_bias=True)
         assert cfg.encoder_bias_config.bias_range == (-0.2, 0.2)
 
     def test_error_probability_is_1(self):
         """Collection wants bias every episode, not sampled per-episode probability."""
-        cfg = make_config(use_bias=True)
+        cfg = make_config(task="wipe", use_bias=True)
         assert cfg.encoder_bias_config.error_probability == 1.0
+
+    def test_pickup_task_has_free_gripper_and_short_episode(self):
+        cfg = make_config(task="pickup", use_bias=True)
+        assert cfg.gripper_locked == "none"
+        # 100 step / 10s @ 10Hz，对齐 hil-serl ram_insertion horizon
+        assert cfg.max_episode_length == 100
+        assert cfg.random_reset is True
+        assert cfg.random_xy_range == 0.05
+
+    def test_wipe_task_has_locked_gripper_and_long_episode(self):
+        cfg = make_config(task="wipe", use_bias=True)
+        assert cfg.gripper_locked == "closed"
+        assert cfg.max_episode_length == 300
+
+    def test_unknown_task_raises_value_error(self):
+        with pytest.raises(ValueError, match="unknown task"):
+            make_config(task="not_a_real_task", use_bias=True)
+
+    def test_factory_returns_independent_bias_config(self):
+        """每次拿 cfg 都应该是独立 EncoderBiasConfig 实例（避免 mutate 串台）。
+
+        Pickup 用更窄的 (-0.1, 0.1) 防 bias 太大让 demo 都失败；wipe 用 (-0.2, 0.2)
+        baseline。两 cfg 必须是独立对象，互相 mutate 不串台。
+        """
+        cfg_wipe = make_config(task="wipe", use_bias=True)
+        cfg_pickup = make_config(task="pickup", use_bias=True)
+        assert cfg_wipe.encoder_bias_config is not cfg_pickup.encoder_bias_config
+        # 默认 range 不同
+        assert cfg_wipe.encoder_bias_config.bias_range == (-0.2, 0.2)
+        assert cfg_pickup.encoder_bias_config.bias_range == (-0.1, 0.1)
+        # mutate cfg_wipe 不影响 cfg_pickup
+        cfg_wipe.encoder_bias_config.bias_range = (-0.5, 0.5)
+        assert cfg_pickup.encoder_bias_config.bias_range == (-0.1, 0.1)
 
 
 class TestBuildTransitionDict:

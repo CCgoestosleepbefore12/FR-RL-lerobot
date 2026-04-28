@@ -133,13 +133,29 @@ case "$VARIANT" in
         TASK_ID="PandaBackupPolicyS1V3c-v0"
         EXTRA_ARGS="--env.task $TASK_ID --job_name frrl_backup_policy_s1_v3c"
         ;;
-    task_real)
-        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_task_real.json"
-        echo "=== Task Policy 真机 HIL 训练: Franka + SpaceMouse + keyboard reward + J1 bias ==="
+    wipe|pickup|task_real)
+        # task_real 是历史别名 → 走 wipe（兼容旧脚本调用）
+        if [ "$VARIANT" = "task_real" ]; then
+            VARIANT="wipe"
+            echo "[WARN] 'task_real' 是历史别名，已映射到 wipe"
+        fi
+        CONFIG="$PROJECT_DIR/scripts/configs/train_hil_sac_${VARIANT}_real.json"
+        if [ ! -f "$CONFIG" ]; then
+            echo "未找到 $CONFIG —— 在 scripts/configs/ 下加 train_hil_sac_${VARIANT}_real.json，"
+            echo "或在 frrl/envs/real_config.py 的 TASK_CONFIG_FACTORIES 里注册新任务"
+            exit 1
+        fi
+        # 时间戳 output_dir：避免每次重训撞 FileExistsError。
+        # learner / actor 在两个终端各自启动时会各算自己的 RUN_TS，落在不同子目录；
+        # 想让两边共享同一目录，预先 export RUN_TS=20260428_153045 再启动两边即可。
+        RUN_TS="${RUN_TS:-$(date +%Y%m%d_%H%M%S)}"
+        OUT_DIR="checkpoints/${VARIANT}_real_${RUN_TS}"
+        echo "=== Task Policy 真机 HIL 训练 (${VARIANT}): Franka + SpaceMouse + keyboard reward + J1 bias ==="
         echo "    流程: offline warmup（依赖 demo_pickle_paths 非空）→ online HIL 50k（~1.4h @ 10Hz）"
-        echo "    注意: demo_pickle_paths=[] 时 learner 会直接报错，先跑 collect_demo_task_policy.py 并回填路径"
+        echo "    注意: demo_pickle_paths=[] 时 learner 会直接报错，先跑 collect_demo_task_policy.py --task ${VARIANT} 并回填路径"
+        echo "    output_dir = ${OUT_DIR}    （共享目录请先 export RUN_TS=${RUN_TS} 再启另一终端）"
         TASK_ID=""  # 真机不走 gymnasium 注册，env_factory 从 franka_config 分支建 env
-        EXTRA_ARGS="--job_name frrl_task_policy_real"
+        EXTRA_ARGS="--job_name frrl_${VARIANT}_real --output_dir ${OUT_DIR}"
         ;;
     custom)
         TASK_ID="${3:?请指定环境ID，例如: FRRLPandaPickPlaceKeyboard-v0}"
@@ -148,7 +164,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "未知任务: $VARIANT"
-        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, backup_v3, backup_v3c, task_real, custom"
+        echo "可选: baseline, bias_j4_random, bias_j4_fixed, bias_all, pick_cube, pick_cube_bias, pick_cube_bias_random, arrange_boxes, safe, safe_bias, backup, backup_s2, backup_tracking, backup_tracking_relaxed, backup_tracking_combo, backup_v2, backup_v3, backup_v3c, wipe, pickup, task_real (=wipe alias), custom"
         exit 1
         ;;
 esac
@@ -168,11 +184,12 @@ case "$ROLE" in
         ;;
     record)
         # task_real 不走 shell record（demo 用独立脚本，schema 是 hil-serl pickle）
-        if [ "$VARIANT" = "task_real" ]; then
-            echo "task_real 变体不使用 shell record，请用:"
-            echo "  python scripts/real/collect_demo_task_policy.py -n 50"
-            echo "采集完成后把输出 pickle 路径填进 scripts/configs/train_hil_sac_task_real.json 的"
-            echo "policy.demo_pickle_paths 字段，再启动 learner + actor。"
+        if [ "$VARIANT" = "wipe" ] || [ "$VARIANT" = "pickup" ]; then
+            # task_real 在上面 case 入口已改写为 wipe，这里不会再命中
+            echo "$VARIANT 变体不使用 shell record，请用:"
+            echo "  python scripts/real/collect_demo_task_policy.py --task $VARIANT -n 50"
+            echo "采集完成后会自动落到 data/${VARIANT}_demos/，已在 train_hil_sac_${VARIANT}_real.json 的"
+            echo "policy.demo_pickle_paths 通过 glob 引用。"
             # exit 1：调用本分支本身是误用（shell record 不支持 task_real），
             # 避免 CI / 脚本链把 exit 0 当作成功继续。
             exit 1
@@ -211,10 +228,10 @@ case "$ROLE" in
         echo ""
         echo "完整训练流程:"
         echo ""
-        if [ "$VARIANT" = "task_real" ]; then
+        if [ "$VARIANT" = "wipe" ] || [ "$VARIANT" = "pickup" ]; then
             echo "  步骤1 — 采集真机 demo（默认 50 successes）:"
-            echo "    python scripts/real/collect_demo_task_policy.py -n 50"
-            echo "    把输出 pickle 填进 train_hil_sac_task_real.json 的 demo_pickle_paths"
+            echo "    python scripts/real/collect_demo_task_policy.py --task $VARIANT -n 50"
+            echo "    输出落到 data/${VARIANT}_demos/，被 train_hil_sac_${VARIANT}_real.json glob 引用"
         else
             echo "  步骤1 — 录制Demo（30个episode）:"
             echo "    bash scripts/real/train_hil_sac.sh $VARIANT record"

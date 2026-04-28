@@ -98,13 +98,13 @@ class TestFriendlyErrors:
 
 class TestConfigFileIntegrity:
     def test_task_real_config_parses(self):
-        """scripts/configs/train_hil_sac_task_real.json 的 franka_config 段落可解析。"""
+        """scripts/configs/train_hil_sac_wipe_real.json 的 franka_config 段落可解析。"""
         import json
         from frrl.envs.real_config import FrankaRealConfig
         from frrl.fault_injection import EncoderBiasConfig
 
         root = Path(__file__).resolve().parent.parent
-        cfg_path = root / "scripts/configs/train_hil_sac_task_real.json"
+        cfg_path = root / "scripts/configs/train_hil_sac_wipe_real.json"
         with open(cfg_path) as f:
             full_cfg = json.load(f)
 
@@ -123,7 +123,7 @@ class TestConfigFileIntegrity:
         """S6 锁定的 HIL 超参都落在 JSON 里。"""
         import json
         root = Path(__file__).resolve().parent.parent
-        with open(root / "scripts/configs/train_hil_sac_task_real.json") as f:
+        with open(root / "scripts/configs/train_hil_sac_wipe_real.json") as f:
             cfg = json.load(f)
 
         policy = cfg["policy"]
@@ -147,3 +147,32 @@ class TestConfigFileIntegrity:
         # P0-1: 两路相机都必须配 demo_resize 防 cat shape 静默不一致
         assert "observation.images.front" in policy["demo_resize_images"]
         assert "observation.images.wrist" in policy["demo_resize_images"]
+
+    def test_pickup_real_config_parses(self):
+        """scripts/configs/train_hil_sac_pickup_real.json 的 franka_config 段落可解析。
+
+        镜像 wipe 测试，但断言 pickup 特有字段：gripper_locked='none' /
+        max_episode_length=100（hil-serl ram_insertion 对齐）/ random_reset=True /
+        random_xy_range=0.05。
+        """
+        import json
+        from frrl.envs.real_config import FrankaRealConfig
+        from frrl.fault_injection import EncoderBiasConfig
+
+        root = Path(__file__).resolve().parent.parent
+        cfg_path = root / "scripts/configs/train_hil_sac_pickup_real.json"
+        with open(cfg_path) as f:
+            full_cfg = json.load(f)
+
+        franka_dict = full_cfg["env"]["franka_config"]
+        cfg = _get_franka_branch(franka_dict)
+
+        assert isinstance(cfg, FrankaRealConfig)
+        assert cfg.gripper_locked == "none"
+        assert cfg.max_episode_length == 100
+        assert cfg.random_reset is True
+        assert cfg.random_xy_range == 0.05
+        assert isinstance(cfg.encoder_bias_config, EncoderBiasConfig)
+        assert cfg.encoder_bias_config.target_joints == [0]
+        # pickup demo 路径与 collect_demo_task_policy.py 默认 output_dir 必须一致
+        assert full_cfg["policy"]["demo_pickle_paths"] == ["data/pickup_demos/*.pkl"]

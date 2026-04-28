@@ -315,17 +315,56 @@ class RobotEnv(gym.Env):
 def _build_franka_config_from_dict(franka_dict: dict) -> "FrankaRealConfig":
     """把 JSON 反序列化后的 franka_config dict 构造成 FrankaRealConfig。
 
-    只处理 scalar + 嵌套 encoder_bias_config dict；带 numpy / callable 的字段
-    （cameras, image_crop, abs_pose_limit_*）走 Python 默认值。bias_range 从
-    list 转成 Tuple 以匹配 dataclass 类型声明。
+    两条路径：
+      A. 含 `task` key（推荐）：先调 `make_task_config(task=...)` 走 task factory
+         拿到 reset_pose / abs_pose_limit_high / image_crop / encoder_bias_config 等
+         numpy/callable 字段（demo 采集与训练共用同一份 task profile，避免分布漂移），
+         然后用 JSON 里的 scalar 字段 mutate 覆盖（如 max_episode_length 等）。
+      B. 无 `task` key（向后兼容）：只处理 scalar + 嵌套 encoder_bias_config，
+         numpy/callable 字段走 FrankaRealConfig 默认值。
 
+    bias_range 从 list 转成 Tuple 匹配 dataclass 类型声明。
     失败时 re-raise ValueError 并附上字段信息，比原生 TypeError 易读。
     """
     import copy
-    from frrl.envs.real_config import FrankaRealConfig
+    from frrl.envs.real_config import FrankaRealConfig, make_task_config, TASK_CONFIG_FACTORIES
     from frrl.fault_injection import EncoderBiasConfig
 
     fc_dict = copy.deepcopy(franka_dict)
+
+    # 路径 A：task dispatch（与 collect_demo_task_policy.py 同源 task profile）
+    task = fc_dict.pop("task", None)
+    if task is not None:
+        if task not in TASK_CONFIG_FACTORIES:
+            raise ValueError(
+                f"franka_config.task='{task}' 未注册；可选: {list(TASK_CONFIG_FACTORIES.keys())}"
+            )
+        # task factory 已经设好 reset_pose / abs_pose_limit_high / image_crop /
+        # encoder_bias_config 等 numpy/callable 字段。
+        cfg = make_task_config(task=task)
+        # 然后让 JSON 的 scalar 字段覆盖（max_episode_length / display_image / reward_backend 等）。
+        # encoder_bias_config 在 JSON 里也可以覆盖（如训练时换 bias_range）。
+        bias_dict = fc_dict.pop("encoder_bias_config", None)
+        if isinstance(bias_dict, dict):
+            if "bias_range" in bias_dict:
+                bias_dict["bias_range"] = tuple(bias_dict["bias_range"])
+            try:
+                cfg.encoder_bias_config = EncoderBiasConfig(**bias_dict)
+            except TypeError as e:
+                raise ValueError(
+                    f"franka_config.encoder_bias_config 解析失败：{e}. 配置 dict={bias_dict}"
+                ) from e
+        # 把剩余 scalar 字段 setattr 上去
+        for k, v in fc_dict.items():
+            if not hasattr(cfg, k):
+                raise ValueError(
+                    f"franka_config.{k}={v!r} 不是 FrankaRealConfig 的字段；"
+                    f"task='{task}' factory 已应用，剩余 keys 必须在 dataclass 内"
+                )
+            setattr(cfg, k, v)
+        return cfg
+
+    # 路径 B：向后兼容
     bias_dict = fc_dict.get("encoder_bias_config")
     if isinstance(bias_dict, dict):
         if "bias_range" in bias_dict:
@@ -341,7 +380,8 @@ def _build_franka_config_from_dict(franka_dict: dict) -> "FrankaRealConfig":
     except TypeError as e:
         raise ValueError(
             f"franka_config 解析失败：{e}. 支持字段请见 FrankaRealConfig（"
-            f"numpy/callable 字段不能通过 JSON 覆盖）。传入 keys={list(fc_dict.keys())}"
+            f"numpy/callable 字段不能通过 JSON 覆盖；建议加 task='pickup' 等让 factory 处理）。"
+            f"传入 keys={list(fc_dict.keys())}"
         ) from e
 
 
@@ -671,9 +711,8 @@ def step_env_and_process_transition(
     # FrankaRealEnv._is_intervention_pending 默认 False，online HIL 不调
     # set_intervention(True)。如果让 env info 后写覆盖，teleop 真值会被覆盖成
     # False → 干预 transition 永不路由到 prior buffer，HIL 信号链断。
-    # 只有 `is_intervention` 字段冲突；env 独有的 succeed/discard/teleop_action/
-    # intervene_action 和 teleop 独有的 terminate_episode/success/rerecord_episode
-    # 互不覆盖。
+    # 只有 `is_intervention` 字段冲突；env 独有的 succeed/discard/teleop_action
+    # 和 teleop 独有的 terminate_episode/success/rerecord_episode 互不覆盖。
     new_info = dict(info)
     new_info.update(processed_action_transition[TransitionKey.INFO])
 

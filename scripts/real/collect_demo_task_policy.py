@@ -22,12 +22,12 @@ Operator protocol during collection:
     timeout    (max_episode_length steps) → trajectory discarded
     Ctrl+C     abort — already-collected successes are saved
 
-Output: data/task_policy_demos/task_policy_demos_{N}_{complete|aborted}_{timestamp}.pkl
+Output: data/{task}_demos/{task}_demos_{N}_{complete|aborted}_{timestamp}.pkl
 
 Usage:
-    python scripts/real/collect_demo_task_policy.py                 # default 50 successes, bias on
-    python scripts/real/collect_demo_task_policy.py -n 20           # 20 successes
-    python scripts/real/collect_demo_task_policy.py --no-bias       # no bias (clean demos)
+    python scripts/real/collect_demo_task_policy.py --task wipe                # 50 wipe demos, bias on, gripper closed
+    python scripts/real/collect_demo_task_policy.py --task pickup -n 30        # 30 pickup demos, bias on, gripper free
+    python scripts/real/collect_demo_task_policy.py --task pickup --no-bias    # baseline (no bias)
 """
 
 import argparse
@@ -41,9 +41,8 @@ from typing import Tuple
 
 import numpy as np
 
-from frrl.envs.real_config import FrankaRealConfig
+from frrl.envs.real_config import FrankaRealConfig, TASK_CONFIG_FACTORIES, make_task_config
 from frrl.envs.real import FrankaRealEnv
-from frrl.fault_injection import EncoderBiasConfig
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
 
 
@@ -105,34 +104,27 @@ def build_action_from_spacemouse(
     return action
 
 
-def make_config(use_bias: bool, gripper_locked: str = "none") -> FrankaRealConfig:
-    """FrankaRealConfig for demo collection (keyboard reward + optional J1 bias).
+def make_config(task: str, use_bias: bool) -> FrankaRealConfig:
+    """Dispatch to per-task factory in real_config.py。
 
-    gripper_locked:
-      "none"   → 默认，夹爪自由控制（pick-place）
-      "closed" → 永远闭合（wipe 任务，海绵被夹住）
-      "open"   → 永远张开（push 任务）
+    采集模式默认开 BiasMonitor 弹窗（仅本地 demo 时；远程 headless 训练用默认 False）。
+    bias_monitor_save_path 默认存到 charts/bias_<timestamp>.{npz,png}。
     """
-    cfg = FrankaRealConfig(reward_backend="keyboard", gripper_locked=gripper_locked)
+    bias_monitor_save_path = None
     if use_bias:
-        cfg.encoder_bias_config = EncoderBiasConfig(
-            enable=True,
-            error_probability=1.0,
-            target_joints=[0],              # J1
-            bias_mode="random_uniform",
-            bias_range=(-0.2, 0.2),
-        )
-        # 弹出 BiasMonitor 波形窗（仅在本地 demo 时开；远程 headless 训练用默认 False）
-        cfg.enable_bias_monitor = True
-        # 默认存到 charts/bias_<timestamp>.npz + .png（BiasMonitor.close() 写）。
-        # mkdir 在 main() 里启动时做，这里只生成路径前缀。
         from datetime import datetime
         from pathlib import Path
         charts_dir = Path("charts")
         charts_dir.mkdir(exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        cfg.bias_monitor_save_path = str(charts_dir / f"bias_{ts}")
-    return cfg
+        bias_monitor_save_path = str(charts_dir / f"bias_{ts}")
+    return make_task_config(
+        task,
+        use_bias=use_bias,
+        reward_backend="keyboard",
+        enable_bias_monitor=use_bias,
+        bias_monitor_save_path=bias_monitor_save_path,
+    )
 
 
 def build_transition_dict(
@@ -159,12 +151,12 @@ def classify_episode_end(info: dict) -> str:
     return "fail"  # fail key pressed OR timeout — both are just "not saved"
 
 
-def output_filename(output_dir: str, success_count: int, aborted: bool) -> str:
+def output_filename(output_dir: str, success_count: int, aborted: bool, task: str = "task_policy") -> str:
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     suffix = "aborted" if aborted else "complete"
     return os.path.join(
         output_dir,
-        f"task_policy_demos_{success_count}_{suffix}_{stamp}.pkl",
+        f"{task}_demos_{success_count}_{suffix}_{stamp}.pkl",
     )
 
 
@@ -175,35 +167,38 @@ def output_filename(output_dir: str, success_count: int, aborted: bool) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--task", required=True, choices=list(TASK_CONFIG_FACTORIES.keys()),
+                    help="task name → 决定 gripper / episode 长度 / xy 随机化等。"
+                         f" 已注册: {list(TASK_CONFIG_FACTORIES.keys())}")
     ap.add_argument("-n", "--successes-needed", type=int, default=50,
                     help="target number of successful demos (default 50)")
     ap.add_argument("--no-bias", action="store_true",
                     help="disable J1 bias injection (default: bias enabled)")
-    ap.add_argument("--gripper", choices=["none", "closed", "open"], default="none",
-                    help="夹爪锁定模式。'closed' 用于 wipe 任务（夹住海绵），"
-                         "'open' 用于 push，'none' 默认用 SpaceMouse 按键自由控制。")
-    ap.add_argument("--output-dir", type=str, default="data/task_policy_demos")
+    ap.add_argument("--output-dir", type=str, default=None,
+                    help="default: data/{task}_demos/")
     args = ap.parse_args()
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
 
-    cfg = make_config(use_bias=not args.no_bias, gripper_locked=args.gripper)
+    output_dir = args.output_dir or f"data/{args.task}_demos"
+
+    cfg = make_config(task=args.task, use_bias=not args.no_bias)
     env = FrankaRealEnv(cfg)
     spacemouse = SpaceMouseExpert()
     logging.info(
-        f"collection ready — reward=keyboard, "
+        f"collection ready — task={args.task}, reward=keyboard, "
         f"bias={'J1 U(-0.2, 0.2) per episode' if not args.no_bias else 'DISABLED'}, "
-        f"gripper_locked={args.gripper}, "
-        f"target {args.successes_needed} successes"
+        f"gripper_locked={cfg.gripper_locked}, max_ep_len={cfg.max_episode_length}, "
+        f"random_reset={cfg.random_reset} (xy_range={cfg.random_xy_range}), "
+        f"output_dir={output_dir}, target {args.successes_needed} successes"
     )
 
     # 锁定夹爪时 SpaceMouse 按键无效，action[6] 强制 const（-1=closed, +1=open）。
-    # 用 dataclass-style 闭包：避免每帧 if/else。
-    if args.gripper == "closed":
+    if cfg.gripper_locked == "closed":
         _locked_val = -1.0
-    elif args.gripper == "open":
+    elif cfg.gripper_locked == "open":
         _locked_val = +1.0
     else:
         _locked_val = None  # 自由模式
@@ -290,8 +285,8 @@ def main():
         logging.warning("no successful demos collected — not saving anything")
         return
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    filename = output_filename(args.output_dir, success_count, aborted)
+    os.makedirs(output_dir, exist_ok=True)
+    filename = output_filename(output_dir, success_count, aborted, task=args.task)
     with open(filename, "wb") as f:
         pkl.dump(transitions, f)
     logging.info(

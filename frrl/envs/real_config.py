@@ -87,6 +87,9 @@ class FrankaRealConfig:
     # 动作缩放: (xyz_m/step, rotation_rad/step, gripper_scale)
     # P0-3: 0.03 × 10Hz = 0.30 m/s 正好等于 max_cart_speed，避免 0.04 时极限动作
     # 被 clip_safety 0.75x 非线性压缩、policy 学错动作幅度信念。
+    # ⚠️ gripper_scale 必须 ≥ 0.5 / 1.0 = 0.5：_send_gripper_command 用 ±0.5 阈值
+    # 判 close/open，policy 输出 ±1（discrete head 解码后）× scale 必须能穿越阈值。
+    # 调小到 < 0.5 会让 close/open 永远不触发硬件命令。
     action_scale: Tuple[float, float, float] = (0.03, 0.2, 1.0)
 
     # 笛卡尔安全边界 (6D: x,y,z,rx,ry,rz)
@@ -205,3 +208,112 @@ class FrankaRealConfig:
     # 锁定模式下 dataset_stats 的 action[6] 应固定为该模式的 const，避免
     # std=0 触发归一化 NaN。collect_demo 也对应屏蔽 SpaceMouse 夹爪按键。
     gripper_locked: str = "none"
+
+
+# ============================================================
+# Per-task config factories
+# ------------------------------------------------------------
+# 每个新任务在这里加一个 make_<task>_config()。collect_demo /
+# 训练 env / 测试都通过 task name 拿配置，避免散在脚本里改字段。
+# wipe 显式重传 random_reset=False / max_episode_length=300 与 dataclass
+# 默认重复 — intentional：作为 task contract 锚点，dataclass 默认日后改了
+# 也不影响 wipe 行为。
+# ============================================================
+
+
+def _make_j1_bias_cfg(bias_range: Tuple[float, float] = (-0.2, 0.2)) -> EncoderBiasConfig:
+    """每次新建一份 J1 random_uniform bias config。
+
+    不用 module-level singleton 是因为 EncoderBiasConfig 是普通 dataclass
+    （非 frozen，target_joints 是可变 list），多个 cfg 共享同一引用时若有
+    脚本 mutate（例如 ablation 里 cfg.encoder_bias_config.bias_range = ...）
+    会跨 cfg 污染。每次 new 实例 cheap 而且消除 footgun。
+
+    bias_range 默认 (-0.2, 0.2) 对齐 wipe baseline；pickup 用更窄的 (-0.1, 0.1)
+    （pickup 是接触+抓取任务，bias 太大会让 demo 都失败）。
+    """
+    return EncoderBiasConfig(
+        enable=True,
+        error_probability=1.0,
+        target_joints=[0],
+        bias_mode="random_uniform",
+        bias_range=bias_range,
+    )
+
+
+def make_wipe_config(
+    use_bias: bool = True,
+    reward_backend: str = "keyboard",
+    enable_bias_monitor: bool = False,
+    bias_monitor_save_path: Optional[str] = None,
+) -> FrankaRealConfig:
+    """Wipe sponge across plate — gripper 锁闭夹海绵，长 episode (300 step)。"""
+    cfg = FrankaRealConfig(
+        reward_backend=reward_backend,
+        gripper_locked="closed",
+        max_episode_length=300,
+        random_reset=False,
+    )
+    if use_bias:
+        cfg.encoder_bias_config = _make_j1_bias_cfg()
+        cfg.enable_bias_monitor = enable_bias_monitor
+        cfg.bias_monitor_save_path = bias_monitor_save_path
+    return cfg
+
+
+def make_pickup_config(
+    use_bias: bool = True,
+    reward_backend: str = "keyboard",
+    enable_bias_monitor: bool = False,
+    bias_monitor_save_path: Optional[str] = None,
+) -> FrankaRealConfig:
+    """Pickup sponge block — 夹爪自由控制，短 episode (80 step)，物块 reset xy 随机化。
+
+    与 wipe 的关键差异：
+      - gripper_locked="none"：抓取需要夹爪开合 → action[6] 自由
+      - max_episode_length=100：10s @ 10Hz，对齐 hil-serl ram_insertion 的 100 步 horizon
+      - random_reset=True + random_xy_range=0.05：物块位置随机的话，机械臂
+        reset 也随机化能学 generalization
+      - reset_pose=[0.5188, 0.0607, 0.2786, π, 0, 0]：现场用 SpaceMouse 摆到 pre-grasp
+        hover 位置后从 /getstate_true 读出（quat→euler）。z=0.2786 比 wipe 的 0.21 高
+        7cm，给 pickup 抓取留下抓 + 抬升余量。
+      - abs_pose_limit_high[2]=0.38：reset 路径要求 lift headroom ≥ 0.1m，原 0.315 上限
+        与 reset.z=0.2786 仅留 0.036m → 抬到 0.38 满足 lift→transit→descend 三段。
+        ⚠️ 若桌面 38cm 上方有相机/灯架障碍，需现场确认或下调 reset.z。
+    """
+    cfg = FrankaRealConfig(
+        reward_backend=reward_backend,
+        gripper_locked="none",
+        max_episode_length=100,
+        random_reset=True,
+        random_xy_range=0.05,
+    )
+    cfg.reset_pose = np.array([0.5334, 0.0149, 0.2586, -3.09848, 0.01591, 0.01375])
+    cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, 0.2])
+    # front 相机 ROI：calibration_data/workspace.json 里 select_workspace_roi.py
+    # 框选写回的 roi_front_final = [180, 94, 400, 314] (220×220 正方形)，覆盖
+    # pickup 工作面。runtime 不读 JSON，需在这里显式接上。
+    cfg.image_crop = {
+        "front": make_workspace_roi_crop(180, 94, 400, 314),
+        "wrist": center_square_crop,
+    }
+    if use_bias:
+        cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.1, 0.1))
+        cfg.enable_bias_monitor = enable_bias_monitor
+        cfg.bias_monitor_save_path = bias_monitor_save_path
+    return cfg
+
+
+TASK_CONFIG_FACTORIES = {
+    "wipe": make_wipe_config,
+    "pickup": make_pickup_config,
+}
+
+
+def make_task_config(task: str, **kwargs) -> FrankaRealConfig:
+    """Dispatch by task name. 新任务在 TASK_CONFIG_FACTORIES 里注册即可。"""
+    if task not in TASK_CONFIG_FACTORIES:
+        raise ValueError(
+            f"unknown task '{task}'; registered: {list(TASK_CONFIG_FACTORIES.keys())}"
+        )
+    return TASK_CONFIG_FACTORIES[task](**kwargs)

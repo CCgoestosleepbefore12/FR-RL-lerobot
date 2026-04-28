@@ -49,7 +49,7 @@ def main():
     ap.add_argument("--save", action="store_true", help="save one frame pair per camera")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
-    ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--fps", type=int, default=15)
     args = ap.parse_args()
 
     serials = list_realsense_serials()

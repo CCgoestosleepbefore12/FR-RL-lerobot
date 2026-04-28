@@ -6,9 +6,10 @@ normalizer either crashes or runs identity, causing training to diverge or
 degenerate.
 
 Usage:
-    python scripts/tools/compute_dataset_stats.py --demos "data/task_policy_demos/*.pkl"
+    python scripts/tools/compute_dataset_stats.py --demos "data/wipe_demos/*.pkl"
+    python scripts/tools/compute_dataset_stats.py --demos "data/pickup_demos/*.pkl"
 
-Prints a JSON fragment you can paste into scripts/configs/train_task_policy_franka.json
+Prints a JSON fragment you can paste into scripts/configs/train_hil_sac_<task>_real.json
 under policy.dataset_stats.
 """
 import argparse
@@ -41,7 +42,7 @@ def main():
             transitions.extend(pkl.load(f))
     print(f"loaded {len(transitions)} transitions from {len(paths)} file(s)")
 
-    # agent_pos (29D)
+    # agent_pos (14D: tcp_pose_true 7 + tcp_vel 6 + gripper 1)
     agent_pos = np.stack([t["observations"]["agent_pos"] for t in transitions]).astype(np.float64)
     action = np.stack([t["actions"] for t in transitions]).astype(np.float64)
 
@@ -71,8 +72,8 @@ def main():
         return dict(min=mn, max=mx, mean=mu, std=sd)
 
     stats_all = {
-        "observation.state": stats(agent_pos, "observation.state (agent_pos, 29D)"),
-        "action": stats(action, "action (7D)"),
+        "observation.state": stats(agent_pos, f"observation.state (agent_pos, {agent_pos.shape[1]}D)"),
+        "action": stats(action, f"action ({action.shape[1]}D)"),
     }
 
     # Images — ImageNet defaults are used in config already; we just verify

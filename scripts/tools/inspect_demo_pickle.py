@@ -1,8 +1,8 @@
 """Inspect demo pickle file(s) — verify shape, count, loadability into ReplayBuffer.
 
 Usage:
-    python scripts/tools/inspect_demo_pickle.py data/task_policy_demos/*.pkl
-    python scripts/tools/inspect_demo_pickle.py data/task_policy_demos/task_policy_demos_1_complete_2026-04-23_12-34-56.pkl
+    python scripts/tools/inspect_demo_pickle.py data/wipe_demos/*.pkl
+    python scripts/tools/inspect_demo_pickle.py data/pickup_demos/pickup_demos_1_complete_2026-04-28_12-34-56.pkl
 """
 import argparse
 import pickle as pkl
