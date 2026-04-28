@@ -322,6 +322,22 @@ class _NormalizationMixin:
 
         stats = self._tensor_stats[key]
 
+        # 图像 stats broadcasting fix：JSON 写入的 mean/std 是 1D `[r, g, b]`，
+        # NCHW (B,C,H,W) tensor 与之相减时，PyTorch 会把 (3,) 对齐到最后一维 W，
+        # 试图把 [r,g,b] 当 width 减→ shape mismatch (W=128 vs 3) 报错。
+        # 上游 hil-serl 用 NHWC layout，(3,) 自然 broadcast；FR-RL 用 NCHW，
+        # 必须把 stats reshape 到 (C, 1, 1)。这里在 forward 路径做一次性 reshape，
+        # 不去 mutate self._tensor_stats（保持 state_dict 序列化兼容）。
+        def _maybe_reshape_for_image(stat: Tensor) -> Tensor:
+            if (
+                feature_type == FeatureType.VISUAL
+                and tensor.ndim == 4
+                and stat.ndim == 1
+                and stat.shape[0] == tensor.shape[1]   # C 维匹配
+            ):
+                return stat.view(-1, 1, 1)
+            return stat
+
         if norm_mode == NormalizationMode.MEAN_STD:
             mean = stats.get("mean", None)
             std = stats.get("std", None)
@@ -330,7 +346,8 @@ class _NormalizationMixin:
                     "MEAN_STD normalization mode requires mean and std stats, please update the dataset with the correct stats"
                 )
 
-            mean, std = stats["mean"], stats["std"]
+            mean = _maybe_reshape_for_image(mean)
+            std = _maybe_reshape_for_image(std)
             # Avoid division by zero by adding a small epsilon.
             denom = std + self.eps
             if inverse:
