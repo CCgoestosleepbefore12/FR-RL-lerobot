@@ -58,6 +58,9 @@ class ActorLearnerConfig:
 @dataclass
 class CriticNetworkConfig:
     hidden_dims: list[int] = field(default_factory=lambda: [256, 256])
+    # MLP 内部用 getattr(nn, activations)() 实例化，所以必须是 nn 类名（"SiLU" / "Tanh" / "ReLU"）。
+    # hil-serl/RLPD baseline 用 "Tanh"；保持默认 "SiLU" 不影响现有 config。
+    activations: str = "SiLU"
     activate_final: bool = True
     final_activation: str | None = None
 
@@ -65,6 +68,7 @@ class CriticNetworkConfig:
 @dataclass
 class ActorNetworkConfig:
     hidden_dims: list[int] = field(default_factory=lambda: [256, 256])
+    activations: str = "SiLU"
     activate_final: bool = True
 
 

@@ -106,7 +106,12 @@ class SACPolicy(
 
         if self.config.num_discrete_actions is not None:
             discrete_action_value = self.discrete_critic(batch, observations_features)
-            discrete_action = torch.argmax(discrete_action_value, dim=-1, keepdim=True)
+            discrete_idx = torch.argmax(discrete_action_value, dim=-1, keepdim=True)
+            # 对齐 hil-serl 约定（serl_launcher sac_hybrid_dual.py:443-454）：buffer / env /
+            # demo 都用 continuous {-1, 0, +1}（close / no-op / open），policy 这里把 argmax
+            # idx ∈ {0, 1, 2} 偏移 -1 转回 {-1, 0, +1}。env 阈值 ±0.5 直接消费；demo
+            # 也存 {-1, 0, +1}。compute_loss_critic 那边再 +1 还原成 idx 喂 gather。
+            discrete_action = (discrete_idx - 1).to(actions.dtype)
             actions = torch.cat([actions, discrete_action], dim=-1)
 
         return actions
@@ -343,9 +348,14 @@ class SACPolicy(
         # NOTE: We only want to keep the discrete action part
         # In the buffer we have the full action space (continuous + discrete)
         # We need to split them before concatenating them in the critic forward
+        # Buffer 里 action[-1] 是 continuous {-1, 0, +1}（hil-serl 约定，统一 demo/teleop/policy
+        # 三方 schema）；这里 +1 偏移成 idx ∈ {0, 1, 2} 喂 gather。clamp 防 demo 噪声越界。
+        # 历史 bug：之前没 +1 偏移，demo 的 action[-1]=-1 会被当成 Python 负索引 → 静默
+        # 错训成 idx=2（open），让 close demo 全部反向训练。
         actions_discrete: Tensor = actions[:, DISCRETE_DIMENSION_INDEX:].clone()
-        actions_discrete = torch.round(actions_discrete)
-        actions_discrete = actions_discrete.long()
+        actions_discrete = (torch.round(actions_discrete) + 1).long().clamp(
+            0, self.config.num_discrete_actions - 1
+        )
 
         discrete_penalties: Tensor | None = None
         if complementary_info is not None:
@@ -565,9 +575,12 @@ class SACObservationEncoder(nn.Module):
             )
         if self.has_state:
             dim = self.config.input_features[OBS_STATE].shape[0]
+            # state 投影维度独立于 image latent_dim：对齐 hil-serl proprio_latent_dim=64 的设定，
+            # 让 raw 14D state 不被过度参数化（256→64 投影对 SAC trunk 来说更对称）。
+            state_out = self.config.state_encoder_hidden_dim
             self.state_encoder = nn.Sequential(
-                nn.Linear(dim, self.config.latent_dim),
-                nn.LayerNorm(self.config.latent_dim),
+                nn.Linear(dim, state_out),
+                nn.LayerNorm(state_out),
                 nn.Tanh(),
             )
 
@@ -578,7 +591,7 @@ class SACObservationEncoder(nn.Module):
         if self.has_env:
             out += self.config.latent_dim
         if self.has_state:
-            out += self.config.latent_dim
+            out += self.config.state_encoder_hidden_dim
         self._out_dim = out
 
     def forward(
@@ -1009,6 +1022,26 @@ class PretrainedImageEncoder(nn.Module):
         else:
             self._num_non_patch_tokens = 0
 
+        # ImageNet 归一化嵌入 encoder 内部（对齐 hil-serl ResNetEncoder 的
+        # `x = (x / 255 - mean) / std` 模式，见 hil-serl/.../vision/resnet_v1.py:226）。
+        # 上游 VanillaObservationProcessorStep 已把 uint8→float [0,1]，这里只做 mean/std 标准化。
+        # DINOv2/v3、HF ResNet/ConvNeXt 都按 ImageNet stats 训练，喂 [0,1] raw 会让 frozen
+        # backbone 输出严重漂移，spatial_pool 的可学投影补偿不全。
+        # 注意：FR-RL 的 SAC pre-processor pipeline (NormalizerProcessorStep) 在 actor/learner
+        # 主 loop 没接进来，dataset_stats 是 dead config，所以归一化必须在 encoder 内部完成。
+        # register_buffer + persistent=False：跟着 .to(device) 走但不进 state_dict（常量无需保存）。
+        # shape (1,3,1,1) 直接 broadcast 到 NCHW (B,3,H,W) 输入。
+        self.register_buffer(
+            "_imagenet_mean",
+            torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_imagenet_std",
+            torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+
     def _load_pretrained_vision_encoder(self, config: SACConfig):
         """加载 HF AutoModel 并解析输出通道数。
 
@@ -1073,6 +1106,10 @@ class PretrainedImageEncoder(nn.Module):
         return any(kw in mt for kw in ["vit", "dinov", "siglip"])
 
     def forward(self, x):
+        # ImageNet 归一化（对齐 hil-serl encoder-内部 norm 模式，绕开未接通的
+        # NormalizerProcessorStep）。x 是上游 VanillaObservationProcessor 输出的 [0,1] float NCHW。
+        x = (x - self._imagenet_mean) / self._imagenet_std
+
         out = self.image_enc_layers(x)
         feat = out.last_hidden_state                                         # CNN: (B,C,H,W); ViT: (B,N,D)
 
