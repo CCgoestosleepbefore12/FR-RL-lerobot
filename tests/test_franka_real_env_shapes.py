@@ -1,13 +1,12 @@
 """Tests for FrankaRealEnv observation/action space shapes (no HTTP, no camera).
 
-Verifies the 29D observation layout decided for task policy training:
-  [0:7]   q_biased        — /getstate (may contain J1 bias)
-  [7:14]  dq              — /getstate (bias is constant offset → Δq/dt unaffected)
-  [14]    gripper         — [0, 1]
-  [15:18] tcp_pos_biased  — /getstate
-  [18:22] tcp_quat_biased — /getstate, scipy [xyzw]
-  [22:25] tcp_pos_true    — /getstate_true (privileged "cheat" channel)
-  [25:29] tcp_quat_true   — /getstate_true, scipy [xyzw]
+Verifies the 14D observation layout (对齐 hil-serl ram_insertion proprio 子集):
+  [0:7]   tcp_pose_true  — /getstate_true xyz + quat (xyzw)（绕过 J1 bias 的真 TCP）
+  [7:13]  tcp_vel        — /getstate 末端 6D twist（bias 是关节角偏移，不影响 dpose/dt）
+  [13]    gripper_pose   — /getstate [0, 1]
+
+历史：之前是 29D 含 q_biased / dq / tcp_pos_biased / tcp_quat_biased，2026-04-28
+切换到 14D 对齐 hil-serl，去掉 bias-aware proprio 让网络只看 bias-鲁棒的 TCP 信号。
 """
 import numpy as np
 import pytest
@@ -23,8 +22,8 @@ def env():
 
 
 class TestObservationSpace:
-    def test_agent_pos_is_29d(self, env):
-        assert env.observation_space["agent_pos"].shape == (29,)
+    def test_agent_pos_is_14d(self, env):
+        assert env.observation_space["agent_pos"].shape == (14,)
 
     def test_agent_pos_dtype_is_float32(self, env):
         assert env.observation_space["agent_pos"].dtype == np.float32
@@ -58,30 +57,25 @@ class TestActionSpace:
 
 
 class TestGetRobotStateLayout:
-    def test_returns_29d(self, env):
+    def test_returns_14d(self, env):
         state = env.get_robot_state()
-        assert state.shape == (29,)
+        assert state.shape == (14,)
 
     def test_dtype_is_float32(self, env):
         assert env.get_robot_state().dtype == np.float32
 
     def test_layout_slices_after_manual_assignment(self, env):
         """Assign known values to each underlying field and check they land at the right indices."""
-        env.q = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
-        env.dq = np.array([1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7])
+        env.currpos_true = np.array([11.0, 21.0, 31.0, 0.1, 0.2, 0.3, 0.9])  # pos + quat (xyzw)
+        env.currvel = np.array([0.5, 0.6, 0.7, 0.05, 0.06, 0.07])             # 6D twist
         env.curr_gripper_pos = 0.5
-        env.currpos = np.array([10.0, 20.0, 30.0, 0.0, 0.0, 0.0, 1.0])        # pos + quat
-        env.currpos_true = np.array([11.0, 21.0, 31.0, 0.1, 0.2, 0.3, 0.9])
 
         s = env.get_robot_state()
 
-        np.testing.assert_allclose(s[0:7], env.q)
-        np.testing.assert_allclose(s[7:14], env.dq)
-        assert s[14] == pytest.approx(0.5)
-        np.testing.assert_allclose(s[15:18], [10.0, 20.0, 30.0])
-        np.testing.assert_allclose(s[18:22], [0.0, 0.0, 0.0, 1.0])
-        np.testing.assert_allclose(s[22:25], [11.0, 21.0, 31.0])
-        np.testing.assert_allclose(s[25:29], [0.1, 0.2, 0.3, 0.9])
+        np.testing.assert_allclose(s[0:3], [11.0, 21.0, 31.0])              # tcp_pos_true
+        np.testing.assert_allclose(s[3:7], [0.1, 0.2, 0.3, 0.9])            # tcp_quat_true
+        np.testing.assert_allclose(s[7:13], [0.5, 0.6, 0.7, 0.05, 0.06, 0.07])  # tcp_vel
+        assert s[13] == pytest.approx(0.5)                                  # gripper
 
 
 class TestInitialState:

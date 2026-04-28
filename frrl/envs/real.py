@@ -74,15 +74,12 @@ class FrankaRealEnv(gym.Env):
             high=np.full(7, 1.0, dtype=np.float32),
         )
 
-        # 29D agent_pos:
-        #   [0:7]   q_biased           从 /getstate（含 J1 bias）
-        #   [7:14]  dq                 (bias 固定偏移不影响 Δq/dt)
-        #   [14]    gripper            [0, 1]
-        #   [15:18] tcp_pos_biased     从 /getstate（biased FK）
-        #   [18:22] tcp_quat_biased    scipy xyzw
-        #   [22:25] tcp_pos_true       从 /getstate_true （privileged 作弊通道）
-        #   [25:29] tcp_quat_true      scipy xyzw        （privileged 作弊通道）
-        agent_dim = 29
+        # 14D agent_pos（对齐 hil-serl ram_insertion proprio 子集，无 force/torque）：
+        #   [0:7]   tcp_pose_true   /getstate_true xyz + quat (xyzw)（privileged 作弊通道，
+        #                            绕过 J1 bias 喂网络真 TCP；bias 鲁棒性研究阶段再切回 biased）
+        #   [7:13]  tcp_vel         /getstate 末端 6D twist（bias 是固定关节角偏移，不影响速度）
+        #   [13]    gripper_pose    /getstate [0,1]
+        agent_dim = 14
         self.observation_space = spaces.Dict({
             "agent_pos": spaces.Box(-np.inf, np.inf, (agent_dim,), dtype=np.float32),
             "environment_state": spaces.Box(-np.inf, np.inf, (6,), dtype=np.float32),
@@ -325,9 +322,13 @@ class FrankaRealEnv(gym.Env):
             "discard": rinfo["discard"],
             # HIL-SERL schema for RLPD: downstream actor / pickle loader uses
             # these to route transitions between online and offline/prior buffers.
+            # `teleop_action` 是「实际执行的动作」（intervention 时已被 action_processor
+            # 覆盖成 teleop 输出），与 sim 端 hil_wrappers.py:205 同语义。actor.py:325
+            # 用它当 executed_action。不另存 `intervene_action`：与 hil-serl 原版做
+            # 法一致（intervene_action 在 wrappers.py 写完，train_rlpd.py:179 用完即
+            # `info.pop`，不入 buffer）—— buffer 里 actions 字段就是执行动作。
             "teleop_action": np.asarray(action, dtype=np.float32),
             "is_intervention": is_intervention,
-            "intervene_action": np.asarray(action, dtype=np.float32) if is_intervention else None,
         }
 
     def go_home(self) -> None:
@@ -432,25 +433,18 @@ class FrankaRealEnv(gym.Env):
     # ================================================================
 
     def get_robot_state(self) -> np.ndarray:
-        """构建 29D 机器人状态。
+        """构建 14D 机器人状态（对齐 hil-serl ram_insertion proprio 子集）。
 
         布局（索引 → 含义 → 来源）：
-          [0:7]   q_biased         /getstate（可能含 J1 bias）
-          [7:14]  dq               /getstate（bias 固定偏移不影响 Δq/dt）
-          [14]    gripper          [0, 1]
-          [15:18] tcp_pos_biased   /getstate（biased FK 的 xyz）
-          [18:22] tcp_quat_biased  /getstate（biased FK 的 quat，scipy xyzw）
-          [22:25] tcp_pos_true     /getstate_true（privileged 作弊通道）
-          [25:29] tcp_quat_true    /getstate_true（privileged 作弊通道，scipy xyzw）
+          [0:7]  tcp_pose_true  /getstate_true xyz + quat (xyzw)（绕过 J1 bias 的真 TCP，
+                                 bias 鲁棒性阶段再切回 biased FK）
+          [7:13] tcp_vel        /getstate 末端 6D twist（bias 是关节角偏移，不影响 dpose/dt）
+          [13]   gripper_pose   /getstate [0,1]
         """
         return np.concatenate([
-            self.q.astype(np.float32),                            # [0:7]
-            self.dq.astype(np.float32),                           # [7:14]
-            np.array([self.curr_gripper_pos], dtype=np.float32),  # [14]
-            self.currpos[:3].astype(np.float32),                  # [15:18]
-            self.currpos[3:].astype(np.float32),                  # [18:22]
-            self.currpos_true[:3].astype(np.float32),             # [22:25]
-            self.currpos_true[3:].astype(np.float32),             # [25:29]
+            self.currpos_true.astype(np.float32),                 # [0:7]
+            self.currvel.astype(np.float32),                      # [7:13]
+            np.array([self.curr_gripper_pos], dtype=np.float32),  # [13]
         ])
 
     def get_raw_joint_positions(self) -> Dict[str, float]:
