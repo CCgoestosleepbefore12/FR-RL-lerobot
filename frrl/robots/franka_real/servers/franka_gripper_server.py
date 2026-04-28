@@ -43,27 +43,34 @@ class FrankaGripperServer(GripperServer):
         self.binary_gripper_pose = 0
 
     def close(self):
+        """空抓不再 ABORTED：close 改用 MoveAction（纯位置控制），避开
+        GraspAction 在没检测到 force 接触时 timeout → ABORTED 的语义。
+
+        权衡：
+        - ✅ 训练初期 random policy 大量空抓 close 不再污染 RT PC log
+        - ✅ 抓住物体时 finger 物理 stall，width 自动停在物体厚度处（hardware
+             阻抗保证不会硬挤），效果与 GraspAction 末态一致
+        - ❌ 失去 libfranka 的 grasp success/fail 反馈信号 —— task policy 用
+             相机 + 人按 Enter 给奖励，本来就不依赖该信号；如未来要做基于力
+             反馈的 reward，再切回 GraspAction
+        - width=0.005：接近全闭，物体厚度 ≥ 5mm 都能 stall 在物体上
+        """
         if self.binary_gripper_pose == 1:
             return
-        msg = GraspActionGoal()
-        msg.goal.width = 0.01
+        msg = MoveActionGoal()
+        msg.goal.width = 0.005
         msg.goal.speed = 0.3
-        msg.goal.epsilon.inner = 1
-        msg.goal.epsilon.outer = 1
-        msg.goal.force = 130
-        self.grippergrasppub.publish(msg)
+        self.grippermovepub.publish(msg)
         self.binary_gripper_pose = 1
 
     def close_slow(self):
+        """同 close()，仅调速 0.3→0.1。不用 GraspAction，理由见 close() docstring。"""
         if self.binary_gripper_pose == 1:
             return
-        msg = GraspActionGoal()
-        msg.goal.width = 0.01
+        msg = MoveActionGoal()
+        msg.goal.width = 0.005
         msg.goal.speed = 0.1
-        msg.goal.epsilon.inner = 1
-        msg.goal.epsilon.outer = 1
-        msg.goal.force = 130
-        self.grippergrasppub.publish(msg)
+        self.grippermovepub.publish(msg)
         self.binary_gripper_pose = 1
 
     def move(self, position: int):
