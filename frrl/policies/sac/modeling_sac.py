@@ -866,8 +866,14 @@ class Policy(nn.Module):
         encoder: SACObservationEncoder,
         network: nn.Module,
         action_dim: int,
-        std_min: float = -5,
-        std_max: float = 2,
+        # std_min / std_max 是「直接 std 边界」，不是 log_std 边界。forward 里
+        # `std = exp(log_std).clamp(std_min, std_max)`，所以两个值都必须为正数。
+        # 默认对齐 hil-serl serl_launcher.networks.actor_critic_nets.Policy:123-124。
+        # 历史 bug：之前默认 (-5, 2) 是把 JAX 风格的 log_std 边界误用作 std 边界，
+        # 下界 -5 因 exp 永正而无效，effective range 变成 (0, 2]，BC 训练后 std
+        # 可漂到 ~1e-3 让 actor 几乎 deterministic、SAC online resume entropy bonus 失效。
+        std_min: float = 1e-5,
+        std_max: float = 10.0,
         fixed_std: torch.Tensor | None = None,
         init_final: float | None = None,
         use_tanh_squash: bool = False,
