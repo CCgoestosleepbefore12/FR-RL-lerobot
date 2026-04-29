@@ -288,8 +288,12 @@ def make_pickup_config(
         reward_backend=reward_backend,
         gripper_locked="none",
         max_episode_length=100,
-        random_reset=True,
-        random_xy_range=0.05,
+        # baseline pipeline 验证阶段：关 random_reset 让机械臂每次 reset 到完全相同
+        # 位姿，排除 ±5cm 随机化 + settle 残差叠加导致的"位置抖动"。物块的位置
+        # variation 由操作员手动放置提供。pipeline 跑通后恢复 True/0.05 引入自动
+        # generalization。
+        random_reset=False,
+        random_xy_range=0.0,
     )
     cfg.reset_pose = np.array([0.5334, 0.0149, 0.2586, -3.09848, 0.01591, 0.01375])
     cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, 0.2])

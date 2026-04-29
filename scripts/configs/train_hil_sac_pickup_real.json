@@ -25,8 +25,8 @@
             "display_image": true,
             "gripper_locked": "none",
             "max_episode_length": 100,
-            "random_reset": true,
-            "random_xy_range": 0.05,
+            "random_reset": false,
+            "random_xy_range": 0.0,
             "encoder_bias_config": {
                 "enable": false,
                 "error_probability": 1.0,
