@@ -1308,6 +1308,9 @@ def initialize_replay_buffer(
         )
 
 
+_FREEZE_LOG_LAST_VAL: bool | None = None
+
+
 def _should_freeze_actor(cfg: TrainRLServerPipelineConfig, replay_buffer_size: int) -> bool:
     """HIL-SERL critic-only 阶段判断。
 
@@ -1315,9 +1318,20 @@ def _should_freeze_actor(cfg: TrainRLServerPipelineConfig, replay_buffer_size: i
     就冻结 actor / temperature（只训 critic）。进 Phase 3 后 actor 解冻，恢复
     正常 SAC 联合更新。0 或负数都视为关闭（SACConfig.__post_init__ 已把负数
     规范化到 0），此处的 `n > 0` 只是兜底。
+
+    诊断 log：状态翻转（True↔False）时打一行，方便确认 critic_only 窗口
+    是否如期生效；防止每次 utd 内部 call 都刷屏，只 log 边界事件。
     """
+    global _FREEZE_LOG_LAST_VAL
     n = cfg.policy.critic_only_online_steps
-    return n > 0 and replay_buffer_size < n
+    result = n > 0 and replay_buffer_size < n
+    if _FREEZE_LOG_LAST_VAL != result:
+        logging.info(
+            f"[FREEZE_ACTOR] state transition: {_FREEZE_LOG_LAST_VAL} -> {result} "
+            f"(critic_only_online_steps={n}, replay_buffer_size={replay_buffer_size})"
+        )
+        _FREEZE_LOG_LAST_VAL = result
+    return result
 
 
 def _should_run_actor_optimization(
