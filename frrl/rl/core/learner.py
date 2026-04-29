@@ -414,6 +414,27 @@ def add_actor_information_and_train(
                 f"before online phase. freeze_actor_in_warmup={cfg.policy.freeze_actor_in_warmup}."
             )
         logging.info(f"[LEARNER] Warmup: pre-training on offline demo for {warmup_steps} steps...")
+
+        # Critical fix: freeze_actor_in_warmup=True 时不只冻 actor head，也要冻
+        # SHARED encoder 的可训练部分。否则 critic_loss 反传到 encoder（DINOv3
+        # frozen 但 spatial_embeddings/post_encoders/state_encoder 仍可训），warmup
+        # 末 push 整个 actor.state_dict 给 actor 端会让 actor head 见到 critic-改过
+        # 的 encoder feature → 完全 OOD → episode 2 起 actor 行为崩坏。
+        # 这里 snapshot encoder 各 param 的 requires_grad，整体设 False；warmup 结
+        # 束后恢复。critic head 仍会学（critic.network/output_layer 可训），只是
+        # encoder 这条共享路径冻结，actor head/encoder 配对状态保持 BC ckpt 原样。
+        encoder_grad_snapshot = []
+        if cfg.policy.freeze_actor_in_warmup:
+            # 共享 encoder 时 encoder_actor is encoder_critic 同对象，冻 encoder_critic 即可。
+            encoder_for_freeze = policy.encoder_critic
+            for p in encoder_for_freeze.parameters():
+                encoder_grad_snapshot.append((p, p.requires_grad))
+                p.requires_grad = False
+            n_frozen = sum(1 for _, rg in encoder_grad_snapshot if rg)  # 之前是 True 的数量
+            logging.info(
+                f"[LEARNER] freeze_actor_in_warmup: 冻结 {n_frozen} 个 encoder param "
+                f"防止 critic_loss 改 shared encoder 让 actor head 失配"
+            )
         offline_warmup_iter = offline_replay_buffer.get_iterator(
             batch_size=batch_size * 2, async_prefetch=async_prefetch, queue_size=2
         )
@@ -482,6 +503,15 @@ def add_actor_information_and_train(
 
             if (i + 1) % 100 == 0:
                 logging.info(f"[LEARNER] Warmup step {i+1}/{warmup_steps}, critic_loss={loss_critic.item():.4f}")
+
+        # 恢复 encoder requires_grad（如果上面冻过）：online phase 仍需 critic 学
+        # encoder 适配 RLPD 50/50 分布。critic_only_online_steps 期间继续学 encoder
+        # 是 OK 的——actor 也冻在 BC ckpt（critic_only），唯一变化是 critic head + encoder
+        # 自洽推进。当 actor 在 critic_only_online_steps 后解冻，actor head 也开始
+        # 学，此时 actor head 会通过 actor loss 补偿 encoder 漂移（不是 BC 那种突
+        # 然失配）。
+        for p, was_grad in encoder_grad_snapshot:
+            p.requires_grad = was_grad
 
         push_actor_policy_to_queue(parameters_queue, policy)
         logging.info(f"[LEARNER] Warmup complete. Pushed initial policy to Actor.")
