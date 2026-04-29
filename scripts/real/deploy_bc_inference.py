@@ -66,6 +66,21 @@ def main():
     ap.add_argument("--deterministic", action="store_true",
                     help="select_action 用 mean 代替 dist.rsample()，消除 stochastic 噪声"
                          "（结合 --no-teleop 看是否纯 deterministic 也 episode 间不同）")
+    # 自动成功判定：复刻 hil-serl pickup wrapper.compute_reward (line 71-106)
+    #   (a) tcp_z >= reset_z + lift_threshold（绝对高度 ≥ 桌面以上）
+    #   (b) gripper_pos ∈ (held_min, held_max)（真夹住物块，非空夹也非张开）
+    # 满足两条就 terminated=True，env.reset 自动起下一条。配 reward_backend="pose"
+    # （+ target_pose=None）让 env 不走键盘 wait_for_start，真 auto-reset。
+    ap.add_argument("--auto-success", action="store_true", default=True,
+                    help="开启 hil-serl pickup 同款 (z + gripper) 自动成功判定，"
+                         "默认开。--no-auto-success 关闭走纯键盘 reward")
+    ap.add_argument("--no-auto-success", dest="auto_success", action="store_false")
+    ap.add_argument("--lift-threshold", type=float, default=0.06,
+                    help="tcp_z 抬升触发 success 的阈值 m（默认 0.06m，对齐 hil-serl）")
+    ap.add_argument("--gripper-held-min", type=float, default=0.05,
+                    help="gripper_pos 下界（< 此值视作空夹，hil-serl 默认 0.05）")
+    ap.add_argument("--gripper-held-max", type=float, default=0.6,
+                    help="gripper_pos 上界（> 此值视作张开未夹，hil-serl 默认 0.6）")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -82,16 +97,28 @@ def main():
                  f"continuous_action_dim={policy.actor.action_dim}")
 
     # ---------- Build env via task factory ----------
+    # auto_success=True：用 pose backend + target_pose=None 让 env._compute_reward
+    # 走 no-op 分支（real.py:578），跳过键盘 wait_for_start 实现真自动复位。
+    # 实际 success 判定在本脚本主循环里做，对齐 hil-serl pickup wrapper。
+    backend = "pose" if args.auto_success else "keyboard"
     cfg_env = make_task_config(
         task=args.task,
         use_bias=not args.no_bias,
-        reward_backend="keyboard",
+        reward_backend=backend,
         enable_bias_monitor=False,
         bias_monitor_save_path=None,
     )
     env = FrankaRealEnv(cfg_env)
+    reset_z = float(cfg_env.reset_pose[2])
+    target_z = reset_z + args.lift_threshold
     logging.info(f"[deploy] env up: gripper_locked={cfg_env.gripper_locked}, "
-                 f"max_ep={cfg_env.max_episode_length}")
+                 f"max_ep={cfg_env.max_episode_length}, reward_backend={backend}")
+    if args.auto_success:
+        logging.info(
+            f"[deploy] auto-success: tcp_z >= {target_z:.3f}m "
+            f"(reset_z {reset_z:.3f} + lift {args.lift_threshold:.2f}) "
+            f"AND gripper_pos ∈ ({args.gripper_held_min}, {args.gripper_held_max})"
+        )
 
     # ---------- Optional SpaceMouse for intervention ----------
     spacemouse = None
@@ -186,6 +213,29 @@ def main():
 
                 obs = next_obs
                 done = terminated or truncated
+
+                # ---------- auto-success 判定（hil-serl pickup wrapper:71-106 同款）----------
+                # tcp_pose_true layout: agent_pos[0:3]=xyz, agent_pos[13]=gripper_pos
+                if args.auto_success and not done:
+                    tcp_z = float(np.asarray(obs["agent_pos"], dtype=np.float32)[2])
+                    grip = float(np.asarray(obs["agent_pos"], dtype=np.float32)[13])
+                    z_high = tcp_z >= target_z
+                    held = args.gripper_held_min < grip < args.gripper_held_max
+                    if z_high and held:
+                        logging.info(
+                            f"[auto-success] ✓ tcp_z={tcp_z:.3f}m (≥{target_z:.3f}), "
+                            f"gripper={grip:.3f} ∈ ({args.gripper_held_min}, {args.gripper_held_max})"
+                        )
+                        info["succeed"] = True
+                        ep_return = max(ep_return, 1.0)
+                        done = True
+                    elif tcp_z >= target_z - 0.03:
+                        # 接近阈值时打 debug，方便排查"已抬起但 gripper 不在范围"等情况
+                        logging.info(
+                            f"[auto-success] near miss: tcp_z={tcp_z:.3f} "
+                            f"(target {target_z:.3f}), gripper={grip:.3f} "
+                            f"({'OK' if held else 'OUT'} range)"
+                        )
 
             # ---------- episode end ----------
             outcome = "success" if info.get("succeed") else (
