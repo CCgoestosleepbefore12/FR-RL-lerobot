@@ -534,6 +534,8 @@ class ReplayBuffer:
         transpose_hwc_to_chw: Sequence[str] | None = None,
         resize_images: dict[str, tuple[int, int]] | None = None,
         normalize_to_unit: Sequence[str] | None = None,
+        action_norm_min: float = 0.0,
+        intervention_only: bool = False,
     ) -> "ReplayBuffer":
         """Load HIL-SERL-format demo pickles into a ReplayBuffer.
 
@@ -606,6 +608,45 @@ class ReplayBuffer:
 
         if not all_transitions:
             raise ValueError(f"no transitions loaded from {list(pickle_paths)}")
+
+        # 可选：过滤近零 action 帧（hil-serl train_bc.py:183 同款 trick）。
+        # 默认 0.0 = 不过滤，保持 SAC online resume 行为不变。BC pretrain 调
+        # 1e-6 / 1e-3 把 SpaceMouse 静止帧（用户停手观察、按 Enter 之间）丢掉，
+        # 避免 model bias 向"原地不动"，对小数据 BC 收敛特别有效。
+        if action_norm_min > 0.0:
+            n_before = len(all_transitions)
+            all_transitions = [
+                t for t in all_transitions
+                if float(np.linalg.norm(np.asarray(t["actions"], dtype=np.float32))) > action_norm_min
+            ]
+            n_dropped = n_before - len(all_transitions)
+            if not all_transitions:
+                raise ValueError(
+                    f"action_norm_min={action_norm_min} 过滤后 0 条 transition 剩余 "
+                    f"（原 {n_before} 条全是静止帧？）"
+                )
+            print(f"[from_pickle_transitions] action_norm filter: kept "
+                  f"{len(all_transitions)}/{n_before} ({n_dropped} zero-action dropped)")
+
+        # 可选：HG-DAgger 模式，只保留 infos["is_intervention"]=True 的帧。
+        # 老 demo（collect_demo_task_policy.py 采的，全程介入）没有这个 key，下面
+        # 第 686 行 .get("is_intervention", True) 默认 True，所以老 pkl 加 intervention_only=True
+        # 也是全保留，向后兼容。新 dagger pkl（deploy_bc_with_dagger.py 采的，自主+介入混合）
+        # 在 intervention_only=True 时只取人类示范帧，符合 HG-DAgger 标准做法。
+        if intervention_only:
+            n_before = len(all_transitions)
+            all_transitions = [
+                t for t in all_transitions
+                if bool((t.get("infos") or {}).get("is_intervention", True))
+            ]
+            n_dropped = n_before - len(all_transitions)
+            if not all_transitions:
+                raise ValueError(
+                    f"intervention_only=True 过滤后 0 条 transition 剩余 "
+                    f"（原 {n_before} 条全是自主帧？检查 dagger pkl 是否为空 episode）"
+                )
+            print(f"[from_pickle_transitions] intervention_only filter: kept "
+                  f"{len(all_transitions)}/{n_before} ({n_dropped} autonomous dropped)")
 
         if capacity is None:
             capacity = len(all_transitions)
