@@ -334,6 +334,23 @@ def add_actor_information_and_train(
 
     assert isinstance(policy, nn.Module)
 
+    # 诊断：刚 load 完的 policy 关键 norm + 加载路径，确认文件内容是否匹配预期。
+    # 用户场景里 PRE-warmup norm = corrupted 1.13 但 BC ckpt 文件 = 0.98，
+    # 怀疑 rsync 残留 / symlink 错位 / from_pretrained 走了别的路径。
+    try:
+        import os as _os
+        _path = cfg.policy.pretrained_path
+        _resolved = _os.path.realpath(str(_path)) if _path is not None else "<None>"
+        _ml = float(policy.actor.mean_layer.weight.detach().norm().item())
+        _sl = float(policy.actor.std_layer.weight.detach().norm().item())
+        logging.info(
+            f"[POLICY_LOAD_DIAG] pretrained_path={_path}\n"
+            f"                  realpath={_resolved}\n"
+            f"                  mean_layer.norm={_ml:.4f}, std_layer.norm={_sl:.4f}"
+        )
+    except Exception as _e:
+        logging.warning(f"[POLICY_LOAD_DIAG] failed: {_e}")
+
     policy.train()
 
     push_actor_policy_to_queue(parameters_queue=parameters_queue, policy=policy)

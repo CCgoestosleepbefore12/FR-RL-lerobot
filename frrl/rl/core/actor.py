@@ -266,6 +266,24 @@ def act_with_policy(
         env_cfg=cfg.env,
         ds_meta=ds_meta,
     )
+
+    # 诊断：load 后立刻打 actor 关键 norm + 实际 realpath，与 learner 对比。
+    # 配合 learner 的 [POLICY_LOAD_DIAG] 一起看：两边 norm 应该完全相等
+    # （load 同一个文件）。若不等，说明 actor 和 learner 加载了不同 ckpt。
+    try:
+        import os as _os
+        _path = cfg.policy.pretrained_path
+        _resolved = _os.path.realpath(str(_path)) if _path is not None else "<None>"
+        _ml = float(policy.actor.mean_layer.weight.detach().norm().item())
+        _sl = float(policy.actor.std_layer.weight.detach().norm().item())
+        logging.info(
+            f"[POLICY_LOAD_DIAG] pretrained_path={_path}\n"
+            f"                  realpath={_resolved}\n"
+            f"                  mean_layer.norm={_ml:.4f}, std_layer.norm={_sl:.4f}"
+        )
+    except Exception as _e:
+        logging.warning(f"[POLICY_LOAD_DIAG] failed: {_e}")
+
     policy = policy.eval()
     assert isinstance(policy, nn.Module)
 
