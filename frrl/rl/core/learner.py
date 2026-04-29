@@ -399,7 +399,20 @@ def add_actor_information_and_train(
         warmup_steps = cfg.policy.offline_pretrain_steps
     else:
         warmup_steps = cfg.policy.offline_warmup_steps
-    if offline_replay_buffer is not None and not cfg.resume and warmup_steps > 0:
+    # warmup gate：常规 fresh start（cfg.resume=False）或 BC pretrain ckpt 首次进 online
+    # （cfg.resume=True 但 interaction_step=0，BC 没跑 online 交互）都需要 warmup。
+    # mid-online resume（interaction_step>0）跳过 —— 之前 warmup 已 done，不重复浪费。
+    # BC pretrain 的 training_state.pt 显式写 interaction_step=0，靠这个识别。
+    is_fresh_resume_after_pretrain = cfg.resume and interaction_step_shift == 0
+    if offline_replay_buffer is not None and warmup_steps > 0 and (
+        not cfg.resume or is_fresh_resume_after_pretrain
+    ):
+        if is_fresh_resume_after_pretrain:
+            logging.info(
+                f"[LEARNER] BC-pretrain resume detected (interaction_step=0): "
+                f"running warmup for {warmup_steps} steps so critic calibrates on demo "
+                f"before online phase. freeze_actor_in_warmup={cfg.policy.freeze_actor_in_warmup}."
+            )
         logging.info(f"[LEARNER] Warmup: pre-training on offline demo for {warmup_steps} steps...")
         offline_warmup_iter = offline_replay_buffer.get_iterator(
             batch_size=batch_size * 2, async_prefetch=async_prefetch, queue_size=2
