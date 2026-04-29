@@ -681,6 +681,24 @@ def add_actor_information_and_train(
                 batch_size=batch_size, async_prefetch=async_prefetch, queue_size=2
             )
 
+        # critic_only_online_steps 期间，actor 冻在 BC ckpt（_should_freeze_actor 守
+        # actor.step），但 shared encoder 没冻 → critic_loss 通过 encoder 反传，
+        # encoder 漂移 2000 步后 actor head 见到 critic-改过的 feature → 完全 OOD →
+        # 行为崩坏（用户报"5-6min 后开始乱动"对应 critic_only 完成 actor 解冻时刻）。
+        # 修法：critic_only 阶段同时冻 encoder 可训部分（DINOv3 backbone 已 frozen
+        # 不动）。actor 解冻时一并放开 encoder 让两者协同学习。
+        # 仅切换非 image_encoder 子树的 param（image_encoder.* 由 freeze_image_encoder
+        # 永久冻 backbone，不能在这里被 True 化）。
+        if not hasattr(policy, "_critic_only_encoder_params"):
+            policy._critic_only_encoder_params = [
+                p for n, p in policy.encoder_critic.named_parameters()
+                if not n.startswith("image_encoder.")
+            ]
+        _target_grad = not _should_freeze_actor(cfg, len(replay_buffer))
+        for _p in policy._critic_only_encoder_params:
+            if _p.requires_grad != _target_grad:
+                _p.requires_grad = _target_grad
+
         time_for_one_optimization_step = time.time()
         for _ in range(utd_ratio - 1):
             # Sample from the iterators
