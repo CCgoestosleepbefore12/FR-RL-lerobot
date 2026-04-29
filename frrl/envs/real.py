@@ -305,14 +305,18 @@ class FrankaRealEnv(gym.Env):
                 bias = np.zeros(7, dtype=np.float32)
             self._bias_monitor.update(self.q_true, self.q, bias)
         rinfo = self.compute_reward(obs)
-        # Separate terminated (task success / user stop) from truncated (time limit):
-        # gymnasium's bootstrap logic relies on this split (terminated disables bootstrap,
-        # truncated keeps it). Conflating both into `done` silently biases Q estimates.
-        terminated = bool(rinfo["terminal"] or self.terminate)
-        truncated = self.curr_path_length >= self.config.max_episode_length
-        # When truncation happens before the human presses a key, clear the
+        # hil-serl 约定：每集必须有明确 success/fail 标签，timeout 即 fail。
+        # 把"操作员没按键的超时"提升为 terminated → SAC td_target 里 (1-done) 闸把
+        # V(timeout_state) 折算到 0（明确负信号），比保留 truncated 走 bootstrap
+        # 估值出来的"灰色 Q"对 critic 更有用。Backspace 走 discard 路径不进 buffer，
+        # 不受此处影响；Enter/Space 已经在 rinfo["terminal"] 里给 True。
+        terminated_natural = bool(rinfo["terminal"] or self.terminate)
+        hit_time_limit = self.curr_path_length >= self.config.max_episode_length
+        terminated = terminated_natural or hit_time_limit
+        truncated = False  # keyboard backend 下 truncated 不再使用，全部走 terminated
+        # When time limit hit before the human presses a key, clear the
         # listener so the next reset() blocks on S as expected.
-        if truncated and not terminated and self._keyboard_reward is not None:
+        if hit_time_limit and not terminated_natural and self._keyboard_reward is not None:
             self._keyboard_reward.mark_episode_ended()
         # Consume intervention flag set by upstream before step().
         is_intervention = self._is_intervention_pending
