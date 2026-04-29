@@ -85,12 +85,13 @@ class FrankaRealConfig:
     })
 
     # 动作缩放: (xyz_m/step, rotation_rad/step, gripper_scale)
-    # P0-3: 0.03 × 10Hz = 0.30 m/s 正好等于 max_cart_speed，避免 0.04 时极限动作
-    # 被 clip_safety 0.75x 非线性压缩、policy 学错动作幅度信念。
+    # 对齐 hil-serl franka_env 经验值 (0.05, 0.1)：rot/xyz 比例 2× 而非 6.7×，
+    # 旋转维不会主导视觉动作。P0-3 不变性：action_scale[0] × hz == max_cart_speed
+    # （0.05 × 10 == 0.50）→ 极限动作不被 clip 非线性压缩，policy 学到 = 实际执行。
     # ⚠️ gripper_scale 必须 ≥ 0.5 / 1.0 = 0.5：_send_gripper_command 用 ±0.5 阈值
     # 判 close/open，policy 输出 ±1（discrete head 解码后）× scale 必须能穿越阈值。
     # 调小到 < 0.5 会让 close/open 永远不触发硬件命令。
-    action_scale: Tuple[float, float, float] = (0.03, 0.2, 1.0)
+    action_scale: Tuple[float, float, float] = (0.05, 0.1, 1.0)
 
     # 笛卡尔安全边界 (6D: x,y,z,rx,ry,rz)
     # 来自 scripts/real/sample_workspace_bounds.py 16 点采样 (2026-04-25)，
@@ -158,10 +159,12 @@ class FrankaRealConfig:
     # Episode 控制
     max_episode_length: int = 300   # 30s @ 10Hz; 20s (200) 不够做 pick-place
     hz: int = 10
-    # 末端直线速度安全上限 (m/s)。配合 action_scale[0]=0.03 × 10Hz = 0.30 m/s，
+    # 末端直线速度安全上限 (m/s)。配合 action_scale[0]=0.05 × 10Hz = 0.50 m/s，
     # 极限动作刚好不会被 clip → policy 学到的动作幅度与执行幅度一致。
-    # 若 action_scale 调大，runtime clip 会非线性压缩，建议同步调 max_cart_speed。
-    max_cart_speed: float = 0.30
+    # ⚠️ 0.30 → 0.50 是真实安全侧改动：动量 +67%，撞击响应距离变长。建议放工件
+    # 之前先空跑 reset 路径 + 几集随机 episode 确认轨迹仍在 abs_pose_limit_low/high
+    # 内、夹爪不会撞桌。若 action_scale 调小回 0.03，记得同步把这个值降回 0.30。
+    max_cart_speed: float = 0.50
     gripper_sleep: float = 0.6
     joint_reset_period: int = 0  # N episode 做一次关节重置，0=不做
 
