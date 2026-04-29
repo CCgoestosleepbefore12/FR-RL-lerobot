@@ -702,9 +702,33 @@ def update_policy_parameters(policy: SACPolicy, parameters_queue: Queue, device)
         # - Skip encoder params entirely when freeze_vision_encoder=True
         # - Ensure discrete_critic gets correct encoder state (currently uses encoder_critic)
 
-        # Load actor state dict
+        # 诊断：load 前后取关键 layer 的 norm 看 push 是否真的是 no-op。BC ckpt 一致时
+        # 应该 norm 完全相等；若不等说明 learner 那边的 policy 在加载 ckpt 后被改过
+        # （比如 to(device) 引入精度差，或 critic warmup 通过 shared encoder 改了 actor）。
+        #
+        # mean_layer 是 actor head 的核心层，diff 直接对应 actor 输出漂移。
         actor_state_dict = move_state_dict_to_device(state_dicts["policy"], device=device)
+        before_norm = float(policy.actor.mean_layer.weight.detach().norm().item())
         policy.actor.load_state_dict(actor_state_dict)
+        after_norm = float(policy.actor.mean_layer.weight.detach().norm().item())
+        # encoder 第一个可训层（spatial_embeddings.kernel 通常是 image projection）
+        try:
+            enc_first = next(p for n, p in policy.actor.encoder.named_parameters() if p.requires_grad)
+            enc_norm = float(enc_first.detach().norm().item())
+        except StopIteration:
+            enc_norm = float("nan")
+        diff = abs(after_norm - before_norm)
+        if diff > 1e-8:
+            logging.warning(
+                f"[ACTOR] PARAM DRIFT detected on actor.mean_layer.weight: "
+                f"before={before_norm:.6f}, after={after_norm:.6f}, diff={diff:.2e} | "
+                f"encoder first trainable param norm={enc_norm:.6f}"
+            )
+        else:
+            logging.info(
+                f"[ACTOR] push was effectively no-op (mean_layer norm unchanged: "
+                f"{after_norm:.6f}, encoder_norm={enc_norm:.6f})"
+            )
 
         # Load discrete critic if present
         if hasattr(policy, "discrete_critic") and "discrete_critic" in state_dicts:
