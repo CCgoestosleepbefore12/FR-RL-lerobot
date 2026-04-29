@@ -230,6 +230,12 @@ class SACConfig(PreTrainedConfig):
     # entropy bonus 消失、policy 在真机零探索。只在 offline warmup/pretrain 期间冻，
     # 进入 online phase 后正常学。
     freeze_temperature_in_pretrain: bool = True
+    # 同上保护 actor：BC resume 后的 warmup 在 demo offline buffer 上训 critic，
+    # 但此时 critic 是 random init，actor + critic 联合更新会让 actor gradient
+    # = -∇(α·log_prob) - ∇min_q 里 min_q 项乱推 actor 偏离 BC ckpt，导致 online
+    # phase 第二条 episode 起 actor 行为崩坏。symmetric 于 critic_only_online_steps
+    # 在 online 阶段冻 actor 等 critic calibrate。建议 BC resume + warmup 流程开。
+    freeze_actor_in_warmup: bool = True
     # Gradient clipping norm for the SAC algorithm
     grad_clip_norm: float = 40.0
 

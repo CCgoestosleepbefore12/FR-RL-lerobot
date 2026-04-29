@@ -443,7 +443,11 @@ def add_actor_information_and_train(
                 optimizers["discrete_critic"].step()
 
             # Actor + temperature
-            if i % policy_update_freq == 0:
+            # freeze_actor_in_warmup（默认 True）：BC resume 流程关键 —— warmup
+            # 期 critic 是 random init，actor 跟着学会被 ∇min_q 错误项推飞，下一个
+            # online episode 起就崩。冻 actor 等 critic 在 demo 上先 calibrate。
+            # symmetric 于 critic_only_online_steps 在 online 阶段做的事。
+            if i % policy_update_freq == 0 and not policy.config.freeze_actor_in_warmup:
                 loss_actor = policy.forward(forward_batch, model="actor")["loss_actor"]
                 optimizers["actor"].zero_grad()
                 loss_actor.backward()
