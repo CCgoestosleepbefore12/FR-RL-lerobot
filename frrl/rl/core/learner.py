@@ -435,6 +435,23 @@ def add_actor_information_and_train(
                 f"[LEARNER] freeze_actor_in_warmup: 冻结 {n_frozen} 个 encoder param "
                 f"防止 critic_loss 改 shared encoder 让 actor head 失配"
             )
+
+        # 诊断：snapshot warmup 开始前 actor head + encoder 关键 param 的 norm。warmup
+        # 结束后再算一次对比；如果差异显著说明 freeze 没真冻到（可能是 optimizer 状态、
+        # BatchNorm running stats 或别的隐藏路径）。理想情况这 6 个 norm 应该完全一致。
+        def _key_norms() -> dict[str, float]:
+            ns = {}
+            ns["actor.mean_layer.weight"] = float(policy.actor.mean_layer.weight.detach().norm().item())
+            ns["actor.std_layer.weight"] = float(policy.actor.std_layer.weight.detach().norm().item())
+            ns["actor.network.net.0.weight"] = float(policy.actor.network.net[0].weight.detach().norm().item())
+            # 第一个 trainable encoder param（spatial_embeddings 之类，DINOv3 frozen 不算）
+            for n, p in policy.encoder_critic.named_parameters():
+                if p.requires_grad or any(rg for _, rg in encoder_grad_snapshot if _ is p):
+                    ns[f"encoder.{n}"] = float(p.detach().norm().item())
+                    break
+            return ns
+        norms_pre_warmup = _key_norms()
+        logging.info(f"[WARMUP_DIAG] PRE-warmup norms: {norms_pre_warmup}")
         offline_warmup_iter = offline_replay_buffer.get_iterator(
             batch_size=batch_size * 2, async_prefetch=async_prefetch, queue_size=2
         )
@@ -512,6 +529,26 @@ def add_actor_information_and_train(
         # 然失配）。
         for p, was_grad in encoder_grad_snapshot:
             p.requires_grad = was_grad
+
+        # 诊断：warmup 后再算一次 norm，对比 PRE-warmup。如果 actor 任何一个 norm
+        # 变化 > 1e-6，说明 freeze 没真生效，warmup 在悄悄改 actor head。
+        norms_post_warmup = _key_norms()
+        logging.info(f"[WARMUP_DIAG] POST-warmup norms: {norms_post_warmup}")
+        max_diff = 0.0
+        max_key = ""
+        for k in norms_pre_warmup:
+            if k in norms_post_warmup:
+                d = abs(norms_post_warmup[k] - norms_pre_warmup[k])
+                if d > max_diff:
+                    max_diff, max_key = d, k
+        if max_diff > 1e-6:
+            logging.warning(
+                f"[WARMUP_DIAG] PARAM DRIFT during warmup despite freeze! "
+                f"max_diff={max_diff:.6e} on '{max_key}': "
+                f"{norms_pre_warmup.get(max_key)} -> {norms_post_warmup.get(max_key)}"
+            )
+        else:
+            logging.info(f"[WARMUP_DIAG] freeze 生效，所有 actor head + encoder norm 不变 (max_diff={max_diff:.2e})")
 
         push_actor_policy_to_queue(parameters_queue, policy)
         logging.info(f"[LEARNER] Warmup complete. Pushed initial policy to Actor.")
