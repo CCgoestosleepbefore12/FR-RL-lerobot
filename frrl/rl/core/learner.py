@@ -1211,6 +1211,25 @@ def handle_resume_logic(cfg: TrainRLServerPipelineConfig) -> TrainRLServerPipeli
     checkpoint_cfg_path = os.path.join(checkpoint_dir, PRETRAINED_MODEL_DIR, "train_config.json")
     checkpoint_cfg = TrainRLServerPipelineConfig.from_pretrained(checkpoint_cfg_path)
 
+    # CRITICAL FIX: cfg.validate()（train.py:80-103 elif self.resume 分支）已经把
+    # cfg.policy.pretrained_path 设成 `<checkpoint_dir>/pretrained_model`，但上面
+    # `from_pretrained(checkpoint_cfg_path)` 用 JSON 里的字段构造了一个全新的
+    # checkpoint_cfg。BC ckpt 保存的 train_config.json 里 pretrained_path=None，
+    # 直接覆盖会让 checkpoint_cfg.policy.pretrained_path=None，下游 make_policy
+    # 走 else 分支用随机权重初始化 actor！actor 进程不调 handle_resume_logic 所
+    # 以幸免，但 learner 进程会从 random init 训练，actor 端看似 BC 行为只是 actor
+    # 自己加载对了；每次 learner push 都是 random init 训练后的污染权重。
+    #
+    # 修法：把 validate 设过的 pretrained_path 从原 cfg 复刻到 checkpoint_cfg。
+    # getattr(_, _, None) 兜底测试里的 SimpleNamespace mock（不带 pretrained_path）。
+    _orig_pretrained_path = getattr(getattr(cfg, "policy", None), "pretrained_path", None)
+    if _orig_pretrained_path is not None:
+        checkpoint_cfg.policy.pretrained_path = _orig_pretrained_path
+        logging.info(
+            f"[RESUME] preserving pretrained_path from cfg.validate(): "
+            f"{_orig_pretrained_path}"
+        )
+
     # 白名单覆盖：把当前命令行/JSON 里的 Phase 2 超参写回 checkpoint cfg。
     # 只在值真的变化时打日志，避免 resume 正常路径刷屏。
     # 旧 ckpt 可能完全没有这些字段（Phase 2 引入之前的版本），用 sentinel default
