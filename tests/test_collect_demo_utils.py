@@ -82,8 +82,10 @@ class TestMakeConfig:
         assert cfg.gripper_locked == "none"
         # 100 step / 10s @ 10Hz，对齐 hil-serl ram_insertion horizon
         assert cfg.max_episode_length == 100
-        assert cfg.random_reset is True
-        assert cfg.random_xy_range == 0.05
+        # baseline validation 阶段 random_reset 关掉、xy_range=0：物块位置由操作员手放
+        # 提供 variation，避免叠加 settle 残差。pipeline 跑通后再恢复 True/0.05。
+        assert cfg.random_reset is False
+        assert cfg.random_xy_range == 0.0
 
     def test_wipe_task_has_locked_gripper_and_long_episode(self):
         cfg = make_config(task="wipe", use_bias=True)

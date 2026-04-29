@@ -170,8 +170,9 @@ class TestConfigFileIntegrity:
         assert isinstance(cfg, FrankaRealConfig)
         assert cfg.gripper_locked == "none"
         assert cfg.max_episode_length == 100
-        assert cfg.random_reset is True
-        assert cfg.random_xy_range == 0.05
+        # baseline validation 阶段 random_reset 关掉，避免叠加 settle 残差
+        assert cfg.random_reset is False
+        assert cfg.random_xy_range == 0.0
         assert isinstance(cfg.encoder_bias_config, EncoderBiasConfig)
         assert cfg.encoder_bias_config.target_joints == [0]
         # pickup demo 路径与 collect_demo_task_policy.py 默认 output_dir 必须一致
