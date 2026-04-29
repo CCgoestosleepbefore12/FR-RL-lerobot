@@ -28,7 +28,7 @@
             "random_reset": true,
             "random_xy_range": 0.05,
             "encoder_bias_config": {
-                "enable": true,
+                "enable": false,
                 "error_probability": 1.0,
                 "target_joints": [
                     0
@@ -138,8 +138,8 @@
             }
         },
         "discount": 0.97,
-        "temperature_init": 0.05,
-        "target_entropy": -2.0,
+        "temperature_init": 0.1,
+        "target_entropy": -3.5,
         "use_backup_entropy": false,
         "num_critics": 2,
         "critic_lr": 0.0003,
@@ -160,7 +160,7 @@
             "activations": "Tanh"
         },
         "policy_kwargs": {
-            "std_max": 5.0
+            "std_max": 1.0
         },
         "actor_learner_config": {
             "learner_host": "127.0.0.1",
