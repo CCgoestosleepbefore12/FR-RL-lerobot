@@ -43,34 +43,40 @@ class FrankaGripperServer(GripperServer):
         self.binary_gripper_pose = 0
 
     def close(self):
-        """空抓不再 ABORTED：close 改用 MoveAction（纯位置控制），避开
-        GraspAction 在没检测到 force 接触时 timeout → ABORTED 的语义。
+        """用 GraspAction 闭合 —— 空抓时 RT PC 会打 `ABORTED` log（因为没检测到
+        force 接触，libfranka 视为失败），但功能上 gripper 仍然闭合到位。
 
-        权衡：
-        - ✅ 训练初期 random policy 大量空抓 close 不再污染 RT PC log
-        - ✅ 抓住物体时 finger 物理 stall，width 自动停在物体厚度处（hardware
-             阻抗保证不会硬挤），效果与 GraspAction 末态一致
-        - ❌ 失去 libfranka 的 grasp success/fail 反馈信号 —— task policy 用
-             相机 + 人按 Enter 给奖励，本来就不依赖该信号；如未来要做基于力
-             反馈的 reward，再切回 GraspAction
-        - width=0.005：接近全闭，物体厚度 ≥ 5mm 都能 stall 在物体上
+        关键：grasp 和 move 用不同 action server (`/grasp/goal` vs `/move/goal`)，
+        各自独立 lifecycle。grasp ABORTED 只污染 grasp server，**不影响后续
+        open() 的 MoveAction**。这是 close 必须用 GraspAction 的理由（早先 0a81f17
+        切 MoveAction 是为了消空抓 ABORTED log，但代价是 close 失败状态污染同
+        publisher 上的 open，导致 open 报 `libfranka gripper: command failed`，
+        2026-04-30 实测复现）。
+
+        epsilon=1 大到任何 width 都视作 success；force=130 是 SERL 默认钳力。
         """
         if self.binary_gripper_pose == 1:
             return
-        msg = MoveActionGoal()
-        msg.goal.width = 0.005
+        msg = GraspActionGoal()
+        msg.goal.width = 0.01
         msg.goal.speed = 0.3
-        self.grippermovepub.publish(msg)
+        msg.goal.epsilon.inner = 1
+        msg.goal.epsilon.outer = 1
+        msg.goal.force = 130
+        self.grippergrasppub.publish(msg)
         self.binary_gripper_pose = 1
 
     def close_slow(self):
-        """同 close()，仅调速 0.3→0.1。不用 GraspAction，理由见 close() docstring。"""
+        """同 close()，仅调速 0.3→0.1。"""
         if self.binary_gripper_pose == 1:
             return
-        msg = MoveActionGoal()
-        msg.goal.width = 0.005
+        msg = GraspActionGoal()
+        msg.goal.width = 0.01
         msg.goal.speed = 0.1
-        self.grippermovepub.publish(msg)
+        msg.goal.epsilon.inner = 1
+        msg.goal.epsilon.outer = 1
+        msg.goal.force = 130
+        self.grippergrasppub.publish(msg)
         self.binary_gripper_pose = 1
 
     def move(self, position: int):
