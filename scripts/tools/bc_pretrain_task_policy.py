@@ -68,7 +68,7 @@ def main():
     ap.add_argument("--steps", type=int, default=20000,
                     help="对齐 hil-serl train_bc.py 默认 20k。50 demo × 100 step = 5k transitions, "
                          "20k step batch=128 ≈ 64 epoch，足够小数据 BC 收敛")
-    ap.add_argument("--batch-size", type=int, default=128)
+    ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--action-norm-min", type=float, default=1e-6,
@@ -82,6 +82,10 @@ def main():
                          "0=禁用（仅训 continuous actor）。仅当 cfg.policy.num_discrete_actions != None 时生效")
     ap.add_argument("--save-tail-every", type=int, default=0,
                     help="对齐 hil-serl 末尾密集保存：>0 时训练最后 100 步内每 N 步存一次 ckpt（默认仅末步存）")
+    ap.add_argument("--save-every-step", type=int, default=0,
+                    help="贯穿全训练每 N 步存一次 ckpt（不限于末尾），用于做训练步数收敛对比。"
+                         "默认 0=禁用，仅末步存。例：--save-every-step 5000 --steps 30000 → "
+                         "在 step 5000/10000/15000/20000/25000 各存一份，加末步 30000 共 6 份 ckpt。")
     ap.add_argument("--intervention-only", action="store_true",
                     help="HG-DAgger 模式：只载入 infos.is_intervention=True 的 transition。"
                          "老 demo（无该 key）默认全是 intervention（全程人 teleop），向后兼容；"
@@ -299,6 +303,23 @@ def main():
                        os.path.join(tail_state, "training_state.pt"))
             policy.actor.encoder_is_shared = False  # 恢复 BC 模式
             logging.info(f"[BC] tail ckpt saved at step {step} → {tail_dir}")
+
+        # 贯穿训练每 N 步存 ckpt：用于跨训练阶段做收敛对比
+        if (
+            args.save_every_step > 0
+            and step % args.save_every_step == 0
+            and step != args.steps  # 末步走最后那条 save 逻辑
+        ):
+            mid_dir = get_step_checkpoint_dir(cfg.output_dir, args.steps, step)
+            policy.actor.encoder_is_shared = _original_encoder_is_shared
+            save_checkpoint(checkpoint_dir=mid_dir, step=step, cfg=cfg, policy=policy,
+                           optimizer={"actor": optimizer}, scheduler=None)
+            mid_state = os.path.join(mid_dir, TRAINING_STATE_DIR)
+            os.makedirs(mid_state, exist_ok=True)
+            torch.save({"step": step, "interaction_step": 0},
+                       os.path.join(mid_state, "training_state.pt"))
+            policy.actor.encoder_is_shared = False
+            logging.info(f"[BC] mid-train ckpt saved at step {step} → {mid_dir}")
 
     # ============================================================
     # Save checkpoint (SAC-resumable schema)
