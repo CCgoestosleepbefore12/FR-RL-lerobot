@@ -470,8 +470,10 @@ def main():
     ap.add_argument("--no-reset-on-recovery", action="store_true",
                     help="BACKUP/HOMING → TASK 转换时不强制 go_home_to_reset_pose，让 supervisor "
                          "的 HOMING 自然把 TCP 拉回 tcp_start，BC 接着 episode 半路 resume。"
-                         "实验性：BACKUP 期间场景可能已变（手碰过物块、夹爪状态变了），BC 看到的 "
-                         "tcp_start 状态可能 OOD。仅短任务实验用，pickup 默认仍走 full reset。")
+                         "⚠️ 2026-04-30 实测 pickup 任务下基本无法完成：BACKUP 期间场景几乎必变"
+                         "（手就算只触发避让没碰物块，gripper 状态/物块视觉位置已与 BC 训练分布偏离），"
+                         "BC 在 tcp_start resume 后乱动 / 卡死。**pickup 不要用此 flag**，留作未来"
+                         "wipe / 多阶段长 episode 任务的对比实验入口。")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
