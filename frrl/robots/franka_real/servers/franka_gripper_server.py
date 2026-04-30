@@ -54,17 +54,11 @@ class FrankaGripperServer(GripperServer):
         2026-04-30 实测复现）。
 
         epsilon=1 大到任何 width 都视作 success；force=130 是 SERL 默认钳力。
-
-        2026-04-30 width 0.01 → 0.025：原 0.01m (1cm) + 130N 把海绵这类软物压扁
-        到 ~3mm (gripper_pos≈0.04)，触发 deploy 脚本 auto-success 的 gripper_held_min
-        OUT range 误判。改 0.025m (2.5cm) 让 gripper 提前停在海绵表面 (~30mm)，
-        gripper_pos ≈ 0.375 落在 [0.05, 0.6] 范围内。force 不变保持硬物钳力。
-        副作用：物体厚度 < 2.5cm 时抓不紧（pickup 任务用海绵不会发生）。
         """
         if self.binary_gripper_pose == 1:
             return
         msg = GraspActionGoal()
-        msg.goal.width = 0.025
+        msg.goal.width = 0.01
         msg.goal.speed = 0.3
         msg.goal.epsilon.inner = 1
         msg.goal.epsilon.outer = 1
@@ -77,7 +71,7 @@ class FrankaGripperServer(GripperServer):
         if self.binary_gripper_pose == 1:
             return
         msg = GraspActionGoal()
-        msg.goal.width = 0.025
+        msg.goal.width = 0.01
         msg.goal.speed = 0.1
         msg.goal.epsilon.inner = 1
         msg.goal.epsilon.outer = 1
