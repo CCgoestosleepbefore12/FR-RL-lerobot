@@ -12,12 +12,13 @@
 2. [双相机硬件 + 命名](#双相机硬件命名)
 3. [Keyboard Reward 协议](#keyboard-reward-协议)
 4. [Demo 采集](#demo-采集)
-5. [Offline Pretrain](#offline-pretrain)
-6. [Online HIL 训练](#online-hil-训练)
-7. [HG-DAgger 介入数据迭代](#hg-dagger-介入数据迭代)
-8. [配置文件参考](#配置文件参考)
-9. [常见问题](#常见问题)
-10. [相关文件](#相关文件)
+5. [算法说明：BC 与 SAC 的关系](#算法说明bc-与-sac-的关系)
+6. [Offline Pretrain](#offline-pretrain)
+7. [Online HIL 训练](#online-hil-训练)
+8. [HG-DAgger 介入数据迭代](#hg-dagger-介入数据迭代)
+9. [配置文件参考](#配置文件参考)
+10. [常见问题](#常见问题)
+11. [相关文件](#相关文件)
 
 ---
 
@@ -152,6 +153,101 @@ python scripts/tools/inspect_demo_pickle.py data/task_policy_demos/*.pkl
 ```
 
 打印 transition 数量、observation shape / dtype、reward/done 统计，并尝试 load 进 `ReplayBuffer`（走 adapter 全链路）。
+
+---
+
+## 算法说明：BC 与 SAC 的关系
+
+代码里 `bc_pretrain_task_policy.py` / `pretrain_task_policy.py` / `learner.py` 看起来都跟 SAC 网络绑在一起，但实际跑的算法可以是纯 BC、纯 SAC、或 SAC + BC pretrain 混合。先拆开两者的算法本质，再说为什么共享一套网络代码。
+
+### 算法对比
+
+| | BC (Behavior Cloning) | SAC (Soft Actor-Critic) |
+|---|---|---|
+| 类型 | 纯监督学习 | Off-policy RL |
+| 数据来源 | 人示范的 (obs, action) 对 | 自采 transition (obs, action, reward, next_obs) |
+| Loss | `-log π(a_demo \| obs)` （NLL on tanh-Gaussian） | actor: `-Q(s, π(s)) - α·H(π)`; critic: Bellman TD error |
+| 目标 | 模仿示范分布 | 最大化 expected return |
+| 需要 reward | ❌ | ✅ |
+| 需要 critic | ❌ | ✅ 双 Q-net + target net |
+| 需要 entropy/temperature | ❌ | ✅ α 温度 + entropy bonus |
+| 失败模式 | OOD 状态行为未定义 | actor 跟着错误 critic gradient 漂飞 |
+| 调参面 | std_min/max，lr，image aug | 上面那些 + critic_lr + utd + γ + α + temperature_init + warmup |
+
+BC 的极简性正是它对小数据真机场景的优势：没 critic 这一层，就没"critic 还没 calibrate 但 actor 已经在跟它学"的问题。
+
+### 为什么 codebase 里 BC 和 SAC 共享 `SACPolicy` 类
+
+工程取巧，不是算法设计。`scripts/tools/bc_pretrain_task_policy.py` 里你能看到：
+
+```python
+policy = SACPolicy(config=cfg.policy)   # ← 用 SAC 网络结构容器
+...
+loss_actor = -log_prob.mean()            # ← 但 loss 是 BC 的 NLL
+optimizer.step()                         # ← 只更新 actor + encoder（+ 可选 discrete_critic）
+```
+
+三个理由：
+1. **复用网络定义**：`SACPolicy` 已经把 encoder（DINOv3 / ResNet）+ actor MLP + mean/std layer + discrete_critic 都封装好了，BC 直接用就行，省得另写一份 ImitationPolicy 类
+2. **ckpt schema 兼容**：保存时按 SAC 格式（含 critic_ensemble 的 random init state、target_critic、temperature 等），未来想 `--resume` 接 SAC online 训练时直接加载，actor 是 BC 训过的、critic 从零起手在线 calibrate
+3. **inference 路径统一**：deploy 脚本调 `policy.select_action(batch)`，不管 ckpt 是 BC 训的还是 SAC 训的，前向逻辑一样（critic 在 deploy 时根本不参与决策）
+
+### BC pretrain 期间动哪些参数
+
+```
+训练（requires_grad=True 且 optimizer 收）：
+  policy.actor.encoder.spatial_embeddings    ← 学视觉空间到 latent 的投影
+  policy.actor.encoder.post_encoders          ← per-camera 后处理 MLP
+  policy.actor.encoder.state_encoder          ← proprio MLP
+  policy.actor.network                        ← actor 主 MLP
+  policy.actor.mean_layer                     ← 输出 action 均值
+  policy.actor.std_layer                      ← 输出 action log_std（NLL 关键，否则 std 停 random init）
+  policy.discrete_critic                      ← 可选，开 --discrete-bc-weight 时用 CE loss 学 gripper 三态
+
+冻结（requires_grad=False 或不进 optimizer）：
+  policy.actor.encoder.image_encoder          ← DINOv3 backbone, freeze_vision_encoder=True 默认冻
+  policy.critic_ensemble                      ← SAC critic（BC 不用 reward 学不了 Q）
+  policy.critic_target                        ← target critic
+  policy.log_alpha                            ← temperature
+```
+
+⚠️ **BC 期间一个关键修正**：默认 SAC 训练时 actor forward 走 `detach=True`（让 encoder 由 critic loss 更新，actor loss 不回传到 encoder）。BC 没有 critic loss，必须把 `policy.actor.encoder_is_shared=False` 临时关掉，让 actor NLL loss 直接训 encoder。否则 encoder 停在 random init，actor MLP 头只能在 random feature 上拟合，部署时输出近常数。`bc_pretrain_task_policy.py:148-150` 显式做了这个修正，保存 ckpt 前再恢复成 `True` 让 SAC online resume 行为正确。
+
+### 训练流水线全景
+
+```
+Demo 采集 (collect_demo_task_policy.py)
+   ↓ data/{task}_demos/*.pkl
+   │
+   ├─→ 路径 A: BC pretrain (bc_pretrain_task_policy.py)
+   │       ↓ checkpoints/{task}_bc_*/checkpoints/N/pretrained_model
+   │       │     (SAC-schema ckpt：actor + encoder 已训，critic 全 random init)
+   │       │
+   │       ├─→ deploy_bc_inference.py     纯 BC 推理，critic 不参与
+   │       ├─→ deploy_bc_with_dagger.py    BC + 介入采集，纯推理
+   │       │       ↓ data/{task}_dagger/*.pkl
+   │       │       └─→ 回到 BC pretrain --intervention-only 重训 (HG-DAgger 迭代)
+   │       │
+   │       └─→ (放弃) HIL-SAC online       --resume 加载 BC ckpt → 解冻 critic + actor
+   │                                         在线 SAC 训练，actor 沿 critic gradient 优化
+   │
+   └─→ 路径 B: SAC pretrain (pretrain_task_policy.py)
+           ↓ 同样 SAC-schema ckpt 但 critic 已被 demos 训过（Bellman bootstrap on demos）
+           └─→ HIL-SAC online 路径
+```
+
+**当前推荐路径**：路径 A 的 BC pretrain → `deploy_bc_with_dagger.py` 介入采集 → BC 重训迭代。路径 B 的 SAC pretrain + HIL-SAC online 在 50–200 demo 小数据 + sparse reward 场景下 actor 解冻后大幅漂移已多次复现（`fix(learner): resume 时保留 cfg.validate() 设的 pretrained_path` 等多个 commit 是为这条路径修的 bug），不推荐用。
+
+### Bug 修复历史与算法路径的对应
+
+之前出现的"actor 解冻后第二个 episode 乱动"系列 bug，**全部发生在路径 B 的 BC pretrain → HIL-SAC online 切换那一步**：
+
+- `2e939c5` learner resume 时丢了 pretrained_path → BC actor 没加载，用 random init 当 actor
+- `edd64eb` warmup 期 actor 必须冻 → 防 BC 权重被 random critic 错误梯度推飞
+- `4ad1297` warmup 期 shared encoder 也要冻 → 防 critic loss 改 actor 用的 encoder
+- `712b74c` critic_only_online_steps 期间 encoder 也要冻 → 同上理由扩展到 actor 解冻前
+
+BC 自己的训练循环（`bc_pretrain_task_policy.py` 内部，没切到 SAC online）从来没出过这类 bug——因为没有 critic 这一层，不存在"critic 还没好但 actor 已经在跟它学"的状态。
 
 ---
 
