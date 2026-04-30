@@ -296,7 +296,13 @@ def make_pickup_config(
         random_xy_range=0.0,
     )
     cfg.reset_pose = np.array([0.5334, 0.0149, 0.2586, -3.09848, 0.01591, 0.01375])
-    cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, 0.2])
+    # 2026-04-30：rz 范围从 ±0.2 (±11.5°) 扩到 ±π/2 (±90°)，让操作员能转 yaw 抓
+    # 横放物块。pitch (ry) 保持 ±0.2 防夹爪侧倾撞桌；roll (rx) 保持 ±π 全自由。
+    # ⚠️ 此前用 ±0.2 采的 50 demo / 30 dagger 仍在新分布子集内（操作员根本没机会
+    # 推到 ±0.2 以外），不破坏 ckpt 兼容；新 demo 会出现更大 rz 值，BC 学到更广
+    # yaw 分布。
+    cfg.abs_pose_limit_low = np.array([0.386, -0.213, 0.175, -np.pi, -0.2, -np.pi / 2])
+    cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, np.pi / 2])
     # front 相机 ROI：calibration_data/workspace.json 里 select_workspace_roi.py
     # 框选写回的 roi_front_final = [180, 94, 400, 314] (220×220 正方形)，覆盖
     # pickup 工作面。runtime 不读 JSON，需在这里显式接上。
