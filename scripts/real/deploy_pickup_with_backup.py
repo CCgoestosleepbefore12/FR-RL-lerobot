@@ -69,15 +69,21 @@ HOMING_POS_TOL = 0.02
 HOMING_ROT_TOL = 0.05
 
 # ---------- Action scales（per mode）----------
-# TASK 走 BC 训练时的 scale (frrl pickup action_scale=(0.05, 0.1, 1.0))；
-# BACKUP 走 sim 训练 scale (0.025, 0.05)。两者通过 supervisor 切换不同分支。
-TASK_ACTION_SCALE = 0.05      # BC training scale
+# 跟各自训练时的 env 完全对齐，避免训练-部署 mismatch：
+#   TASK:   BC 在 FrankaRealEnv 里训练，target = current + bc_action × 0.05，
+#           rate limit max_cart_speed=0.50（无 LOOKAHEAD）。
+#   BACKUP: sim 训练时有隐式 lookahead × 2，max_cart_speed=0.30，所以 deploy
+#           保留 LOOKAHEAD=2.0 + scale 0.025/0.05（跟 deploy_backup_policy.py 一致）。
+TASK_ACTION_SCALE = 0.05            # BC training scale（frrl pickup action_scale[0]）
 TASK_ROTATION_SCALE = 0.10
+TASK_LOOKAHEAD = 1.0                # BC 训练时无 lookahead
+TASK_MAX_CART_SPEED = 0.50          # frrl pickup max_cart_speed
+
 BACKUP_ACTION_SCALE = 0.025
 BACKUP_ROTATION_SCALE = 0.05
+BACKUP_LOOKAHEAD = 2.0
+BACKUP_MAX_CART_SPEED = 0.30
 
-LOOKAHEAD = 2.0
-MAX_CART_SPEED = 0.30
 TCP_OFFSET = 0.1034
 OBS_STACK = 3
 CTRL_HZ = 10.0
@@ -129,6 +135,16 @@ def send_pose(target_xyz, target_quat_xyzw):
         requests.post(URL + "pose", json={"arr": pose7}, timeout=0.5)
     except requests.exceptions.Timeout:
         pass
+
+
+def align_quat_sign(q, q_ref):
+    """把 q 翻到跟 q_ref 同半球，避免 impedance controller 收到 sign-flipped quat
+    后做 360° slerp。每次 send_pose 之前调用。"""
+    q = np.asarray(q, dtype=np.float64)
+    q_ref = np.asarray(q_ref, dtype=np.float64)
+    if float(np.dot(q, q_ref)) < 0:
+        q = -q
+    return q.tolist()
 
 
 def compute_hand_body_equiv(tcp_pos, quat_xyzw):
@@ -186,69 +202,209 @@ def build_bc_batch(state14, images_dict, device):
     return batch
 
 
+# ---------- 等操作员 + drain（仅当 --wait-operator 时用）----------
+def wait_for_operator_with_camera_drain(hand_detector, cam_mgr, prompt: str):
+    """阻塞等操作员按 Enter，期间 ~20 Hz drain 两个相机的 pyrealsense pipeline。"""
+    import select
+    import sys
+    print(prompt, flush=True)
+    while True:
+        try:
+            hand_detector.get_frames()
+        except Exception:
+            pass
+        try:
+            cam_mgr.get_images()
+        except Exception:
+            pass
+        if select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.readline()
+            return
+        time.sleep(0.05)
+
+
+# ---------- drain-aware sleep（替代 time.sleep，期间持续 drain 相机帧）----------
+def drain_sleep(seconds: float, hand_detector, cam_mgr):
+    """阻塞 `seconds` 秒，期间以 ~20 Hz 持续 drain 两个相机的 pyrealsense
+    pipeline，避免 buffer 堵塞导致 pipeline 进入坏状态（表现为 wait_for_frames
+    超时 / 拿到 stale 帧）。所有 deploy 主循环里的 `time.sleep` 在 hand_detector
+    和 cam_mgr 已经 init 之后都应该改用这个，让 BACKUP 安全网在阻塞期间也活着。
+    """
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            hand_detector.get_frames()
+        except Exception:
+            pass
+        try:
+            cam_mgr.get_images()
+        except Exception:
+            pass
+        time.sleep(0.05)  # ~20 Hz drain rate
+
+
+# ---------- 安全 hand 距离检查（homing 期间 ~20 Hz 调用，发现手就中断）----------
+def check_hand_close_during_homing(hand_detector, d_safe: float):
+    """读相机帧 + 检测 hand，如果 hand 距离机械臂 < d_safe 返回 True。
+
+    复刻主循环的 hand 检测逻辑，给 interpolate_move_safety 用。这一步同时也
+    drain 掉 hand_detector pipeline 一帧（detect 内部调 wait_for_frames）。
+    """
+    try:
+        color, depth = hand_detector.get_frames()
+        state = get_state_true()
+        fk_tcp = np.array(state["pose"][:3], dtype=np.float64)
+        hand_body = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
+        hand = hand_detector.detect(
+            color, depth,
+            exclude_near_flange=hand_body, flange_radius=0.10,
+            exclude_near_tcp=fk_tcp, tcp_radius=0.06,
+        )
+        if hand.active:
+            dist = float(np.linalg.norm(hand.pos_robot - hand_body))
+            return dist < d_safe
+    except Exception:
+        pass
+    return False
+
+
+# ---------- 平滑插值运动 + 安全检查（hand 进 D_SAFE 立即中断）----------
+def interpolate_move_with_drain(start_xyz, start_quat_xyzw, goal_xyz, goal_quat_xyzw,
+                                 timeout: float, hand_detector, cam_mgr,
+                                 d_safe: float, hz: float = 10.0):
+    """从 start 线性插值到 goal，每 0.1s 发一帧 pose；每个 tick 内 ~20 Hz 检查
+    hand 距离，hand < d_safe 立即返回 False（caller 中断 homing）。
+
+    返回：True = 完成全部插值；False = hand 检测中断。
+    """
+    steps = max(int(timeout * hz), 2)
+    dt = 1.0 / hz
+    start_xyz = np.asarray(start_xyz, dtype=np.float64)
+    goal_xyz = np.asarray(goal_xyz, dtype=np.float64)
+    start_quat = np.asarray(start_quat_xyzw, dtype=np.float64)
+    goal_quat = np.asarray(goal_quat_xyzw, dtype=np.float64)
+    if float(np.dot(start_quat, goal_quat)) < 0:
+        goal_quat = -goal_quat
+
+    for i in range(1, steps + 1):
+        t = i / steps
+        xyz = start_xyz + t * (goal_xyz - start_xyz)
+        quat = (1.0 - t) * start_quat + t * goal_quat
+        quat = quat / (np.linalg.norm(quat) + 1e-12)
+        send_pose(xyz, list(quat))
+
+        # tick 内 ~20 Hz 检查 hand 距离 + drain wrist cam pipeline
+        end_t = time.time() + dt
+        while time.time() < end_t:
+            if check_hand_close_during_homing(hand_detector, d_safe):
+                print(f"[safety] hand intrusion @ homing step {i}/{steps} → abort")
+                return False
+            try:
+                cam_mgr.get_images()
+            except Exception:
+                pass
+            time.sleep(0.05)
+    return True
+
+
 # ---------- Episode reset homing（success 后开新 episode 时复位机械臂）----------
 def go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
-                          lift_clearance=0.1, settle_s=0.5):
+                          hand_detector, cam_mgr, d_safe: float,
+                          lift_clearance=0.08, settle_s=0.5):
     """跟 frrl/envs/real.py:_go_to_reset 同语义的 inline homing。
 
     流程：开夹爪 → PRECISION_PARAM → 抬升 lift_z → 横移到 reset.xy（保 lift_z）→
     下降到 reset_pose → COMPLIANCE_PARAM。供 BC episode 边界使用，让下一集
     起点跟 BC 训练时的 reset 分布一致。
 
+    所有 sleep 期间通过 drain_sleep 持续读相机；插值移动期间每个 tick 也调
+    check_hand_close_during_homing 实时安全检查 —— hand 距离 < d_safe 立即
+    return False，让 caller 中断 homing 把控制权交回主 FSM（自动切 BACKUP）。
+
+    返回：True = 正常完成；False = 中途被 hand 检测中断（caller 应跳过 supervisor.reset，
+    让下一帧 supervisor.step 接管）。
+
     Args:
         reset_pose_6d: 6D [x,y,z,rx,ry,rz]（euler）
         precision_param / compliance_param: 阻抗参数 dict
+        hand_detector / cam_mgr: 给 drain + 安全检查用
+        d_safe: hand 触发 BACKUP 的距离阈值（跟主 FSM 一致）
     """
     print("[homing] return to reset_pose...")
-    # 张开夹爪释放物块
+    # 张开夹爪释放物块（open_gripper 失败不致命，只 log，主要操作往后还能跑）
     try:
         requests.post(URL + "open_gripper", timeout=1.0)
-    except Exception:
-        pass
-    time.sleep(0.6)
+    except Exception as e:
+        print(f"[homing] open_gripper warning: {e}")
+    drain_sleep(0.6, hand_detector, cam_mgr)
 
-    # 切 precision 模式（高刚度，跟踪快）
+    # 先 anchor setpoint 到当前 pose，避免切 precision 时 controller 朝旧 setpoint 突跳
+    # （复刻 frrl/envs/real.py:_go_to_reset 第 646-647 行的安全模式）
     try:
-        requests.post(URL + "update_param", json=precision_param, timeout=2.0)
-    except Exception:
-        pass
-    time.sleep(0.3)
+        state_anchor = get_state_biased()
+        anchor_xyz = np.array(state_anchor["pose"][:3], dtype=np.float64)
+        anchor_quat_xyzw = list(state_anchor["pose"][3:])
+        send_pose(anchor_xyz, anchor_quat_xyzw)
+    except Exception as e:
+        print(f"[homing] setpoint anchor failed: {e}, abort homing")
+        return False
+
+    # 切 precision 模式（高刚度，跟踪快）—— 失败要响亮，stiffness mismatch 后续运行不安全
+    try:
+        r = requests.post(URL + "update_param", json=precision_param, timeout=2.0)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"[homing] update_param(precision) failed: {e}, abort homing")
+        return False
+    drain_sleep(0.3, hand_detector, cam_mgr)
 
     # 读当前位姿
     try:
         state = get_state_biased()
     except Exception as e:
         print(f"[homing] getstate failed: {e}, abort homing")
-        return
+        return False
     curr_xyz = np.array(state["pose"][:3], dtype=np.float64)
     curr_quat_xyzw = list(state["pose"][3:])
 
     reset_xyz = np.array(reset_pose_6d[:3], dtype=np.float64)
     reset_quat_xyzw = list(euler_2_quat(np.array(reset_pose_6d[3:])))
 
-    # 三段路径：lift → transit → descend
+    # 三段路径：lift → transit → descend，每段平滑插值 + 实时 hand 安全检查
     lift_z = max(curr_xyz[2] + lift_clearance, reset_xyz[2])
-    # 段1：保 xy 抬升
+
+    # 段1：保 xy 抬升（1.0s，每步 ~1cm/0.1s）
     lift_xyz = curr_xyz.copy()
     lift_xyz[2] = lift_z
-    send_pose(lift_xyz, curr_quat_xyzw)
-    time.sleep(0.6)
-    # 段2：高空横移到 reset.xy + 旋转对齐
+    if not interpolate_move_with_drain(curr_xyz, curr_quat_xyzw, lift_xyz, curr_quat_xyzw,
+                                        timeout=1.0, hand_detector=hand_detector,
+                                        cam_mgr=cam_mgr, d_safe=d_safe):
+        return False  # hand 中断
+
+    # 段2：高空横移到 reset.xy + 旋转对齐（2.0s）
     transit_xyz = reset_xyz.copy()
     transit_xyz[2] = lift_z
-    send_pose(transit_xyz, reset_quat_xyzw)
-    time.sleep(1.2)
-    # 段3：垂直下降到 reset.xyz
-    send_pose(reset_xyz, reset_quat_xyzw)
-    time.sleep(1.5)
+    if not interpolate_move_with_drain(lift_xyz, curr_quat_xyzw, transit_xyz, reset_quat_xyzw,
+                                        timeout=2.0, hand_detector=hand_detector,
+                                        cam_mgr=cam_mgr, d_safe=d_safe):
+        return False
 
-    # 切回 compliance 模式
+    # 段3：垂直下降到 reset.xyz（1.5s，~5cm 下降）
+    if not interpolate_move_with_drain(transit_xyz, reset_quat_xyzw, reset_xyz, reset_quat_xyzw,
+                                        timeout=1.5, hand_detector=hand_detector,
+                                        cam_mgr=cam_mgr, d_safe=d_safe):
+        return False
+
+    # 切回 compliance 模式（失败要响亮，stiffness 不对会让后续 BC 在错误动力学上跑）
     try:
-        requests.post(URL + "update_param", json=compliance_param, timeout=2.0)
-    except Exception:
-        pass
-    time.sleep(settle_s)
+        r = requests.post(URL + "update_param", json=compliance_param, timeout=2.0)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"[homing] update_param(compliance) failed: {e}; ⚠️ controller 可能仍在 precision")
+        return False
+    drain_sleep(settle_s, hand_detector, cam_mgr)
     print("[homing] reset done")
+    return True
 
 
 # ---------- Gripper command（hil-serl convention thresholding）----------
@@ -311,6 +467,11 @@ def main():
                     help="z 抬升触发 success 的阈值 m（reset_z + 此值）")
     ap.add_argument("--wait-operator", action="store_true",
                     help="success 复位后阻塞等待操作员按 Enter 再开下一集（默认 sleep 1.5s 自动继续）")
+    ap.add_argument("--no-reset-on-recovery", action="store_true",
+                    help="BACKUP/HOMING → TASK 转换时不强制 go_home_to_reset_pose，让 supervisor "
+                         "的 HOMING 自然把 TCP 拉回 tcp_start，BC 接着 episode 半路 resume。"
+                         "实验性：BACKUP 期间场景可能已变（手碰过物块、夹爪状态变了），BC 看到的 "
+                         "tcp_start 状态可能 OOD。仅短任务实验用，pickup 默认仍走 full reset。")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -355,7 +516,7 @@ def main():
     # 再 resize 到 128×128（不裁会被拉伸压扁）。
     cam_mgr = RealSenseCameraManager(
         camera_configs={
-            "wrist": {"serial_number": WRIST_CAMERA_SERIAL, "dim": (640, 480), "exposure": 10500},
+            "wrist": {"serial_number": WRIST_CAMERA_SERIAL, "dim": (640, 480), "exposure": 40000},
         },
         image_crop={"wrist": center_square_crop},
         image_size=IMAGE_SIZE,
@@ -384,17 +545,34 @@ def main():
         print(f"[FAIL] controller setup: {e}")
         return
 
-    # ---------- Pickup task config（拿 reset_pose / 阻抗参数给 homing 用） ----------
+    # ---------- Pickup task config（拿 reset_pose / 阻抗参数 / 工作空间边界给 TASK 用） ----------
     task_cfg = make_task_config(task="pickup", use_bias=False, reward_backend="pose")
     reset_pose_6d = task_cfg.reset_pose
     precision_param = task_cfg.precision_param
     compliance_param = task_cfg.compliance_param
+    # TASK 模式用 BC 训练时同款 workspace（abs_pose_limit_low/high），避免 impedance
+    # controller 在桌面 / 工作面以下卡死。BACKUP / HOMING 仍用宽 WORKSPACE_MIN/MAX。
+    task_workspace_min = task_cfg.abs_pose_limit_low[:3].astype(np.float64)
+    task_workspace_max = task_cfg.abs_pose_limit_high[:3].astype(np.float64)
     success_z_threshold = float(reset_pose_6d[2]) + args.lift_threshold
     print(f"[OK] reset_pose.xyz = {np.round(reset_pose_6d[:3], 3)}, "
           f"success_z_threshold = {success_z_threshold:.3f}m")
+    print(f"[OK] TASK workspace: min={task_workspace_min.tolist()}, max={task_workspace_max.tolist()}")
 
-    # 起步先 homing 一次，让机械臂到 reset_pose 准备开始
-    go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param)
+    # 起步先 homing 一次，让机械臂到 reset_pose 准备开始（d_safe 同主 FSM 阈值）
+    # 失败直接 abort —— 启动时 homing 不通就进 main loop 是定时炸弹
+    if not go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
+                                  hand_detector, cam_mgr, d_safe=d_safe):
+        print("[FATAL] 启动 homing 失败（hand 在工作区？stiffness 切换失败？）→ 不进入主循环")
+        try:
+            hand_detector.stop()
+        except Exception:
+            pass
+        try:
+            cam_mgr.close()
+        except Exception:
+            pass
+        return
 
     # ---------- Supervisor ----------
     supervisor = HierarchicalSupervisor(
@@ -403,8 +581,8 @@ def main():
         clear_n_steps=CLEAR_N_STEPS,
         homing_pos_tol=HOMING_POS_TOL,
         homing_rot_tol=HOMING_ROT_TOL,
-        homing_action_scale=MAX_CART_SPEED / CTRL_HZ,
-        homing_rot_action_scale=BACKUP_ROTATION_SCALE * LOOKAHEAD,
+        homing_action_scale=BACKUP_MAX_CART_SPEED / CTRL_HZ,
+        homing_rot_action_scale=BACKUP_ROTATION_SCALE * BACKUP_LOOKAHEAD,
         homing_kp_pos=1.0,
         homing_kp_rot=1.0,
         homing_done_consecutive_n=3,
@@ -417,6 +595,9 @@ def main():
     gripper_cmdr = GripperCommander()
     rng = np.random.default_rng(0)
     success_count = 0
+    iter_count = 0
+    last_action7 = None  # 给诊断 print 用
+    prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
 
     print("\n=== Deployment Active ===")
     print(f"  TASK    (green)  — BC pickup policy ({args.bc_ckpt})")
@@ -526,32 +707,96 @@ def main():
                 a6 = a.squeeze(0).cpu().numpy()[:6]
                 return np.array([*a6, 0.0], dtype=np.float32)  # gripper 维 0（不动）
 
+            # BACKUP/HOMING 退出回 TASK 时：强制完整 go_home_to_reset_pose，
+            # 否则 BC 在 mid-task state 上 resume（物块可能凌空 / 抓在手里）→ OOD。
+            # prev_mode 跟踪上次 step 后的 mode；HOMING/BACKUP→TASK 转换触发复位。
+            #
+            # --no-reset-on-recovery 实验路径：跳过强制复位，让 supervisor HOMING 自然
+            # 把 TCP 拉回 tcp_start，BC 在 episode 半路 resume。BACKUP 期间场景可能已变
+            # (手碰过物块 / 夹爪状态变化)，BC 看到的 tcp_start 状态可能 OOD。
+            if (prev_mode in (Mode.BACKUP, Mode.HOMING)) and (new_mode == Mode.TASK):
+                if args.no_reset_on_recovery:
+                    print(f"\n[recover] {prev_mode.name}→TASK：no-reset 模式，supervisor HOMING 自然返回 tcp_start，BC 半路 resume")
+                    backup_obs_buf.clear()
+                    last_hand_pos = None
+                    last_hand_time = None
+                    prev_mode = new_mode
+                    # 不 reset supervisor、不 force_open、不 go_home，直接进下一帧让 BC 接管
+                else:
+                    print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放物块（BC 训练分布对齐）")
+                    homing_ok = True
+                    if not args.dry_run:
+                        homing_ok = go_home_to_reset_pose(
+                            reset_pose_6d, precision_param, compliance_param,
+                            hand_detector, cam_mgr, d_safe=d_safe,
+                        )
+                        if homing_ok:
+                            # 同步 GripperCommander 内部 state（go_home 直接调 /open_gripper）
+                            gripper_cmdr.force_open()
+                            if args.wait_operator:
+                                wait_for_operator_with_camera_drain(
+                                    hand_detector, cam_mgr,
+                                    "    [pause] 把物块放回任意位置，按 Enter 让 BC 继续... ",
+                                )
+                            else:
+                                drain_sleep(1.0, hand_detector, cam_mgr)
+                        else:
+                            # hand 中断：不 reset supervisor，让下一帧 step 自然切 BACKUP
+                            print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
+                    if homing_ok:
+                        supervisor.reset()
+                        backup_obs_buf.clear()
+                        last_hand_pos = None
+                        last_hand_time = None
+                    prev_mode = new_mode
+                continue  # 重读 state 再进下一帧
+
             action7 = supervisor.select_action(
                 task_action_fn, backup_action_fn,
                 tcp_current_pos=actual_xyz_biased,
                 tcp_current_quat=actual_quat_wxyz,
             )
+            last_action7 = action7
+            prev_mode = new_mode
 
-            # ---------- Per-mode action scale ----------
+            # ---------- Debug print: 每 10 iter (1s) 一行 ----------
+            iter_count += 1
+            if iter_count % 10 == 0:
+                z = float(state["pose"][2])
+                grip = float(state["gripper_pos"])
+                a3 = action7[:3].round(3).tolist()
+                print(f"[t={iter_count*0.1:5.1f}s] mode={new_mode.name} "
+                      f"z={z:.3f} grip={grip:.3f} "
+                      f"hand_d={min_hand_dist if min_hand_dist != float('inf') else -1:.3f} "
+                      f"action.xyz={a3} action[6]={action7[6]:+.2f}")
+
+            # ---------- Per-mode action scale + rate limit ----------
+            # TASK：跟 BC 标准部署 (FrankaRealEnv) 完全一致，无 lookahead，0.50 m/s 上限
+            # BACKUP/HOMING：跟 sim 训练 + deploy_backup_policy.py 一致，2× lookahead, 0.30 m/s
             if new_mode == Mode.TASK:
-                scale_xyz = TASK_ACTION_SCALE * LOOKAHEAD
-                scale_rot = TASK_ROTATION_SCALE * LOOKAHEAD
+                scale_xyz = TASK_ACTION_SCALE * TASK_LOOKAHEAD
+                scale_rot = TASK_ROTATION_SCALE * TASK_LOOKAHEAD
+                max_step = TASK_MAX_CART_SPEED * dt
             else:  # BACKUP / HOMING
-                scale_xyz = BACKUP_ACTION_SCALE * LOOKAHEAD
-                scale_rot = BACKUP_ROTATION_SCALE * LOOKAHEAD
+                scale_xyz = BACKUP_ACTION_SCALE * BACKUP_LOOKAHEAD
+                scale_rot = BACKUP_ROTATION_SCALE * BACKUP_LOOKAHEAD
+                max_step = BACKUP_MAX_CART_SPEED * dt
 
             action_xyz = action7[:3] * scale_xyz
             action_rpy = action7[3:6] * scale_rot
 
-            # ---------- Rate limit + clamp ----------
+            # ---------- Rate limit ----------
             delta_mag = np.linalg.norm(action_xyz)
-            max_step = MAX_CART_SPEED * dt
             if delta_mag > max_step:
                 action_xyz = action_xyz * (max_step / delta_mag)
 
             target_xyz = actual_xyz_biased + action_xyz
             if not args.no_workspace_clamp:
-                target_xyz = np.clip(target_xyz, WORKSPACE_MIN, WORKSPACE_MAX)
+                # 按模式选 workspace：TASK 跟 BC 训练 envelope 一致；BACKUP 用宽边界
+                if new_mode == Mode.TASK:
+                    target_xyz = np.clip(target_xyz, task_workspace_min, task_workspace_max)
+                else:  # BACKUP / HOMING
+                    target_xyz = np.clip(target_xyz, WORKSPACE_MIN, WORKSPACE_MAX)
 
             if np.any(np.abs(action_rpy) > 1e-6):
                 cur_R = R.from_quat(actual_quat_xyzw)
@@ -559,6 +804,8 @@ def main():
                 target_quat_xyzw = list((cur_R * dR).as_quat())
             else:
                 target_quat_xyzw = actual_quat_xyzw
+            # 跟上一帧 quat 同半球，避免 sign-flip 让 impedance 走 360° 长路
+            target_quat_xyzw = align_quat_sign(target_quat_xyzw, actual_quat_xyzw)
 
             # ---------- Send pose ----------
             if not args.dry_run:
@@ -575,18 +822,30 @@ def main():
                 if z >= success_z_threshold and 0.05 < grip < 0.6:
                     success_count += 1
                     print(f"\n[SUCCESS #{success_count}] z={z:.3f}, gripper={grip:.3f}")
+                    homing_ok = True
                     if not args.dry_run:
                         # 完整复位到 reset_pose（跟 BC 训练时 episode 边界一致）
-                        go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param)
-                        # 等操作员把物块放回（按 Enter 继续；没按按 1.5s 后自动继续）
-                        if args.wait_operator:
-                            input("    [pause] 把物块放回任意位置，按 Enter 开始下一集 (Ctrl+C 退出)... ")
+                        homing_ok = go_home_to_reset_pose(
+                            reset_pose_6d, precision_param, compliance_param,
+                            hand_detector, cam_mgr, d_safe=d_safe,
+                        )
+                        if homing_ok:
+                            # 同步 GripperCommander 内部 state
+                            gripper_cmdr.force_open()
+                            if args.wait_operator:
+                                wait_for_operator_with_camera_drain(
+                                    hand_detector, cam_mgr,
+                                    "    [pause] 把物块放回任意位置，按 Enter 开始下一集 (Ctrl+C 退出)... ",
+                                )
+                            else:
+                                drain_sleep(1.5, hand_detector, cam_mgr)
                         else:
-                            time.sleep(1.5)
-                    supervisor.reset()
-                    backup_obs_buf.clear()
-                    last_hand_pos = None
-                    last_hand_time = None
+                            print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
+                    if homing_ok:
+                        supervisor.reset()
+                        backup_obs_buf.clear()
+                        last_hand_pos = None
+                        last_hand_time = None
 
             # ---------- Visualization ----------
             vis = hand_detector.draw_detection(color_img, hand)
@@ -613,6 +872,36 @@ def main():
     except KeyboardInterrupt:
         print("\n[!] Ctrl+C, 收尾")
     finally:
+        # ---------- 安全收尾 ----------
+        # 顺序：强制张爪释放物块 → 把机械臂带回 reset_pose 安全停泊 → 清 bias →
+        # 关相机/HandDetector → 关 cv2 窗口。每步独立 try 防一项失败阻塞后续。
+        print("[shutdown] 强制 force_open 释放物块...")
+        try:
+            requests.post(URL + "open_gripper", timeout=1.0)
+            time.sleep(0.6)
+        except Exception as e:
+            print(f"[shutdown] force_open 失败: {e}")
+
+        print("[shutdown] 把机械臂送回 reset_pose...")
+        try:
+            # finally 路径不依赖 supervisor / hand check，直接用 frrl env.go_home 走
+            # 那套 lift→transit→descend 路径。如果 task_cfg 等局部变量未定义（main
+            # 在初始化中段失败），就跳过 home 步骤但仍要清 bias + 关资源。
+            go_home_to_reset_pose(
+                reset_pose_6d, precision_param, compliance_param,
+                hand_detector, cam_mgr, d_safe=d_safe,
+            )
+        except (NameError, UnboundLocalError):
+            print("[shutdown] task_cfg 未初始化，跳过 home")
+        except Exception as e:
+            print(f"[shutdown] go_home 失败: {e}")
+
+        print("[shutdown] 清 encoder bias...")
+        try:
+            requests.post(URL + "clear_encoder_bias", timeout=2.0)
+        except Exception as e:
+            print(f"[shutdown] clear_encoder_bias 失败: {e}")
+
         try:
             hand_detector.stop()
         except Exception:
