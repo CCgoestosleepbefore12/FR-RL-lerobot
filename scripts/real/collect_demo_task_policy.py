@@ -176,6 +176,9 @@ def main():
                     help="disable J1 bias injection (default: bias enabled)")
     ap.add_argument("--output-dir", type=str, default=None,
                     help="default: data/{task}_demos/")
+    ap.add_argument("--save-every", type=int, default=10,
+                    help="每 N 条 success 写一次 partial pkl 防 crash 丢数据。0=禁用。"
+                         "partial 文件名 {task}_demos_inprogress.pkl，主 pkl 写成功后自动删。")
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -207,6 +210,19 @@ def main():
     trajectory = []       # transitions from the CURRENT episode
     success_count = 0
     aborted = False
+
+    # partial save 路径 —— 每 --save-every 条 success 原子写一次，防 RuntimeError /
+    # 段错误等异常丢数据。主 pkl 写成功后会被删掉。
+    inprogress_path = os.path.join(output_dir, f"{args.task}_demos_inprogress.pkl")
+
+    def _save_partial():
+        """原子写 inprogress.pkl：先写 .tmp 再 rename，避免写一半 crash 留半截文件。"""
+        os.makedirs(output_dir, exist_ok=True)
+        tmp = inprogress_path + ".tmp"
+        with open(tmp, "wb") as f:
+            pkl.dump(transitions, f)
+        os.replace(tmp, inprogress_path)
+        logging.info(f"[partial save] {success_count} demos / {len(transitions)} transitions → {inprogress_path}")
 
     try:
         obs, _ = env.reset()  # blocks on S key
@@ -245,6 +261,9 @@ def main():
                         f"[DEMO {success_count:3d}/{args.successes_needed}] "
                         f"SAVED (len={len(trajectory)}, return={ep_return:.1f})"
                     )
+                    # 增量保存防 crash 丢数据（每 save_every 条成功写一次）
+                    if args.save_every > 0 and success_count % args.save_every == 0:
+                        _save_partial()
                 else:
                     logging.info(
                         f"[DEMO ---/{args.successes_needed}] "
@@ -257,6 +276,16 @@ def main():
 
     except KeyboardInterrupt:
         logging.info("Ctrl+C received — saving partial results")
+        aborted = True
+    except Exception as e:
+        # ⚠️ 关键：env.reset() 抛 RuntimeError、SpaceMouse / RT PC 突发故障等都
+        # 走这条路。之前只 catch KeyboardInterrupt，RuntimeError 直接逃出
+        # try-except → 跳过下面 pkl.dump → 几十条 success 内存数据全丢（实测
+        # 2026-04-30 在 demo 62 时丢了前 61 条）。这里 catch 后让 finally 里
+        # 写 inprogress 兜底，再 re-raise 让 traceback 还能看到根因。
+        import traceback
+        logging.error(f"采集中遇到异常 — 尝试保存 partial 数据: {type(e).__name__}: {e}")
+        traceback.print_exc()
         aborted = True
     finally:
         # Always send the robot home before closing — avoids leaving the arm
@@ -283,6 +312,9 @@ def main():
 
     if success_count == 0:
         logging.warning("no successful demos collected — not saving anything")
+        # 即便 0 success 也清掉残留 inprogress（重跑别误读）
+        if os.path.exists(inprogress_path):
+            os.remove(inprogress_path)
         return
 
     os.makedirs(output_dir, exist_ok=True)
@@ -292,6 +324,9 @@ def main():
     logging.info(
         f"saved {success_count} demos ({len(transitions)} transitions) → {filename}"
     )
+    # 主文件写成功 → 删 inprogress（不留残留，避免下次运行被认为是上次 crash 的恢复文件）
+    if os.path.exists(inprogress_path):
+        os.remove(inprogress_path)
 
 
 if __name__ == "__main__":
