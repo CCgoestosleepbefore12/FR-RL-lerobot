@@ -77,8 +77,11 @@ def main():
     ap.add_argument("--no-auto-success", dest="auto_success", action="store_false")
     ap.add_argument("--lift-threshold", type=float, default=0.06,
                     help="tcp_z 抬升触发 success 的阈值 m（默认 0.06m，对齐 hil-serl）")
-    ap.add_argument("--gripper-held-min", type=float, default=0.05,
-                    help="gripper_pos 下界（< 此值视作空夹，hil-serl 默认 0.05）")
+    ap.add_argument("--gripper-held-min", type=float, default=0.02,
+                    help="gripper_pos 下界（< 此值视作空夹）。2026-04-30 从 0.05 降到 0.02："
+                         "海绵软材质被 130N 压扁到 ~0.038，原 0.05 阈值会把抓住海绵误判为空夹"
+                         "OUT range。0.02 既容纳压扁海绵 (~0.038)，又能过滤空抓 (~0.005)。"
+                         "硬物（USB / RAM 等）抓住通常 > 0.05，原默认 0.05 仍可覆盖。")
     ap.add_argument("--gripper-held-max", type=float, default=0.6,
                     help="gripper_pos 上界（> 此值视作张开未夹，hil-serl 默认 0.6）")
     args = ap.parse_args()

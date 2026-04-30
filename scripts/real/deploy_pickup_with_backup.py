@@ -467,6 +467,13 @@ def main():
                     help="z 抬升触发 success 的阈值 m（reset_z + 此值）")
     ap.add_argument("--wait-operator", action="store_true",
                     help="success 复位后阻塞等待操作员按 Enter 再开下一集（默认 sleep 1.5s 自动继续）")
+    ap.add_argument("--gripper-held-min", type=float, default=0.02,
+                    help="auto-success gripper_pos 下界（< 此值视作空夹）。"
+                         "2026-04-30 从 0.05 降到 0.02：海绵被 130N 压扁到 ~0.038，"
+                         "0.05 误判抓住海绵为空夹。0.02 既容纳压扁海绵又能滤空抓。"
+                         "硬物可调回 0.05。")
+    ap.add_argument("--gripper-held-max", type=float, default=0.6,
+                    help="auto-success gripper_pos 上界（> 此值视作张开未夹）")
     ap.add_argument("--no-reset-on-recovery", action="store_true",
                     help="BACKUP/HOMING → TASK 转换时不强制 go_home_to_reset_pose，让 supervisor "
                          "的 HOMING 自然把 TCP 拉回 tcp_start，BC 接着 episode 半路 resume。"
@@ -821,7 +828,7 @@ def main():
             if args.auto_reset_on_success and new_mode == Mode.TASK:
                 z = float(state["pose"][2])
                 grip = float(state["gripper_pos"])
-                if z >= success_z_threshold and 0.05 < grip < 0.6:
+                if z >= success_z_threshold and args.gripper_held_min < grip < args.gripper_held_max:
                     success_count += 1
                     print(f"\n[SUCCESS #{success_count}] z={z:.3f}, gripper={grip:.3f}")
                     homing_ok = True
