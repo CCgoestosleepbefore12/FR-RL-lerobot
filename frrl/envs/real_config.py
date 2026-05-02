@@ -100,8 +100,12 @@ class FrankaRealConfig:
     abs_pose_limit_low: np.ndarray = field(
         default_factory=lambda: np.array([0.386, -0.213, 0.175, -np.pi, -0.2, -0.2])
     )
+    # z 上限 0.8m：现场工作台上方完全无遮挡（无相机/灯架/天花板障碍），
+    # 远高于 Franka 最大 reach (~0.855m)，等价于 z 方向不约束。所有 task 共享这个
+    # 宽松上限，每个 factory 不再 override z 维。lift headroom 检查 (real.py:108
+    # `abs_pose_limit_high[2] - reset_pose[2] ≥ 0.10`) 自动满足。
     abs_pose_limit_high: np.ndarray = field(
-        default_factory=lambda: np.array([0.709, 0.198, 0.315, np.pi, 0.2, 0.2])
+        default_factory=lambda: np.array([0.709, 0.198, 0.8, np.pi, 0.2, 0.2])
     )
 
     # 重置位姿 (6D: x,y,z,rx,ry,rz euler)
@@ -257,8 +261,7 @@ def make_wipe_config(
       - max_episode_length=300：30s @ 10Hz，覆盖完整擦拭来回轨迹
       - reset_pose=[0.4608, -0.0935, 0.2575, -3.078, -0.020, 0.018]：现场用 SpaceMouse
         摆到擦拭起点上方 hover 位置后从 /getstate_true 读出（2026-04-30 标定）
-      - abs_pose_limit_high[2]=0.38：reset 路径 lift headroom ≥ 0.10m 约束，
-        默认 0.315 - 0.2575 = 0.057m 不够，与 pickup 同步抬到 0.38
+    abs_pose_limit 用 FrankaRealConfig 默认（z 上限 0.8m 不约束）。
     """
     cfg = FrankaRealConfig(
         reward_backend=reward_backend,
@@ -267,7 +270,6 @@ def make_wipe_config(
         random_reset=False,
     )
     cfg.reset_pose = np.array([0.4608, -0.0935, 0.2575, -3.07817, -0.01998, 0.01770])
-    cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, 0.2])
     # ⚠️ image_crop / bias_range / 工作面 ROI 还需现场标定后填入；当前用默认值
     if use_bias:
         cfg.encoder_bias_config = _make_j1_bias_cfg()
@@ -289,12 +291,11 @@ def make_pickup_config(
       - max_episode_length=100：10s @ 10Hz，对齐 hil-serl ram_insertion 的 100 步 horizon
       - random_reset=True + random_xy_range=0.05：物块位置随机的话，机械臂
         reset 也随机化能学 generalization
-      - reset_pose=[0.5188, 0.0607, 0.2786, π, 0, 0]：现场用 SpaceMouse 摆到 pre-grasp
-        hover 位置后从 /getstate_true 读出（quat→euler）。z=0.2786 比 wipe 的 0.21 高
-        7cm，给 pickup 抓取留下抓 + 抬升余量。
-      - abs_pose_limit_high[2]=0.38：reset 路径要求 lift headroom ≥ 0.1m，原 0.315 上限
-        与 reset.z=0.2786 仅留 0.036m → 抬到 0.38 满足 lift→transit→descend 三段。
-        ⚠️ 若桌面 38cm 上方有相机/灯架障碍，需现场确认或下调 reset.z。
+      - reset_pose=[0.5334, 0.0149, 0.2586, -3.098, 0.016, 0.014]：现场用 SpaceMouse
+        摆到 pre-grasp hover 位置后从 /getstate_true 读出（quat→euler）。
+        z=0.2586 给 pickup 抓取留抓 + 抬升余量。
+      - rz 范围扩到 ±π/2（默认 ±0.2 约 ±11.5°）：让操作员能转 yaw 抓横放物块。
+        pitch (ry) 保持默认 ±0.2 防夹爪侧倾撞桌；roll (rx) 保持默认 ±π 全自由。
     """
     cfg = FrankaRealConfig(
         reward_backend=reward_backend,
@@ -308,13 +309,10 @@ def make_pickup_config(
         random_xy_range=0.0,
     )
     cfg.reset_pose = np.array([0.5334, 0.0149, 0.2586, -3.09848, 0.01591, 0.01375])
-    # 2026-04-30：rz 范围从 ±0.2 (±11.5°) 扩到 ±π/2 (±90°)，让操作员能转 yaw 抓
-    # 横放物块。pitch (ry) 保持 ±0.2 防夹爪侧倾撞桌；roll (rx) 保持 ±π 全自由。
-    # ⚠️ 此前用 ±0.2 采的 50 demo / 30 dagger 仍在新分布子集内（操作员根本没机会
-    # 推到 ±0.2 以外），不破坏 ckpt 兼容；新 demo 会出现更大 rz 值，BC 学到更广
-    # yaw 分布。
-    cfg.abs_pose_limit_low = np.array([0.386, -0.213, 0.175, -np.pi, -0.2, -np.pi / 2])
-    cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, np.pi / 2])
+    # rz 范围扩到 ±π/2 (±90°)：让操作员能转 yaw 抓横放物块。其他维（xyz / rx / ry）
+    # 都用 FrankaRealConfig 默认（z 上限 0.8m 由默认覆盖，不再 task 级 override）。
+    cfg.abs_pose_limit_low[5] = -np.pi / 2
+    cfg.abs_pose_limit_high[5] = np.pi / 2
     # front 相机 ROI：calibration_data/workspace.json 里 select_workspace_roi.py
     # 框选写回的 roi_front_final = [180, 94, 400, 314] (220×220 正方形)，覆盖
     # pickup 工作面。runtime 不读 JSON，需在这里显式接上。
@@ -329,9 +327,47 @@ def make_pickup_config(
     return cfg
 
 
+def make_assembly_config(
+    use_bias: bool = True,
+    reward_backend: str = "keyboard",
+    enable_bias_monitor: bool = False,
+    bias_monitor_save_path: Optional[str] = None,
+) -> FrankaRealConfig:
+    """Assembly task — gripper 锁闭夹零件，从 hover 高位下降插入/对齐。
+
+    与 pickup/wipe 关键差异：
+      - gripper_locked="closed"：reset 时已预夹零件（gripper_pos≈0.33 ~26mm 持物开度）
+      - reset_pose=[0.5067, -0.0197, 0.3600, -3.075, -0.011, -0.035]：现场用 SpaceMouse
+        摆到装配面正上方 hover 位置后从 /getstate_true 读出（2026-04-30 标定）。
+        z=0.36 比 pickup/wipe 高 ~10cm，给下降插入留余量
+      - max_episode_length=200：20s @ 10Hz，多阶段对齐+插入
+      - bias_range=(-0.05, 0.05)：装配是接触类任务，对 J1 bias 极其敏感，
+        比 pickup 的 ±0.1 还窄一半
+      - rz 范围 ±π/2：装配通常需要精确 yaw 对齐；如果你的零件只能小范围旋转
+        对齐（比如花键、键槽），可以收窄
+    abs_pose_limit 其他维用 FrankaRealConfig 默认（z 上限 0.8m 不约束）。
+    """
+    cfg = FrankaRealConfig(
+        reward_backend=reward_backend,
+        gripper_locked="closed",
+        max_episode_length=200,
+        random_reset=False,
+    )
+    cfg.reset_pose = np.array([0.5067, -0.0197, 0.3600, -3.07533, -0.01079, -0.03457])
+    cfg.abs_pose_limit_low[5] = -np.pi / 2
+    cfg.abs_pose_limit_high[5] = np.pi / 2
+    # ⚠️ image_crop / 工作面 ROI 待 select_workspace_roi.py 框选后接入；当前用默认值
+    if use_bias:
+        cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.05, 0.05))
+        cfg.enable_bias_monitor = enable_bias_monitor
+        cfg.bias_monitor_save_path = bias_monitor_save_path
+    return cfg
+
+
 TASK_CONFIG_FACTORIES = {
     "wipe": make_wipe_config,
     "pickup": make_pickup_config,
+    "assembly": make_assembly_config,
 }
 
 
