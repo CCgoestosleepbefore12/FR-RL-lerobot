@@ -250,13 +250,25 @@ def make_wipe_config(
     enable_bias_monitor: bool = False,
     bias_monitor_save_path: Optional[str] = None,
 ) -> FrankaRealConfig:
-    """Wipe sponge across plate — gripper 锁闭夹海绵，长 episode (300 step)。"""
+    """Wipe sponge across plate — gripper 锁闭夹海绵，长 episode (300 step)。
+
+    与 pickup 关键差异：
+      - gripper_locked="closed"：海绵已被夹住，整局不开合 → action[6] 锁 -1
+      - max_episode_length=300：30s @ 10Hz，覆盖完整擦拭来回轨迹
+      - reset_pose=[0.4608, -0.0935, 0.2575, -3.078, -0.020, 0.018]：现场用 SpaceMouse
+        摆到擦拭起点上方 hover 位置后从 /getstate_true 读出（2026-04-30 标定）
+      - abs_pose_limit_high[2]=0.38：reset 路径 lift headroom ≥ 0.10m 约束，
+        默认 0.315 - 0.2575 = 0.057m 不够，与 pickup 同步抬到 0.38
+    """
     cfg = FrankaRealConfig(
         reward_backend=reward_backend,
         gripper_locked="closed",
         max_episode_length=300,
         random_reset=False,
     )
+    cfg.reset_pose = np.array([0.4608, -0.0935, 0.2575, -3.07817, -0.01998, 0.01770])
+    cfg.abs_pose_limit_high = np.array([0.709, 0.198, 0.38, np.pi, 0.2, 0.2])
+    # ⚠️ image_crop / bias_range / 工作面 ROI 还需现场标定后填入；当前用默认值
     if use_bias:
         cfg.encoder_bias_config = _make_j1_bias_cfg()
         cfg.enable_bias_monitor = enable_bias_monitor
