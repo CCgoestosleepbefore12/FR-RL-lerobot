@@ -90,8 +90,8 @@ def main():
                     help="HG-DAgger 模式：只载入 infos.is_intervention=True 的 transition。"
                          "老 demo（无该 key）默认全是 intervention（全程人 teleop），向后兼容；"
                          "新 dagger pkl 在此 flag 下只取人类纠错帧，自主帧（policy 当时是对的）丢弃。"
-                         "典型用法：--demo-paths 'data/pickup_demos/*.pkl' 'data/pickup_dagger/*.pkl' "
-                         "--intervention-only → 原 demo 全用 + dagger 介入帧补强。")
+                         "典型用法：--demo-paths 'data/no_bias/pickup/*.pkl' --intervention-only "
+                         "→ demo + dagger 同目录一次取全，原 demo 全用 + dagger 介入帧补强。")
     args = ap.parse_args()
 
     init_logging()

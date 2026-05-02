@@ -101,7 +101,7 @@
             "ACTION": "IDENTITY"
         },
         "demo_pickle_paths": [
-            "data/pickup_demos/*.pkl"
+            "data/no_bias/pickup/*.pkl"
         ],
         "demo_key_map": {
             "agent_pos": "observation.state",

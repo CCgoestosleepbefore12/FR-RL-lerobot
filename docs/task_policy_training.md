@@ -217,7 +217,7 @@ optimizer.step()                         # ← 只更新 actor + encoder（+ 可
 
 ```
 Demo 采集 (collect_demo_task_policy.py)
-   ↓ data/{task}_demos/*.pkl
+   ↓ data/{no_bias|with_bias}/{task}/*.pkl  ← 2026-04-30 数据按 bias 状态分流
    │
    ├─→ 路径 A: BC pretrain (bc_pretrain_task_policy.py)
    │       ↓ checkpoints/{task}_bc_*/checkpoints/N/pretrained_model
@@ -225,7 +225,7 @@ Demo 采集 (collect_demo_task_policy.py)
    │       │
    │       ├─→ deploy_bc_inference.py     纯 BC 推理，critic 不参与
    │       ├─→ deploy_bc_with_dagger.py    BC + 介入采集，纯推理
-   │       │       ↓ data/{task}_dagger/*.pkl
+   │       │       ↓ data/{no_bias|with_bias}/{task}/*.pkl  ← demo 同目录
    │       │       └─→ 回到 BC pretrain --intervention-only 重训 (HG-DAgger 迭代)
    │       │
    │       └─→ (放弃) HIL-SAC online       --resume 加载 BC ckpt → 解冻 critic + actor
@@ -360,10 +360,20 @@ obs encoder 单独：trainable 2.08M / total 24.14M（含 frozen ViT），SAC �
 
 | 阶段 | 命令 | 输出 |
 |---|---|---|
-| Iter 0 demo 采集 | `collect_demo_task_policy.py --task pickup -n 50` | `data/{task}_demos/*.pkl` |
-| Iter 0 BC 训练 | `bc_pretrain_task_policy.py --demo-paths 'data/{task}_demos/*.pkl' --steps 20000` | `checkpoints/{task}_bc_iter0_*` |
-| Iter N 介入采集 | `deploy_bc_with_dagger.py --ckpt <iter N-1 ckpt> --task pickup --iter N -n 30` | `data/{task}_dagger/{task}_dagger_iterN_*.pkl` |
-| Iter N BC 重训 | `bc_pretrain_task_policy.py --demo-paths 'data/{task}_demos/*.pkl' 'data/{task}_dagger/*.pkl' --intervention-only --steps 20000` | `checkpoints/{task}_bc_iterN_*` |
+| Iter 0 demo 采集 | `collect_demo_task_policy.py --task pickup --no-bias -n 50` | `data/no_bias/pickup/*.pkl` |
+| Iter 0 BC 训练 | `bc_pretrain_task_policy.py --demo-paths 'data/no_bias/pickup/*.pkl' --steps 20000` | `checkpoints/pickup_bc_iter0_*` |
+| Iter N 介入采集 | `deploy_bc_with_dagger.py --ckpt <iter N-1 ckpt> --task pickup --no-bias --iter N -n 30` | `data/no_bias/pickup/{task}_dagger_iterN_*.pkl` |
+| Iter N BC 重训 | `bc_pretrain_task_policy.py --demo-paths 'data/no_bias/pickup/*.pkl' --intervention-only --steps 20000` | `checkpoints/pickup_bc_iterN_*` |
+
+数据目录 layout（2026-04-30 重组）：
+
+```
+data/
+├── no_bias/{task}/    ← 用 --no-bias 采的 demo + dagger 全在这
+└── with_bias/{task}/  ← 默认（bias=ON）采的早期数据
+```
+
+demo 和 dagger 共享同一 task 目录，单 glob `data/no_bias/pickup/*.pkl` 一次取全。`--intervention-only` 在 dagger pkl 上过滤介入帧，原 demo 因为没 `is_intervention` key 默认全保留（向后兼容）。
 
 每轮重训仍是从零初始化 SACPolicy（不复用上轮 ckpt 权重），在合并数据集上跑 20000 步。
 

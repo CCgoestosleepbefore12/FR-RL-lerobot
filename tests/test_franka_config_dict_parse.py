@@ -175,5 +175,7 @@ class TestConfigFileIntegrity:
         assert cfg.random_xy_range == 0.0
         assert isinstance(cfg.encoder_bias_config, EncoderBiasConfig)
         assert cfg.encoder_bias_config.target_joints == [0]
-        # pickup demo 路径与 collect_demo_task_policy.py 默认 output_dir 必须一致
-        assert full_cfg["policy"]["demo_pickle_paths"] == ["data/pickup_demos/*.pkl"]
+        # pickup demo 路径与 collect_demo_task_policy.py 默认 output_dir 必须一致。
+        # 2026-04-30 数据重组：data/{no_bias|with_bias}/{task}/，no_bias 是当前
+        # 训练默认（bias=ON 是早期数据，--no-bias 是新数据）。
+        assert full_cfg["policy"]["demo_pickle_paths"] == ["data/no_bias/pickup/*.pkl"]

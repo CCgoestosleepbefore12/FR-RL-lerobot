@@ -92,7 +92,7 @@
         "offline_only_mode": false,
         "offline_pretrain_steps": 5000,
         "demo_pickle_paths": [
-            "data/wipe_demos/*.pkl"
+            "data/with_bias/wipe/*.pkl"
         ],
         "demo_key_map": {
             "agent_pos": "observation.state",

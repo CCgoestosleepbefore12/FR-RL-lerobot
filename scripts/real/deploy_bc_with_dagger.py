@@ -22,7 +22,7 @@ collect_demo_task_policy.py 用于 *从零* 采 demo（每帧都是介入）。�
             tail 期间 action 仍取 sm（near-zero），标 is_intervention=True，
             捕捉操作员"释放后 follow-through" 信号。
 
-输出：data/{task}_dagger/{task}_dagger_iter{ITER}_{N}_{stamp}.pkl
+输出：data/{no_bias|with_bias}/{task}/{task}_dagger_iter{ITER}_{N}_{stamp}.pkl
 schema 与 hil-serl record_demos.py 同款，infos 含 is_intervention bool。
 
 用法：
@@ -132,7 +132,7 @@ def main():
     ap.add_argument("--iter", type=int, default=1,
                     help="DAgger 迭代轮次编号；写入文件名方便后续合并管理")
     ap.add_argument("--output-dir", type=str, default=None,
-                    help="default: data/{task}_dagger/")
+                    help="default: data/{no_bias|with_bias}/{task}/（按 --no-bias flag 自动分流）")
     ap.add_argument("--enter-threshold", type=float, default=0.05,
                     help="sm magnitude > 此值或按键 → 立刻进 ACTIVE 状态（默认 0.05，"
                          "对齐 frrl/teleoperators/spacemouse/configuration_spacemouse.py）")
@@ -148,7 +148,12 @@ def main():
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
 
-    output_dir = args.output_dir or f"data/{args.task}_dagger"
+    # 默认目录按 bias 状态分流（2026-04-30 数据重组），与 collect_demo_task_policy.py 一致：
+    #   --no-bias    → data/no_bias/{task}/
+    #   default ON   → data/with_bias/{task}/
+    # demo 和 dagger 共用同一目录（pkl 文件名前缀区分），合并训练时一个 glob 全覆盖
+    bias_dir = "no_bias" if args.no_bias else "with_bias"
+    output_dir = args.output_dir or f"data/{bias_dir}/{args.task}"
 
     # ---------- Load policy ----------
     logging.info(f"[dagger] loading SACPolicy from {args.ckpt}")

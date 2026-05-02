@@ -185,7 +185,12 @@ def main():
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
 
-    output_dir = args.output_dir or f"data/{args.task}_demos"
+    # 默认目录按 bias 状态分流（2026-04-30 数据重组）：
+    #   --no-bias    → data/no_bias/{task}/
+    #   default ON   → data/with_bias/{task}/
+    # --output-dir 显式指定时覆盖此默认。
+    bias_dir = "no_bias" if args.no_bias else "with_bias"
+    output_dir = args.output_dir or f"data/{bias_dir}/{args.task}"
 
     cfg = make_config(task=args.task, use_bias=not args.no_bias)
     env = FrankaRealEnv(cfg)
