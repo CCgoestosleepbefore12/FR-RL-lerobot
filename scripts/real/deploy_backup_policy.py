@@ -23,7 +23,7 @@ Observation for BACKUP policy (per frame, 28D × 3 stack = 84D):
 
 Usage:
     python scripts/real/deploy_backup_policy.py
-    python scripts/real/deploy_backup_policy.py --checkpoint checkpoints/backup_policy_s1_v2_newgeom_145k
+    python scripts/real/deploy_backup_policy.py --checkpoint checkpoints/backup_policy/backup_policy_s1_v2_newgeom_145k
     python scripts/real/deploy_backup_policy.py --dry-run   # no /pose commands, test obs/inference only
     python scripts/real/deploy_backup_policy.py --bias "0.1,0,0,0,0,0,0"  # inject J1 bias
 """
@@ -60,8 +60,8 @@ URL = "http://192.168.100.1:5000/"
 D_SAFE_BY_VERSION = {"v2": 0.30, "v3": 0.40}
 D_CLEAR_BY_VERSION = {"v2": 0.35, "v3": 0.45}
 DEFAULT_CKPT_BY_VERSION = {
-    "v2": "checkpoints/backup_policy_s1_v2_newgeom_145k",
-    "v3": "checkpoints/backup_policy_s1_v3b_300k_95pct",
+    "v2": "checkpoints/backup_policy/backup_policy_s1_v2_newgeom_145k",
+    "v3": "checkpoints/backup_policy/backup_policy_s1_v3b_300k_95pct",
 }
 # V3c (tracking_target=arm_center, D_TIGHT_ARM=0.23) 当前与 V3b 共用 D_SAFE/D_CLEAR
 # 0.40/0.45——sim 训练 ARM_SPAWN_DIST_V3 (0.30, 0.40) 不变，FSM 触发不变。训完 V3c

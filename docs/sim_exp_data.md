@@ -165,7 +165,7 @@ Backup Policy 评估结果
 =================================================================
 ```
 
-**Checkpoint 位置**：`checkpoints/backup_policy_s1/`（repo 内常驻）
+**Checkpoint 位置**：`checkpoints/backup_policy/backup_policy_s1/`（repo 内常驻）
 
 **结论**：
 - 4 种运动模式全部 ≥97.8%，其中 PASSING / STOP_GO 达 100%
@@ -869,8 +869,8 @@ V2 10k steps 眼检可视化发现奇异行为：满存活率仅 20%、60% episo
 **Eval 脚本对齐训练**：`scripts/sim/eval_backup_policy.py` 默认 `max_steps/survival_threshold` 10 → 20（与 env 注册的 `max_episode_steps=20` 一致），避免 10 步下假性 100%。
 
 **Ckpt 落库**：
-- `checkpoints/backup_policy_s1_v2_newgeom_145k/`（**真机部署首选**，100% / ±0.77）
-- `checkpoints/backup_policy_s1_v2_newgeom_35k/`（旧版首选，94% / 保留对照）
+- `checkpoints/backup_policy/backup_policy_s1_v2_newgeom_145k/`（**真机部署首选**，100% / ±0.77）
+- `checkpoints/backup_policy/backup_policy_s1_v2_newgeom_35k/`（旧版首选，94% / 保留对照）
 - `.gitignore` 白名单 + README 说明训练几何/旋转预算/eval 基准
 
 **代码改动（commits `2093a9b`, `181fd1a`）**：
@@ -961,7 +961,7 @@ python scripts/sim/eval_backup_policy.py \
 
 ### V3 首训结果（2026-04-26, 300k learner step, 6.5h）
 
-- ✅ 落库 `checkpoints/backup_policy_s1_v3_300k_71pct/`
+- ✅ 落库 `checkpoints/backup_policy/backup_policy_s1_v3_300k_71pct/`
 - ✅ Eval 200 episodes：**71.5% 满存活率**，平均奖励 +8.02 ± 8.04，平均最近距离 0.247m，平均终止位移 0.324m
 - 终止原因：survived 66.5% / hand_collision **17.5%** / excessive_displacement **14.5%** / zone_c 1.0% / block_dropped 0.5%
 
@@ -1079,12 +1079,12 @@ V3c 三版完整结果证明：
 ```bash
 # 默认仍用 V3b（min 高 1.5%）
 python scripts/real/deploy_backup_policy.py --ckpt-version v3
-# = checkpoints/backup_policy_s1_v3b_300k_95pct
+# = checkpoints/backup_policy/backup_policy_s1_v3b_300k_95pct
 
 # Fallback / 论文 ablation 验证：用 V3c r3
 python scripts/real/deploy_backup_policy.py \
   --ckpt-version v3 \
-  --checkpoint checkpoints/backup_policy_s1_v3c_r3_300k_94pct
+  --checkpoint checkpoints/backup_policy/backup_policy_s1_v3c_r3_300k_94pct
 ```
 
 D_SAFE=0.40 / D_CLEAR=0.45 与 V3b 共用（sim ARM_SPAWN_DIST_V3 一致）。
@@ -1093,10 +1093,10 @@ D_SAFE=0.40 / D_CLEAR=0.45 与 V3b 共用（sim ARM_SPAWN_DIST_V3 一致）。
 
 | 路径 | 用途 |
 |---|---|
-| `checkpoints/backup_policy_s1_v3b_300k_95pct/` | **真机首选** ⭐ (min 95%) |
-| `checkpoints/backup_policy_s1_v3c_r3_300k_94pct/` | 单参数 ablation 对照 (min 93.5%) |
-| `checkpoints/backup_policy_s1_v3_300k_71pct/` | V3 baseline (max_disp=0.40)，max_disp ablation |
-| `checkpoints/backup_policy_s1_v3b_115k_90pct/` | V3b 中段，训练曲线记录 |
+| `checkpoints/backup_policy/backup_policy_s1_v3b_300k_95pct/` | **真机首选** ⭐ (min 95%) |
+| `checkpoints/backup_policy/backup_policy_s1_v3c_r3_300k_94pct/` | 单参数 ablation 对照 (min 93.5%) |
+| `checkpoints/backup_policy/backup_policy_s1_v3_300k_71pct/` | V3 baseline (max_disp=0.40)，max_disp ablation |
+| `checkpoints/backup_policy/backup_policy_s1_v3b_115k_90pct/` | V3b 中段，训练曲线记录 |
 
 V3c r1 (190k early) 和 r2 (400k 加压) 已废弃，未落库。
 
@@ -1112,19 +1112,19 @@ conda activate lerobot
 
 # S1 baseline
 python scripts/sim/eval_backup_policy.py \
-  --checkpoint checkpoints/backup_policy_s1 \
+  --checkpoint checkpoints/backup_policy/backup_policy_s1 \
   --env_task PandaBackupPolicyS1-v0 \
   --n_episodes 200
 
 # S1 + BiasJ1 zero-shot
 python scripts/sim/eval_backup_policy.py \
-  --checkpoint checkpoints/backup_policy_s1 \
+  --checkpoint checkpoints/backup_policy/backup_policy_s1 \
   --env_task PandaBackupPolicyS1BiasJ1-v0 \
   --n_episodes 200
 
 # S1 NoDR 跨分布 eval
 python scripts/sim/eval_backup_policy.py \
-  --checkpoint checkpoints/backup_policy_s1 \
+  --checkpoint checkpoints/backup_policy/backup_policy_s1 \
   --env_task PandaBackupPolicyS1NoDR-v0 \
   --n_episodes 200
 

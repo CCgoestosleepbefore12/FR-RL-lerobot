@@ -175,7 +175,7 @@ def _aa_err(q_cur: np.ndarray, q_target: np.ndarray) -> np.ndarray:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--checkpoint", default="checkpoints/backup_policy_s1_v2_newgeom_145k")
+    p.add_argument("--checkpoint", default="checkpoints/backup_policy/backup_policy_s1_v2_newgeom_145k")
     p.add_argument("--env_task", default="PandaBackupPolicyS1V2-v0")
     p.add_argument("--n_episodes", type=int, default=20)
     p.add_argument("--n_backup", type=int, default=10, help="backup policy 步数（≤20）")

@@ -6,15 +6,11 @@ build/
 .eggs/
 wandb/
 outputs/
-checkpoints/
-!checkpoints/backup_policy_s1/
-!checkpoints/backup_policy_s1_v2_50k/
-!checkpoints/backup_policy_s1_v2_newgeom_35k/
-!checkpoints/backup_policy_s1_v2_newgeom_145k/
-!checkpoints/backup_policy_s1_v3_300k_71pct/
-!checkpoints/backup_policy_s1_v3b_115k_90pct/
-!checkpoints/backup_policy_s1_v3b_300k_95pct/
-!checkpoints/backup_policy_s1_v3c_r3_300k_94pct/
+# 2026-04-30 重组后 backup_policy ckpts 移到 checkpoints/backup_policy/。
+# 用 `checkpoints/*` 而非 `checkpoints/`，允许 git 看到 backup_policy/ 子树
+# （gitignore 规则：父目录被 ignore 时，子文件无法 re-include）。
+checkpoints/*
+!checkpoints/backup_policy/
 *.pt
 *.pth
 
@@ -31,7 +27,8 @@ bias_*.npz
 charts/
 
 # Task policy demo pickles (per-robot teleop recordings, too large for git)
-data/task_policy_demos/*.pkl
+# 2026-04-30 数据重组：data/{no_bias|with_bias}/{task}/*.pkl，统一 ignore
+data/**/*.pkl
 
 # Auto-generated dataset statistics
 dataset_stats_generated.json

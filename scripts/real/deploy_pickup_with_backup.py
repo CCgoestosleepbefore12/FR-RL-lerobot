@@ -28,7 +28,7 @@ Action scale 按模式切换：
 用法：
   python scripts/real/deploy_pickup_with_backup.py \\
       --bc-ckpt checkpoints/pickup_bc_20260429_171959/checkpoints/020000/pretrained_model \\
-      --backup-ckpt checkpoints/backup_policy_s1_v3b_300k_95pct \\
+      --backup-ckpt checkpoints/backup_policy/backup_policy_s1_v3b_300k_95pct \\
       --ckpt-version v3
 
   # dry-run 不发 /pose，只测 obs / inference / FSM 切换
@@ -61,8 +61,8 @@ URL = "http://192.168.100.1:5000/"
 D_SAFE_BY_VERSION = {"v2": 0.30, "v3": 0.40}
 D_CLEAR_BY_VERSION = {"v2": 0.35, "v3": 0.45}
 DEFAULT_BACKUP_CKPT = {
-    "v2": "checkpoints/backup_policy_s1_v2_newgeom_145k",
-    "v3": "checkpoints/backup_policy_s1_v3b_300k_95pct",
+    "v2": "checkpoints/backup_policy/backup_policy_s1_v2_newgeom_145k",
+    "v3": "checkpoints/backup_policy/backup_policy_s1_v3b_300k_95pct",
 }
 CLEAR_N_STEPS = 3
 HOMING_POS_TOL = 0.02
