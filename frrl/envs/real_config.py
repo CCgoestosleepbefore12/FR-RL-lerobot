@@ -270,7 +270,12 @@ def make_wipe_config(
         random_reset=False,
     )
     cfg.reset_pose = np.array([0.4608, -0.0935, 0.2575, -3.07817, -0.01998, 0.01770])
-    # ⚠️ image_crop / bias_range / 工作面 ROI 还需现场标定后填入；当前用默认值
+    # front 相机 ROI：select_workspace_roi.py 框选写回 (2026-04-30)
+    # roi_front_final = (192, 136, 394, 338) — 202×202 正方形 wipe 工作面
+    cfg.image_crop = {
+        "front": make_workspace_roi_crop(192, 136, 394, 338),
+        "wrist": center_square_crop,
+    }
     if use_bias:
         cfg.encoder_bias_config = _make_j1_bias_cfg()
         cfg.enable_bias_monitor = enable_bias_monitor
