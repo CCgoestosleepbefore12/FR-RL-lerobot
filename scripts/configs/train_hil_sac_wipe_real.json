@@ -19,13 +19,16 @@
             }
         },
         "franka_config": {
+            "task": "wipe",
             "reward_backend": "keyboard",
             "enable_bias_monitor": true,
             "display_image": true,
             "gripper_locked": "closed",
             "max_episode_length": 300,
+            "random_reset": false,
+            "random_xy_range": 0.0,
             "encoder_bias_config": {
-                "enable": true,
+                "enable": false,
                 "error_probability": 1.0,
                 "target_joints": [
                     0
@@ -61,7 +64,7 @@
             "observation.state": {
                 "type": "STATE",
                 "shape": [
-                    29
+                    14
                 ]
             }
         },
@@ -80,7 +83,7 @@
         "shared_encoder": true,
         "image_encoder_hidden_dim": 32,
         "image_embedding_pooling_dim": 8,
-        "state_encoder_hidden_dim": 256,
+        "state_encoder_hidden_dim": 64,
         "latent_dim": 256,
         "num_discrete_actions": null,
         "online_steps": 50000,
@@ -91,8 +94,14 @@
         "offline_warmup_steps": 500,
         "offline_only_mode": false,
         "offline_pretrain_steps": 5000,
+        "normalization_mapping": {
+            "VISUAL": "MEAN_STD",
+            "STATE": "IDENTITY",
+            "ENV": "IDENTITY",
+            "ACTION": "IDENTITY"
+        },
         "demo_pickle_paths": [
-            "data/with_bias/wipe/*.pkl"
+            "data/no_bias/wipe/*.pkl"
         ],
         "demo_key_map": {
             "agent_pos": "observation.state",
@@ -118,10 +127,20 @@
             "observation.images.front",
             "observation.images.wrist"
         ],
-        "dataset_stats": null,
+        "dataset_stats": {
+            "observation.images.front": {
+                "mean": [0.485, 0.456, 0.406],
+                "std":  [0.229, 0.224, 0.225]
+            },
+            "observation.images.wrist": {
+                "mean": [0.485, 0.456, 0.406],
+                "std":  [0.229, 0.224, 0.225]
+            }
+        },
         "discount": 0.97,
         "temperature_init": 0.1,
         "target_entropy": -3.5,
+        "use_backup_entropy": false,
         "num_critics": 2,
         "critic_lr": 0.0003,
         "actor_lr": 0.0003,
@@ -131,6 +150,15 @@
         "grad_clip_norm": 40.0,
         "use_torch_compile": false,
         "push_to_hub": false,
+        "critic_network_kwargs": {
+            "activations": "Tanh"
+        },
+        "actor_network_kwargs": {
+            "activations": "Tanh"
+        },
+        "policy_kwargs": {
+            "std_max": 5.0
+        },
         "actor_learner_config": {
             "learner_host": "127.0.0.1",
             "learner_port": 50051,
@@ -142,10 +170,10 @@
         }
     },
     "dataset": null,
-    "output_dir": "checkpoints/wipe_real",
+    "output_dir": "checkpoints/no_bias/wipe/wipe_real",
     "job_name": "frrl_wipe_real",
     "seed": 1000,
-    "batch_size": 128,
+    "batch_size": 256,
     "steps": 100000,
     "log_freq": 100,
     "save_freq": 1000,
