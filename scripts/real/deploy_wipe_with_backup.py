@@ -1,16 +1,15 @@
-"""BC task policy + backup safety policy 联合部署 via HierarchicalSupervisor。
+"""BC wipe policy + backup safety policy 联合部署 via HierarchicalSupervisor.
 
-支持 wipe / pickup / pickandplace 三任务，--task 切换。基于
-scripts/real/deploy_backup_policy.py 的 3-state FSM，把 task_action_fn 从
-SpaceMouse 替换成 BC policy 推理。BC 用 front + wrist 双相机 + 14D state
-（来自 /getstate_true 的 unbiased TCP pose + vel + gripper），跟
+基于 scripts/real/deploy_backup_policy.py 的 3-state FSM，把 task_action_fn
+从 SpaceMouse 替换成 BC wipe policy 推理。BC 用 front + wrist 双相机 +
+14D state（来自 /getstate_true 的 unbiased TCP pose + vel + gripper），跟
 deploy_bc_inference.py 训练分布一致。
 
 FSM 状态：
-  TASK    — BC policy 自主控制（state + 2 cam images）
+  TASK    — BC wipe policy 自主控制（state + 2 cam images）
   BACKUP  — Backup policy 主动避让检测到的手（84D 堆叠 state，无图像）
-  HOMING  — BACKUP 退出后强制 go_home_to_reset_pose 完整复位
-            （pickup 实测 mid-task resume 不可用，全任务统一 full reset）
+  HOMING  — BACKUP 退出后把 TCP 拉回 tcp_start（进入 BACKUP 时记录），
+            6D 位姿收敛后切回 TASK（避免 BC 在 OOD pose 上输出异常）
 
 切换条件（中心距，对齐 backup sim training 语义）：
   TASK → BACKUP : hand_body_equiv ↔ bbox_center 距离 < D_SAFE
@@ -18,36 +17,22 @@ FSM 状态：
   HOMING → TASK : pos_err < tol AND rot_err < tol
 
 Action scale 按模式切换：
-  TASK_*_SCALE   = (0.05, 0.1)  ← 跟 BC 训练时的 frrl ACTION_SCALE 一致
+  TASK_*_SCALE   = (0.05, 0.1)  ← 跟 BC 训练时的 frrl pickup ACTION_SCALE 一致
   BACKUP_*_SCALE = (0.025, 0.05) ← 跟 backup sim 训练 scale 一致
 
 相机配置（系统只有 2 个 RealSense，HandDetector 跟 BC 共享 front）：
-  front (234222303420) — HandDetector 用，BC 复用其 RGB（crop 由
-                          task_cfg.image_crop['front'] 提供 → resize 128×128）
-  wrist (318122303303) — BC 独占
+  front (234222303420) — HandDetector 用（color+depth 检测手），同时 BC 复用其 RGB
+                          （crop 工作面 ROI [94:314, 180:400] → resize 128×128）
+  wrist (318122303303) — BC 独占，单独开 RealSenseCameraManager 拿 RGB
 
-任务专属 success 判定：
-  pickup        — auto-success: tcp_z >= reset_z + lift_threshold AND gripper_pos in held range
-  wipe          — keyboard only: 操作员在 OpenCV 窗口按 ENTER 标 success
-  pickandplace  — keyboard only: 同 wipe
-
-用法（pickup）：
-  python scripts/real/deploy_task_with_backup.py --task pickup \\
-      --bc-ckpt checkpoints/no_bias/pickup/pickup_bc_iter2_*/checkpoints/020000/pretrained_model \\
-      --ckpt-version v3
-
-用法（wipe）：
-  python scripts/real/deploy_task_with_backup.py --task wipe \\
-      --bc-ckpt checkpoints/no_bias/wipe/wipe_bc_iter0_*/checkpoints/020000/pretrained_model \\
-      --ckpt-version v3
-
-用法（pickandplace）：
-  python scripts/real/deploy_task_with_backup.py --task pickandplace \\
-      --bc-ckpt checkpoints/no_bias/pickandplace/pickandplace_bc_iter0_*/checkpoints/020000/pretrained_model \\
+用法：
+  python scripts/real/deploy_wipe_with_backup.py \\
+      --bc-ckpt checkpoints/pickup_bc_20260429_171959/checkpoints/020000/pretrained_model \\
+      --backup-ckpt checkpoints/backup_policy/backup_policy_s1_v3b_300k_95pct \\
       --ckpt-version v3
 
   # dry-run 不发 /pose，只测 obs / inference / FSM 切换
-  python scripts/real/deploy_task_with_backup.py --task <T> --bc-ckpt ... --dry-run
+  python scripts/real/deploy_wipe_with_backup.py --bc-ckpt ... --dry-run
 """
 import argparse
 import time
@@ -114,18 +99,17 @@ WRIST_CAMERA_SERIAL = "318122303303"  # 只 BC 用，单独开 RealSenseCameraMa
 # Image size for BC network input（跟训练对齐）
 IMAGE_SIZE = (128, 128)
 
+# front 工作面 ROI（来自 frrl/envs/real_config.py:make_pickup_config:image_crop["front"]
+# = make_workspace_roi_crop(180, 94, 400, 314)）—— BC 训练时 front 帧是 [v=94:314, u=180:400]
+# 220×220 ROI 然后 resize 到 128×128。
+FRONT_CROP_VYUX = (136, 338, 192, 394)  # wipe ROI: select_workspace_roi.py 框选 (192,136,394,338)
 
-def make_crop_resize_front(image_crop_fn):
-    """从 task_cfg.image_crop['front'] 包一层，加 resize 到 BC 输入尺寸。
 
-    task_cfg.image_crop['front'] 是 make_workspace_roi_crop(u0, v0, u1, v1)
-    的闭包，对 (H,W,3) numpy 图做 [v0:v1, u0:u1] 切片，跟 BC 训练时的预处理
-    一致。再加 cv2.resize 到 128×128 给 BC encoder。
-    """
-    def _crop_resize(rgb_img):
-        cropped = image_crop_fn(rgb_img)
-        return cv2.resize(cropped, IMAGE_SIZE)
-    return _crop_resize
+def crop_resize_front(rgb_img):
+    """对 HandDetector.get_frames() 的 RGB 帧做 BC 训练时同款 crop + resize。"""
+    v0, v1, u0, u1 = FRONT_CROP_VYUX
+    cropped = rgb_img[v0:v1, u0:u1]
+    return cv2.resize(cropped, IMAGE_SIZE)
 
 
 # ---------- HTTP helpers ----------
@@ -465,10 +449,6 @@ class GripperCommander:
 # ---------- Main ----------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", required=True, choices=["wipe", "pickup", "pickandplace"],
-                    help="决定 reset_pose / image_crop / gripper_locked / max_episode_length 等"
-                         "task-specific 参数。pickup 走 z+gripper auto-success；wipe / pickandplace "
-                         "走键盘 ENTER 标 success（OpenCV 窗口需要 focus）。")
     ap.add_argument("--bc-ckpt", required=True,
                     help="path to BC pickup .../pretrained_model")
     ap.add_argument("--backup-ckpt", default=None,
@@ -486,12 +466,7 @@ def main():
     ap.add_argument("--lift-threshold", type=float, default=0.06,
                     help="z 抬升触发 success 的阈值 m（reset_z + 此值）")
     ap.add_argument("--wait-operator", action="store_true",
-                    help="success 复位后阻塞等待操作员在终端按 Enter 再开下一集"
-                         "（pickup 默认 sleep 1.5s 自动继续；wipe/pickandplace 默认强制等待 "
-                         "无论此 flag——操作员必须物理摆好场景，否则 BC episode 2 看到 OOD 必崩）")
-    ap.add_argument("--no-wait-operator", action="store_true",
-                    help="强制不等操作员，所有 task 都 sleep 1.5s 自动进下一集。仅当你确定场景"
-                         "自动复位（比如 wipe 海绵不动 + 重复擦同一片）才用，否则 BC 会 OOD")
+                    help="success 复位后阻塞等待操作员按 Enter 再开下一集（默认 sleep 1.5s 自动继续）")
     ap.add_argument("--gripper-held-min", type=float, default=0.02,
                     help="auto-success gripper_pos 下界（< 此值视作空夹）。"
                          "2026-04-30 从 0.05 降到 0.02：海绵被 130N 压扁到 ~0.038，"
@@ -556,7 +531,7 @@ def main():
         image_size=IMAGE_SIZE,
     )
     print(f"[OK] RealSense wrist initialized at {IMAGE_SIZE} "
-          f"(front shared with HandDetector, ROI from task_cfg.image_crop['front'])")
+          f"(front shared with HandDetector, ROI {FRONT_CROP_VYUX})")
 
     # ---------- Init impedance controller ----------
     try:
@@ -579,12 +554,8 @@ def main():
         print(f"[FAIL] controller setup: {e}")
         return
 
-    # ---------- Task config（拿 reset_pose / 阻抗参数 / 工作空间边界 / image_crop 给 TASK 用） ----------
-    # pickup 用 reward_backend="pose" 让 env 跳过 keyboard 等待（auto-success 由本脚本判定）
-    # wipe / pickandplace 用 keyboard backend，但本脚本绕过 env.step，keyboard listener 不启动；
-    # success 判定走 cv2.waitKey 在主循环里检测 ENTER 键
-    _reward_backend = "pose" if args.task == "pickup" else "keyboard"
-    task_cfg = make_task_config(task=args.task, use_bias=False, reward_backend=_reward_backend)
+    # ---------- Pickup task config（拿 reset_pose / 阻抗参数 / 工作空间边界给 TASK 用） ----------
+    task_cfg = make_task_config(task="wipe", use_bias=False, reward_backend="keyboard")
     reset_pose_6d = task_cfg.reset_pose
     precision_param = task_cfg.precision_param
     compliance_param = task_cfg.compliance_param
@@ -593,14 +564,6 @@ def main():
     task_workspace_min = task_cfg.abs_pose_limit_low[:3].astype(np.float64)
     task_workspace_max = task_cfg.abs_pose_limit_high[:3].astype(np.float64)
     success_z_threshold = float(reset_pose_6d[2]) + args.lift_threshold
-    # 任务-specific front crop：从 task_cfg.image_crop['front'] 提取闭包，包一层 cv2.resize
-    # 替代之前 FRONT_CROP_VYUX 硬编码（仅 pickup ROI）。wipe/pickandplace 各自走对应 ROI。
-    crop_resize_front = make_crop_resize_front(task_cfg.image_crop["front"])
-    # 标志位：gripper_locked="closed" 时 BACKUP 复位后**不调** force_open（wipe 海绵
-    # 应该一直夹着，pickup/pickandplace 才需要 force_open 释放抓物）
-    _release_on_recover = (task_cfg.gripper_locked != "closed")
-    print(f"[OK] task={args.task}, gripper_locked={task_cfg.gripper_locked}, "
-          f"max_ep={task_cfg.max_episode_length}, release_on_recover={_release_on_recover}")
     print(f"[OK] reset_pose.xyz = {np.round(reset_pose_6d[:3], 3)}, "
           f"success_z_threshold = {success_z_threshold:.3f}m")
     print(f"[OK] TASK workspace: min={task_workspace_min.tolist()}, max={task_workspace_max.tolist()}")
@@ -641,27 +604,21 @@ def main():
     gripper_cmdr = GripperCommander()
     rng = np.random.default_rng(0)
     success_count = 0
+    # 操作员从 cv2 窗口按 ENTER 触发的 success 标志（dict 容器让闭包修改可见）
+    _success_flag = {"triggered": False}
     iter_count = 0
     last_action7 = None  # 给诊断 print 用
     prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
-    # 操作员从 cv2 窗口按 ENTER 触发的 success 标志（wipe / pickandplace 用，
-    # pickup 也可以用作手动 override）。dict 容器让闭包修改可见。
-    _keyboard_success_flag = {"triggered": False}
 
     print("\n=== Deployment Active ===")
-    print(f"  TASK    (green)  — BC {args.task} policy ({args.bc_ckpt})")
+    print(f"  TASK    (green)  — BC wipe policy ({args.bc_ckpt})")
     print(f"  BACKUP  (red)    — backup policy ({backup_ckpt}) when hand_dist < {d_safe}m")
-    print(f"  HOMING  (orange) — full reset to reset_pose after BACKUP clears")
+    print(f"  HOMING  (orange) — return to tcp_start after BACKUP clears")
     print(f"  Action scale: TASK=({TASK_ACTION_SCALE},{TASK_ROTATION_SCALE}), "
           f"BACKUP=({BACKUP_ACTION_SCALE},{BACKUP_ROTATION_SCALE})")
-    if args.task == "pickup":
-        print(f"  Success: auto z+gripper (z>={success_z_threshold:.3f}m, "
-              f"gripper∈({args.gripper_held_min}, {args.gripper_held_max})) OR ENTER 键")
-    else:
-        print(f"  Success: 操作员在 OpenCV 窗口按 ENTER 标 success（task={args.task} 无 auto-success）")
     if args.dry_run:
         print("  ⚠️ --dry-run: 不发 /pose 不发 gripper")
-    print("  Q 退出\n")
+    print("  Ctrl+C 退出\n")
 
     dt = 1.0 / CTRL_HZ
     try:
@@ -740,7 +697,7 @@ def main():
 
             # ---------- Action callbacks ----------
             def task_action_fn():
-                """BC pickup policy forward。返回 7D action [-1, 1]^7。"""
+                """BC wipe policy forward。返回 7D action [-1, 1]^7。"""
                 state14 = build_bc_state14(state)
                 batch = build_bc_batch(state14, cam_images, device)
                 with torch.no_grad():
@@ -855,11 +812,8 @@ def main():
             if np.any(np.abs(action_rpy) > 1e-6):
                 cur_R = R.from_quat(actual_quat_xyzw)
                 dR = R.from_rotvec(action_rpy)
-                # ⚠️ 旋转乘法顺序必须与 env (frrl/envs/real.py:278) 一致：
-                # delta * curr（world frame）。BC 训练时 env 用的就是 world-frame
-                # rotation delta；这里用 curr * delta (body frame) 会导致 yaw
-                # 应用方向错误，pickandplace 这种大 yaw 任务尤其明显（实测 2026-05-03
-                # 联合部署 vs 单独部署同 ckpt 行为差距巨大，bug 在这里）。
+                # 旋转乘法顺序与 env (frrl/envs/real.py:278) 一致：delta * curr (world frame)
+                # BC 训练时 env 用的就是 world-frame rotation delta
                 target_quat_xyzw = list((dR * cur_R).as_quat())
             else:
                 target_quat_xyzw = actual_quat_xyzw
@@ -874,60 +828,27 @@ def main():
             if new_mode == Mode.TASK and not args.dry_run:
                 gripper_cmdr.step(float(action7[6]), float(state["gripper_pos"]))
 
-            # ---------- Success detection + episode reset (TASK 模式) ----------
-            # pickup: 自动 z+gripper 判定（reward_backend="pose"）
-            # wipe / pickandplace: 操作员在 OpenCV 窗口按 ENTER 标 success（cv2.waitKey 在
-            # 下面 visualization 段读取）。两条路最终走同一段 reset 逻辑。
-            success_triggered = False
-            if args.auto_reset_on_success and new_mode == Mode.TASK and args.task == "pickup":
-                z = float(state["pose"][2])
-                grip = float(state["gripper_pos"])
-                if z >= success_z_threshold and args.gripper_held_min < grip < args.gripper_held_max:
-                    success_triggered = True
-                    print(f"\n[SUCCESS #{success_count + 1}] auto: z={z:.3f}, gripper={grip:.3f}")
-            # 注：wipe / pickandplace 的 ENTER 标 success 在 cv2 段处理（_keyboard_success 标志位）
-
-            if success_triggered or _keyboard_success_flag.get("triggered", False):
-                _keyboard_success_flag["triggered"] = False
+            # ---------- Success detection (cv2 ENTER) + episode reset (TASK 模式) ----------
+            # wipe 没 auto-success：操作员看 OpenCV 窗口判断"擦得够了"按 ENTER 标 success
+            # 顺序：ENTER → 等操作员物理摆好海绵起点+收手 → homing → ep2
+            # gripper_locked="closed" 任务，海绵一直夹着，复位**不**force_open
+            if _success_flag.get("triggered", False) and new_mode == Mode.TASK:
+                _success_flag["triggered"] = False
                 success_count += 1
                 homing_ok = True
                 if not args.dry_run:
-                    # 关键顺序（2026-05-03 重构）：
-                    #   1. 立刻 force_open 释放抓物（pickup/pickandplace；wipe 跳过让海绵留着）
-                    #   2. **等操作员**物理摆好场景 + 收手离开工作区
-                    #   3. **然后** go_home_to_reset_pose（hand 已离开，homing 不会被中断）
-                    # 旧顺序是先 homing 后等操作员，homing 期间操作员伸手摆物 → hand_detector
-                    # 触发 BACKUP → supervisor 自然 HOMING 到 tcp_start（非 reset_pose）→ BC OOD。
-                    if _release_on_recover:
-                        gripper_cmdr.force_open()
-
-                    # 等操作员策略：
-                    # - wipe / pickandplace 默认强制等：scene state 必须操作员物理复位
-                    # - pickup 默认不等（场景半自动复位：force_open 后海绵掉桌面，
-                    #   1.5s 内操作员把它摆好即可；想要等就加 --wait-operator）
-                    _should_wait = args.wait_operator or (
-                        args.task in ("wipe", "pickandplace") and not args.no_wait_operator
+                    # 先等操作员摆好海绵 + 收手离开工作区，再 homing 不会被 hand_detector 中断
+                    wait_for_operator_with_camera_drain(
+                        hand_detector, cam_mgr,
+                        "    [pause] 摆好海绵起始位置 + 收手离开工作区，"
+                        "**在终端**按 Enter 开始 homing+下一集 (Ctrl+C 退出)... ",
                     )
-                    if _should_wait:
-                        wait_for_operator_with_camera_drain(
-                            hand_detector, cam_mgr,
-                            f"    [pause] 物理摆好 {args.task} 场景"
-                            + ("（海绵在合适位置）" if args.task == "wipe"
-                               else "（餐具放回盘子）" if args.task == "pickandplace"
-                               else "（物块放回工作面）")
-                            + " + 收手离开工作区，**在终端**按 Enter 开始 homing+下一集 (Ctrl+C 退出)... ",
-                        )
-                    else:
-                        drain_sleep(1.5, hand_detector, cam_mgr)
-
-                    # 现在才 homing —— 操作员手应已离开，不会触发 BACKUP
                     homing_ok = go_home_to_reset_pose(
                         reset_pose_6d, precision_param, compliance_param,
                         hand_detector, cam_mgr, d_safe=d_safe,
                     )
                     if not homing_ok:
-                        print("[recover] homing 被 hand 检测中断（手没收干净？）→ 让主 FSM 接管，"
-                              "下一帧 BACKUP/HOMING 处理")
+                        print("[recover] homing 被 hand 检测中断（手没收干净？）→ 让主 FSM 接管")
                 if homing_ok:
                     supervisor.reset()
                     backup_obs_buf.clear()
@@ -947,18 +868,14 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(vis, f"successes: {success_count}", (10, 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"task: {args.task}", (10, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
-            if args.task != "pickup":
-                cv2.putText(vis, "ENTER=success  Q=quit", (10, 460),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
-            cv2.imshow(f"deploy_task_with_backup [{args.task}]", vis)
+            cv2.putText(vis, "ENTER=success  Q=quit", (10, 460),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
+            cv2.imshow("deploy_wipe_with_backup", vis)
             _key = cv2.waitKey(1) & 0xFF
             if _key == ord('q'):
                 break
-            elif _key in (10, 13) and new_mode == Mode.TASK:  # ENTER (Linux=10, generic=13)
-                # 操作员标记 success：触发本帧后续的 reset 逻辑
-                _keyboard_success_flag["triggered"] = True
+            elif _key in (10, 13) and new_mode == Mode.TASK:
+                _success_flag["triggered"] = True
                 print(f"\n[SUCCESS #{success_count + 1}] keyboard ENTER")
 
             # ---------- Rate ----------

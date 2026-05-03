@@ -29,6 +29,7 @@ charts/
 # Task policy demo pickles (per-robot teleop recordings, too large for git)
 # 2026-04-30 数据重组：data/{no_bias|with_bias}/{task}/*.pkl，统一 ignore
 data/**/*.pkl
+data/**/*.pkl.bak
 
 # Auto-generated dataset statistics
 dataset_stats_generated.json
