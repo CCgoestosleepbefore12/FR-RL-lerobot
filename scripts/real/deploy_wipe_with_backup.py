@@ -854,6 +854,15 @@ def main():
                     backup_obs_buf.clear()
                     last_hand_pos = None
                     last_hand_time = None
+                    # Drain cv2 keyboard event buffer：wait_for_operator 期间主循环
+                    # cv2.waitKey 没跑，OS 把 OpenCV 窗口的 keyboard 事件入队。
+                    # homing 完恢复主循环时，cv2.waitKey 会一次性把 buffer 里的事件
+                    # 吐出来——如果有 ENTER 残留，下一帧就会误触 SUCCESS#N+1，导致
+                    # 用户以为做了 N+1 个 episode 实际只做了 N 个 + 多走一次 reset。
+                    # 防御：drain 几次 + 显式清 flag。
+                    for _ in range(5):
+                        cv2.waitKey(1)
+                    _success_flag["triggered"] = False
 
             # ---------- Visualization ----------
             vis = hand_detector.draw_detection(color_img, hand)
