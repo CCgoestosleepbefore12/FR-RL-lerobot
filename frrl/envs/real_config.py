@@ -360,7 +360,13 @@ def make_pickandplace_config(
     cfg.reset_pose = np.array([0.4608, -0.0935, 0.2575, -3.07817, -0.01998, 0.01770])
     cfg.abs_pose_limit_low[5] = -np.pi / 2
     cfg.abs_pose_limit_high[5] = np.pi / 2
-    # ⚠️ image_crop 待 select_workspace_roi.py 框选盘子+放置区，当前用默认 center crop
+    # front 相机 ROI：select_workspace_roi.py 框选写回 (2026-05-03)
+    # roi_front_final = (177, 122, 405, 350) — 228×228 正方形，覆盖盘子 + 放置区
+    # 比 wipe 的 202×202 大 ~12%（盘子 + 旁边放置区都纳入视野）
+    cfg.image_crop = {
+        "front": make_workspace_roi_crop(177, 122, 405, 350),
+        "wrist": center_square_crop,
+    }
     if use_bias:
         cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.1, 0.1))
         cfg.enable_bias_monitor = enable_bias_monitor
