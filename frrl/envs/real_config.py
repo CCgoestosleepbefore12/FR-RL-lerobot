@@ -100,12 +100,15 @@ class FrankaRealConfig:
     abs_pose_limit_low: np.ndarray = field(
         default_factory=lambda: np.array([0.386, -0.213, 0.175, -np.pi, -0.2, -0.2])
     )
-    # z 上限 0.8m：现场工作台上方完全无遮挡（无相机/灯架/天花板障碍），
-    # 远高于 Franka 最大 reach (~0.855m)，等价于 z 方向不约束。所有 task 共享这个
-    # 宽松上限，每个 factory 不再 override z 维。lift headroom 检查 (real.py:108
-    # `abs_pose_limit_high[2] - reset_pose[2] ≥ 0.10`) 自动满足。
+    # z 上限 0.4m（2026-05-03 从 0.8 收紧）：物理上工作台上方虽然无遮挡，但 BC
+    # 训练分布的 z 范围实际只在 [reset_z≈0.26, ~0.36] 内，部署时 z>0.40 是 OOD，
+    # BC 可能输出乱动作。0.4m 给了 reset_z 上方 14cm 工作高度，pickup/wipe/
+    # pickandplace 三个 kitchen 任务都够用（auto-success 触发 z 在 0.30 左右），
+    # 同时挡住 BC 飞到训练分布外。lift headroom 检查 (real.py:108
+    # `abs_pose_limit_high[2] - reset_pose[2] ≥ 0.10`) 自动满足（reset_z<=0.30）。
+    # 未来 hover 类任务（reset_z=0.36+）需要 task-level override 抬高此值。
     abs_pose_limit_high: np.ndarray = field(
-        default_factory=lambda: np.array([0.709, 0.198, 0.8, np.pi, 0.2, 0.2])
+        default_factory=lambda: np.array([0.709, 0.198, 0.4, np.pi, 0.2, 0.2])
     )
 
     # 重置位姿 (6D: x,y,z,rx,ry,rz euler)
