@@ -486,7 +486,12 @@ def main():
     ap.add_argument("--lift-threshold", type=float, default=0.06,
                     help="z 抬升触发 success 的阈值 m（reset_z + 此值）")
     ap.add_argument("--wait-operator", action="store_true",
-                    help="success 复位后阻塞等待操作员按 Enter 再开下一集（默认 sleep 1.5s 自动继续）")
+                    help="success 复位后阻塞等待操作员在终端按 Enter 再开下一集"
+                         "（pickup 默认 sleep 1.5s 自动继续；wipe/pickandplace 默认强制等待 "
+                         "无论此 flag——操作员必须物理摆好场景，否则 BC episode 2 看到 OOD 必崩）")
+    ap.add_argument("--no-wait-operator", action="store_true",
+                    help="强制不等操作员，所有 task 都 sleep 1.5s 自动进下一集。仅当你确定场景"
+                         "自动复位（比如 wipe 海绵不动 + 重复擦同一片）才用，否则 BC 会 OOD")
     ap.add_argument("--gripper-held-min", type=float, default=0.02,
                     help="auto-success gripper_pos 下界（< 此值视作空夹）。"
                          "2026-04-30 从 0.05 降到 0.02：海绵被 130N 压扁到 ~0.038，"
@@ -896,10 +901,23 @@ def main():
                         # 让海绵继续被夹着；pickup/pickandplace 释放抓物
                         if _release_on_recover:
                             gripper_cmdr.force_open()
-                        if args.wait_operator:
+                        # 等操作员策略：
+                        # - wipe / pickandplace 默认强制等：scene state（海绵/餐具位置）必须
+                        #   操作员物理复位，否则 BC ep2 看到 OOD obs 必飞。--no-wait-operator
+                        #   强制跳过此等待
+                        # - pickup 默认不等（场景自重置：抓起 → 操作员 1.5s 内放下个海绵就行）
+                        # - --wait-operator 显式打开，所有 task 都等
+                        _should_wait = args.wait_operator or (
+                            args.task in ("wipe", "pickandplace") and not args.no_wait_operator
+                        )
+                        if _should_wait:
                             wait_for_operator_with_camera_drain(
                                 hand_detector, cam_mgr,
-                                "    [pause] 摆好场景，按 Enter 开始下一集 (Ctrl+C 退出)... ",
+                                f"    [pause] 物理摆好 {args.task} 场景"
+                                + ("（海绵在合适位置）" if args.task == "wipe"
+                                   else "（餐具放回盘子）" if args.task == "pickandplace"
+                                   else "（物块放回工作面）")
+                                + "，**在终端**按 Enter 开始下一集 (Ctrl+C 退出)... ",
                             )
                         else:
                             drain_sleep(1.5, hand_detector, cam_mgr)
