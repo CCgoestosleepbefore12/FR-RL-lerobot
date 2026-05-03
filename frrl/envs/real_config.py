@@ -355,10 +355,9 @@ def make_pickandplace_config(
         random_reset=False,
         random_xy_range=0.0,
     )
-    # ⚠️ TODO 现场标定 reset_pose：SpaceMouse 摆到悬停在盘子上方位置后，
-    # curl -X POST http://192.168.100.1:5000/getstate_true 读出来填这里。
-    # 暂用 pickup 的 reset 作 placeholder，行为合理但工作面对不准。
-    cfg.reset_pose = np.array([0.5334, 0.0149, 0.2586, -3.09848, 0.01591, 0.01375])
+    # reset_pose 与 wipe 一致：都是悬停在同一个盘子上方（厨房场景共享工作面），
+    # wipe 擦盘子 + pickandplace 把餐具从盘子移走，自然共用相同 hover 位置。
+    cfg.reset_pose = np.array([0.4608, -0.0935, 0.2575, -3.07817, -0.01998, 0.01770])
     cfg.abs_pose_limit_low[5] = -np.pi / 2
     cfg.abs_pose_limit_high[5] = np.pi / 2
     # ⚠️ image_crop 待 select_workspace_roi.py 框选盘子+放置区，当前用默认 center crop
