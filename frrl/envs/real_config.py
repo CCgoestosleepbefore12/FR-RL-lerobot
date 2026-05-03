@@ -332,38 +332,38 @@ def make_pickup_config(
     return cfg
 
 
-def make_assembly_config(
+def make_pickandplace_config(
     use_bias: bool = True,
     reward_backend: str = "keyboard",
     enable_bias_monitor: bool = False,
     bias_monitor_save_path: Optional[str] = None,
 ) -> FrankaRealConfig:
-    """Assembly task — gripper 锁闭夹零件，从 hover 高位下降插入/对齐。
+    """Pick-and-place task — 把勺子/叉子从盘子上抓起来移到旁边放下，厨房场景。
 
-    与 pickup/wipe 关键差异：
-      - gripper_locked="closed"：reset 时已预夹零件（gripper_pos≈0.33 ~26mm 持物开度）
-      - reset_pose=[0.5067, -0.0197, 0.3600, -3.075, -0.011, -0.035]：现场用 SpaceMouse
-        摆到装配面正上方 hover 位置后从 /getstate_true 读出（2026-04-30 标定）。
-        z=0.36 比 pickup/wipe 高 ~10cm，给下降插入留余量
-      - max_episode_length=200：20s @ 10Hz，多阶段对齐+插入
-      - bias_range=(-0.05, 0.05)：装配是接触类任务，对 J1 bias 极其敏感，
-        比 pickup 的 ±0.1 还窄一半
-      - rz 范围 ±π/2：装配通常需要精确 yaw 对齐；如果你的零件只能小范围旋转
-        对齐（比如花键、键槽），可以收窄
-    abs_pose_limit 其他维用 FrankaRealConfig 默认（z 上限 0.8m 不约束）。
+    与 pickup 关键差异：
+      - max_episode_length=200：20s @ 10Hz，比 pickup 长一倍。pickup 是抓+抬，
+        pickandplace 是 抓 → 横向移动 → 放下，多一个 transport 阶段
+      - reset_pose 待现场标定：当前用 pickup reset 作 placeholder，应改成
+        悬停在盘子上方的位置（横跨盘子+放置区都能覆盖到的中心）
+      - 其他与 pickup 一致：gripper_locked="none", bias_range=(-0.1, 0.1),
+        rz=±π/2（餐具是细长形，yaw 对齐关键）
     """
     cfg = FrankaRealConfig(
         reward_backend=reward_backend,
-        gripper_locked="closed",
+        gripper_locked="none",
         max_episode_length=200,
         random_reset=False,
+        random_xy_range=0.0,
     )
-    cfg.reset_pose = np.array([0.5067, -0.0197, 0.3600, -3.07533, -0.01079, -0.03457])
+    # ⚠️ TODO 现场标定 reset_pose：SpaceMouse 摆到悬停在盘子上方位置后，
+    # curl -X POST http://192.168.100.1:5000/getstate_true 读出来填这里。
+    # 暂用 pickup 的 reset 作 placeholder，行为合理但工作面对不准。
+    cfg.reset_pose = np.array([0.5334, 0.0149, 0.2586, -3.09848, 0.01591, 0.01375])
     cfg.abs_pose_limit_low[5] = -np.pi / 2
     cfg.abs_pose_limit_high[5] = np.pi / 2
-    # ⚠️ image_crop / 工作面 ROI 待 select_workspace_roi.py 框选后接入；当前用默认值
+    # ⚠️ image_crop 待 select_workspace_roi.py 框选盘子+放置区，当前用默认 center crop
     if use_bias:
-        cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.05, 0.05))
+        cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.1, 0.1))
         cfg.enable_bias_monitor = enable_bias_monitor
         cfg.bias_monitor_save_path = bias_monitor_save_path
     return cfg
@@ -372,7 +372,7 @@ def make_assembly_config(
 TASK_CONFIG_FACTORIES = {
     "wipe": make_wipe_config,
     "pickup": make_pickup_config,
-    "assembly": make_assembly_config,
+    "pickandplace": make_pickandplace_config,
 }
 
 
