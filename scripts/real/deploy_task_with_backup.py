@@ -892,37 +892,42 @@ def main():
                 success_count += 1
                 homing_ok = True
                 if not args.dry_run:
+                    # 关键顺序（2026-05-03 重构）：
+                    #   1. 立刻 force_open 释放抓物（pickup/pickandplace；wipe 跳过让海绵留着）
+                    #   2. **等操作员**物理摆好场景 + 收手离开工作区
+                    #   3. **然后** go_home_to_reset_pose（hand 已离开，homing 不会被中断）
+                    # 旧顺序是先 homing 后等操作员，homing 期间操作员伸手摆物 → hand_detector
+                    # 触发 BACKUP → supervisor 自然 HOMING 到 tcp_start（非 reset_pose）→ BC OOD。
+                    if _release_on_recover:
+                        gripper_cmdr.force_open()
+
+                    # 等操作员策略：
+                    # - wipe / pickandplace 默认强制等：scene state 必须操作员物理复位
+                    # - pickup 默认不等（场景半自动复位：force_open 后海绵掉桌面，
+                    #   1.5s 内操作员把它摆好即可；想要等就加 --wait-operator）
+                    _should_wait = args.wait_operator or (
+                        args.task in ("wipe", "pickandplace") and not args.no_wait_operator
+                    )
+                    if _should_wait:
+                        wait_for_operator_with_camera_drain(
+                            hand_detector, cam_mgr,
+                            f"    [pause] 物理摆好 {args.task} 场景"
+                            + ("（海绵在合适位置）" if args.task == "wipe"
+                               else "（餐具放回盘子）" if args.task == "pickandplace"
+                               else "（物块放回工作面）")
+                            + " + 收手离开工作区，**在终端**按 Enter 开始 homing+下一集 (Ctrl+C 退出)... ",
+                        )
+                    else:
+                        drain_sleep(1.5, hand_detector, cam_mgr)
+
+                    # 现在才 homing —— 操作员手应已离开，不会触发 BACKUP
                     homing_ok = go_home_to_reset_pose(
                         reset_pose_6d, precision_param, compliance_param,
                         hand_detector, cam_mgr, d_safe=d_safe,
                     )
-                    if homing_ok:
-                        # gripper_locked="closed" 任务（wipe）跳过 force_open，
-                        # 让海绵继续被夹着；pickup/pickandplace 释放抓物
-                        if _release_on_recover:
-                            gripper_cmdr.force_open()
-                        # 等操作员策略：
-                        # - wipe / pickandplace 默认强制等：scene state（海绵/餐具位置）必须
-                        #   操作员物理复位，否则 BC ep2 看到 OOD obs 必飞。--no-wait-operator
-                        #   强制跳过此等待
-                        # - pickup 默认不等（场景自重置：抓起 → 操作员 1.5s 内放下个海绵就行）
-                        # - --wait-operator 显式打开，所有 task 都等
-                        _should_wait = args.wait_operator or (
-                            args.task in ("wipe", "pickandplace") and not args.no_wait_operator
-                        )
-                        if _should_wait:
-                            wait_for_operator_with_camera_drain(
-                                hand_detector, cam_mgr,
-                                f"    [pause] 物理摆好 {args.task} 场景"
-                                + ("（海绵在合适位置）" if args.task == "wipe"
-                                   else "（餐具放回盘子）" if args.task == "pickandplace"
-                                   else "（物块放回工作面）")
-                                + "，**在终端**按 Enter 开始下一集 (Ctrl+C 退出)... ",
-                            )
-                        else:
-                            drain_sleep(1.5, hand_detector, cam_mgr)
-                    else:
-                        print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
+                    if not homing_ok:
+                        print("[recover] homing 被 hand 检测中断（手没收干净？）→ 让主 FSM 接管，"
+                              "下一帧 BACKUP/HOMING 处理")
                 if homing_ok:
                     supervisor.reset()
                     backup_obs_buf.clear()
