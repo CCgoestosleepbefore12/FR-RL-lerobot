@@ -850,7 +850,12 @@ def main():
             if np.any(np.abs(action_rpy) > 1e-6):
                 cur_R = R.from_quat(actual_quat_xyzw)
                 dR = R.from_rotvec(action_rpy)
-                target_quat_xyzw = list((cur_R * dR).as_quat())
+                # ⚠️ 旋转乘法顺序必须与 env (frrl/envs/real.py:278) 一致：
+                # delta * curr（world frame）。BC 训练时 env 用的就是 world-frame
+                # rotation delta；这里用 curr * delta (body frame) 会导致 yaw
+                # 应用方向错误，pickandplace 这种大 yaw 任务尤其明显（实测 2026-05-03
+                # 联合部署 vs 单独部署同 ckpt 行为差距巨大，bug 在这里）。
+                target_quat_xyzw = list((dR * cur_R).as_quat())
             else:
                 target_quat_xyzw = actual_quat_xyzw
             # 跟上一帧 quat 同半球，避免 sign-flip 让 impedance 走 360° 长路
