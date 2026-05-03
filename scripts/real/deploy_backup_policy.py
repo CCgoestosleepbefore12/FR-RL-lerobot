@@ -548,7 +548,12 @@ def main():
                 # interpret the vector as sequential Euler angles.
                 cur_R = R.from_quat(actual_quat_xyzw)
                 dR = R.from_rotvec(action_scaled_rpy)
-                target_quat_xyzw = list((cur_R * dR).as_quat())
+                # ⚠️ 旋转乘法顺序必须与 env (frrl/envs/real.py:278) 一致：
+                # delta * curr（world frame）。env 训练 backup policy 时用的就是
+                # world-frame rotation delta。曾用 curr * delta (body frame) →
+                # SpaceMouse / backup policy 的 yaw 应用方向反了，2026-05-03
+                # deploy_task_with_backup 同款 bug 修复时一并修这里。
+                target_quat_xyzw = list((dR * cur_R).as_quat())
             else:
                 target_quat_xyzw = actual_quat_xyzw
 
