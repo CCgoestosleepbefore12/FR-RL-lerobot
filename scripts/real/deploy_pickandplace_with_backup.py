@@ -604,13 +604,25 @@ def main():
     gripper_cmdr = GripperCommander()
     rng = np.random.default_rng(0)
     success_count = 0
-    # 操作员从 cv2 窗口按 ENTER 触发的 success 标志（dict 容器让闭包修改可见）
-    _success_flag = {"triggered": False}
+    fail_count = 0
     iter_count = 0
     last_action7 = None  # 给诊断 print 用
     prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
 
-    print("\n=== Deployment Active ===")
+    # KeyboardRewardListener: pynput 独立线程（"双线程"），与 deploy_bc_inference.py
+    # 同款键盘协议：S=开始 episode, ENTER=success, SPACE=fail, BACKSPACE=discard。
+    # 替代之前的 cv2 ENTER + wait_for_operator + stdin Enter 的混乱（cv2 buffer 残留
+    # 会误触发 SUCCESS）。
+    from frrl.rewards.keyboard_reward import KeyboardRewardListener
+    keyboard_listener = KeyboardRewardListener(required=True)
+    print("\n=== Keyboard Protocol (双线程, pynput) ===")
+    print("  S         开始 episode（每集开始前都要按）")
+    print("  ENTER     标记 success → 当前 episode 结束")
+    print("  SPACE     标记 fail → 当前 episode 结束")
+    print("  BACKSPACE discard → 当前 episode 结束")
+    print()
+
+    print("=== Deployment Active ===")
     print(f"  TASK    (green)  — BC pickandplace policy ({args.bc_ckpt})")
     print(f"  BACKUP  (red)    — backup policy ({backup_ckpt}) when hand_dist < {d_safe}m")
     print(f"  HOMING  (orange) — return to tcp_start after BACKUP clears")
@@ -618,7 +630,12 @@ def main():
           f"BACKUP=({BACKUP_ACTION_SCALE},{BACKUP_ROTATION_SCALE})")
     if args.dry_run:
         print("  ⚠️ --dry-run: 不发 /pose 不发 gripper")
-    print("  Ctrl+C 退出\n")
+    print("  Ctrl+C 退出 / Q 关闭 OpenCV 窗口\n")
+
+    # 第一 episode 之前先等操作员按 S（与 deploy_bc_inference.py 同款流程）
+    print("=== 等待操作员按 S 开始第一 episode ===")
+    keyboard_listener.wait_for_start()
+    print("=== ep 1 开始 ===\n")
 
     dt = 1.0 / CTRL_HZ
     try:
@@ -828,42 +845,39 @@ def main():
             if new_mode == Mode.TASK and not args.dry_run:
                 gripper_cmdr.step(float(action7[6]), float(state["gripper_pos"]))
 
-            # ---------- Success detection (cv2 ENTER) + episode reset (TASK 模式) ----------
-            # pickandplace 没 auto-success：操作员看 OpenCV 窗口判断"放到位了"按 ENTER 标 success
-            # 顺序：ENTER → force_open 释放餐具 → 等操作员把餐具摆回盘子+收手 → homing → ep2
-            if _success_flag.get("triggered", False) and new_mode == Mode.TASK:
-                _success_flag["triggered"] = False
-                success_count += 1
+            # ---------- Success detection (KeyboardRewardListener) + episode reset ----------
+            # 用 pynput 独立线程接 S/Enter/Space/Backspace（与 deploy_bc_inference.py 同款），
+            # 比 cv2.waitKey 稳：不会有 buffer 误触发，不依赖 OpenCV 窗口聚焦。
+            outcome_dict = keyboard_listener.poll() if new_mode == Mode.TASK else None
+            if outcome_dict is not None:
+                outcome = outcome_dict.get("outcome", "unknown")
+                if outcome == "success":
+                    success_count += 1
+                    print(f"\n[SUCCESS #{success_count}] keyboard ENTER")
+                else:
+                    fail_count += 1
+                    print(f"\n[{outcome.upper()}] (fail/discard #{fail_count})")
+
                 homing_ok = True
                 if not args.dry_run:
-                    # 1. 立刻 force_open 释放餐具（让操作员能拿起放回盘子）
+                    # 立刻 force_open 释放餐具（让操作员能拿起放回盘子）
                     gripper_cmdr.force_open()
-                    # 2. 等操作员摆好餐具 + 收手离开工作区
-                    wait_for_operator_with_camera_drain(
-                        hand_detector, cam_mgr,
-                        "    [pause] 把餐具放回盘子 + 收手离开工作区，"
-                        "**在终端**按 Enter 开始 homing+下一集 (Ctrl+C 退出)... ",
-                    )
-                    # 3. 操作员手已离开，homing 不会被中断
                     homing_ok = go_home_to_reset_pose(
                         reset_pose_6d, precision_param, compliance_param,
                         hand_detector, cam_mgr, d_safe=d_safe,
                     )
                     if not homing_ok:
-                        print("[recover] homing 被 hand 检测中断（手没收干净？）→ 让主 FSM 接管")
+                        print("[recover] homing 被 hand 检测中断 → 主 FSM 接管下一帧")
                 if homing_ok:
                     supervisor.reset()
                     backup_obs_buf.clear()
                     last_hand_pos = None
                     last_hand_time = None
-                    # Drain cv2 keyboard event buffer：wait_for_operator 期间主循环
-                    # cv2.waitKey 没跑，OS 把 OpenCV 窗口的 keyboard 事件入队。
-                    # homing 完恢复主循环时，cv2.waitKey 会一次性把 buffer 里的事件
-                    # 吐出来——如果有 ENTER 残留，下一帧就会误触 SUCCESS#N+1。
-                    # 防御：drain 几次 + 显式清 flag。
-                    for _ in range(5):
-                        cv2.waitKey(1)
-                    _success_flag["triggered"] = False
+                    keyboard_listener.mark_episode_ended()
+                    # 等下次操作员按 S 才进下一集
+                    print(f"=== ep done. 把餐具放回盘子 + 收手离开工作区 + 按 S 开始下一集 ===")
+                    keyboard_listener.wait_for_start()
+                    print(f"=== 下一 episode 开始 ===\n")
 
             # ---------- Visualization ----------
             vis = hand_detector.draw_detection(color_img, hand)
@@ -876,17 +890,13 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, mode_colors[new_mode], 2)
             cv2.putText(vis, f"hand_dist: {min_hand_dist:.3f}m", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"successes: {success_count}", (10, 90),
+            cv2.putText(vis, f"S {success_count}  F {fail_count}", (10, 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, "ENTER=success  Q=quit", (10, 460),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
+            cv2.putText(vis, "S=start  ENTER=success  SPACE=fail  Q=quit",
+                        (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
             cv2.imshow("deploy_pickandplace_with_backup", vis)
-            _key = cv2.waitKey(1) & 0xFF
-            if _key == ord('q'):
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            elif _key in (10, 13) and new_mode == Mode.TASK:
-                _success_flag["triggered"] = True
-                print(f"\n[SUCCESS #{success_count + 1}] keyboard ENTER")
 
             # ---------- Rate ----------
             elapsed = time.time() - t0
@@ -934,8 +944,12 @@ def main():
             cam_mgr.close()
         except Exception:
             pass
+        try:
+            keyboard_listener.stop()
+        except Exception:
+            pass
         cv2.destroyAllWindows()
-        print(f"=== Done. Total successes: {success_count} ===")
+        print(f"=== Done. Total successes: {success_count}, fails: {fail_count} ===")
 
 
 if __name__ == "__main__":
