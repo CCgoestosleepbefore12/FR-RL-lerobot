@@ -566,8 +566,8 @@ def main():
     # ---------- Pickup task config（拿 reset_pose / 阻抗参数 / 工作空间边界给 TASK 用） ----------
     bias_monitor_save_path = None
     if args.bias_monitor and args.bias:
+        # Path 已在顶部 import；这里只 import datetime（不会污染函数局部作用域）
         from datetime import datetime
-        from pathlib import Path
         Path("charts").mkdir(exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         bias_monitor_save_path = f"charts/bias_deploy_pickup_with_backup_{ts}"
