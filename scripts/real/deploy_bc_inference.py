@@ -115,8 +115,8 @@ def main():
     backend = "pose" if args.auto_success else "keyboard"
     bias_monitor_save_path = None
     if args.bias_monitor:
+        # Path 已在顶部 import；datetime 没有，局部 import OK
         from datetime import datetime
-        from pathlib import Path
         Path("charts").mkdir(exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         bias_monitor_save_path = f"charts/bias_deploy_{args.task}_{ts}"
