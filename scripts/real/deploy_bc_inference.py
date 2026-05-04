@@ -89,6 +89,10 @@ def main():
                          "实时 matplotlib 双线波形图（q_true vs q_biased + episode 边界竖线）。"
                          "默认输出到 charts/bias_deploy_<timestamp>.{npz,png}。"
                          "用于 paper 里的 bias robustness 对比图。")
+    ap.add_argument("--bias-range", type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
+                    help="覆盖 bias 采样范围（rad）。默认 None = 用 task factory 内置值"
+                         "（pickup/pickandplace=±0.1, wipe=±0.2）。例：--bias-range -0.05 0.05 "
+                         "测温和 bias；--bias-range -0.2 0.2 测大 bias。仅当 bias=ON 生效（不加 --no-bias）。")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -123,7 +127,10 @@ def main():
         reward_backend=backend,
         enable_bias_monitor=args.bias_monitor,
         bias_monitor_save_path=bias_monitor_save_path,
+        bias_range=tuple(args.bias_range) if args.bias_range is not None else None,
     )
+    if args.bias_range is not None and not args.no_bias:
+        logging.info(f"[deploy] bias_range override: {tuple(args.bias_range)} rad")
     env = FrankaRealEnv(cfg_env)
     reset_z = float(cfg_env.reset_pose[2])
     target_z = reset_z + args.lift_threshold

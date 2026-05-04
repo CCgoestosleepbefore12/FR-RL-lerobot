@@ -256,6 +256,7 @@ def make_wipe_config(
     reward_backend: str = "keyboard",
     enable_bias_monitor: bool = False,
     bias_monitor_save_path: Optional[str] = None,
+    bias_range: Optional[Tuple[float, float]] = None,
 ) -> FrankaRealConfig:
     """Wipe sponge across plate — gripper 锁闭夹海绵，长 episode (300 step)。
 
@@ -280,7 +281,11 @@ def make_wipe_config(
         "wrist": center_square_crop,
     }
     if use_bias:
-        cfg.encoder_bias_config = _make_j1_bias_cfg()
+        # bias_range=None → wipe 默认 (-0.2, 0.2)（_make_j1_bias_cfg 默认值）
+        cfg.encoder_bias_config = (
+            _make_j1_bias_cfg(bias_range=bias_range) if bias_range is not None
+            else _make_j1_bias_cfg()
+        )
         cfg.enable_bias_monitor = enable_bias_monitor
         cfg.bias_monitor_save_path = bias_monitor_save_path
     return cfg
@@ -291,6 +296,7 @@ def make_pickup_config(
     reward_backend: str = "keyboard",
     enable_bias_monitor: bool = False,
     bias_monitor_save_path: Optional[str] = None,
+    bias_range: Optional[Tuple[float, float]] = None,
 ) -> FrankaRealConfig:
     """Pickup sponge block — 夹爪自由控制，短 episode (80 step)，物块 reset xy 随机化。
 
@@ -329,7 +335,10 @@ def make_pickup_config(
         "wrist": center_square_crop,
     }
     if use_bias:
-        cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.1, 0.1))
+        # bias_range=None → pickup 默认 (-0.1, 0.1)
+        cfg.encoder_bias_config = _make_j1_bias_cfg(
+            bias_range=bias_range if bias_range is not None else (-0.1, 0.1)
+        )
         cfg.enable_bias_monitor = enable_bias_monitor
         cfg.bias_monitor_save_path = bias_monitor_save_path
     return cfg
@@ -340,6 +349,7 @@ def make_pickandplace_config(
     reward_backend: str = "keyboard",
     enable_bias_monitor: bool = False,
     bias_monitor_save_path: Optional[str] = None,
+    bias_range: Optional[Tuple[float, float]] = None,
 ) -> FrankaRealConfig:
     """Pick-and-place task — 把勺子/叉子从盘子上抓起来移到旁边放下，厨房场景。
 
@@ -371,7 +381,10 @@ def make_pickandplace_config(
         "wrist": center_square_crop,
     }
     if use_bias:
-        cfg.encoder_bias_config = _make_j1_bias_cfg(bias_range=(-0.1, 0.1))
+        # bias_range=None → pickandplace 默认 (-0.1, 0.1)
+        cfg.encoder_bias_config = _make_j1_bias_cfg(
+            bias_range=bias_range if bias_range is not None else (-0.1, 0.1)
+        )
         cfg.enable_bias_monitor = enable_bias_monitor
         cfg.bias_monitor_save_path = bias_monitor_save_path
     return cfg
