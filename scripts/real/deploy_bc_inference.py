@@ -84,6 +84,11 @@ def main():
                          "硬物（USB / RAM 等）抓住通常 > 0.05，原默认 0.05 仍可覆盖。")
     ap.add_argument("--gripper-held-max", type=float, default=0.6,
                     help="gripper_pos 上界（> 此值视作张开未夹，hil-serl 默认 0.6）")
+    ap.add_argument("--bias-monitor", action="store_true",
+                    help="启用 BiasMonitor：保存 q_true/q_biased/bias 时间序列 npz + "
+                         "实时 matplotlib 双线波形图（q_true vs q_biased + episode 边界竖线）。"
+                         "默认输出到 charts/bias_deploy_<timestamp>.{npz,png}。"
+                         "用于 paper 里的 bias robustness 对比图。")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -104,12 +109,20 @@ def main():
     # 走 no-op 分支（real.py:578），跳过键盘 wait_for_start 实现真自动复位。
     # 实际 success 判定在本脚本主循环里做，对齐 hil-serl pickup wrapper。
     backend = "pose" if args.auto_success else "keyboard"
+    bias_monitor_save_path = None
+    if args.bias_monitor:
+        from datetime import datetime
+        from pathlib import Path
+        Path("charts").mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bias_monitor_save_path = f"charts/bias_deploy_{args.task}_{ts}"
+        logging.info(f"[deploy] BiasMonitor enabled → {bias_monitor_save_path}.{{npz,png}}")
     cfg_env = make_task_config(
         task=args.task,
         use_bias=not args.no_bias,
         reward_backend=backend,
-        enable_bias_monitor=False,
-        bias_monitor_save_path=None,
+        enable_bias_monitor=args.bias_monitor,
+        bias_monitor_save_path=bias_monitor_save_path,
     )
     env = FrankaRealEnv(cfg_env)
     reset_z = float(cfg_env.reset_pose[2])
