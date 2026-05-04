@@ -481,6 +481,15 @@ def main():
                          "（手就算只触发避让没碰物块，gripper 状态/物块视觉位置已与 BC 训练分布偏离），"
                          "BC 在 tcp_start resume 后乱动 / 卡死。**pickup 不要用此 flag**，留作未来"
                          "wipe / 多阶段长 episode 任务的对比实验入口。")
+    ap.add_argument("--bias", action="store_true",
+                    help="启用 J1 encoder bias 注入。默认 OFF（联合部署默认 unbiased，安全保守）。"
+                         "加此 flag 后每 episode 起点采样新 bias 值并通过 RT PC 注入。")
+    ap.add_argument("--bias-range", type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
+                    help="覆盖 bias 采样范围（rad）。默认 None = 用 task factory 内置值"
+                         "（pickup ±0.1）。例：--bias-range -0.2 0.2 测大 bias。仅当 --bias 时生效。")
+    ap.add_argument("--bias-monitor", action="store_true",
+                    help="启用 BiasMonitor：保存 q_true/q_biased/bias 时间序列 npz + "
+                         "实时 matplotlib 双线波形图。默认输出 charts/bias_deploy_pickup_with_backup_*。")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -555,7 +564,22 @@ def main():
         return
 
     # ---------- Pickup task config（拿 reset_pose / 阻抗参数 / 工作空间边界给 TASK 用） ----------
-    task_cfg = make_task_config(task="pickup", use_bias=False, reward_backend="pose")
+    bias_monitor_save_path = None
+    if args.bias_monitor and args.bias:
+        from datetime import datetime
+        from pathlib import Path
+        Path("charts").mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bias_monitor_save_path = f"charts/bias_deploy_pickup_with_backup_{ts}"
+        print(f"[OK] BiasMonitor enabled → {bias_monitor_save_path}.{{npz,png}}")
+    task_cfg = make_task_config(
+        task="pickup", use_bias=args.bias, reward_backend="pose",
+        enable_bias_monitor=(args.bias_monitor and args.bias),
+        bias_monitor_save_path=bias_monitor_save_path,
+        bias_range=tuple(args.bias_range) if args.bias_range is not None else None,
+    )
+    if args.bias and args.bias_range is not None:
+        print(f"[OK] bias_range override: {tuple(args.bias_range)} rad")
     reset_pose_6d = task_cfg.reset_pose
     precision_param = task_cfg.precision_param
     compliance_param = task_cfg.compliance_param
