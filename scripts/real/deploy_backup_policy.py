@@ -315,12 +315,12 @@ def main():
         clear_n_steps=CLEAR_N_STEPS,
         homing_pos_tol=HOMING_POS_TOL,
         homing_rot_tol=HOMING_ROT_TOL,
-        # P 控制器内部 scale = deploy 实际能发的单步距离 = MAX_CART_SPEED/CTRL_HZ
-        # = 0.03 m/step（也等于 deploy 顶部 rate limit `MAX_CART_SPEED * dt`）。
-        # 这样 kp=1 真正 deadbeat 不超调；若 scale 比 rate limit 大，等效 kp 被
-        # 隐式压缩 < 1 → 稳态误差大。
-        homing_action_scale=MAX_CART_SPEED / CTRL_HZ,
-        # rot 没有类似 max_cart_speed 的 rate limit，直接对齐 backup 旋转 scale。
+        # ⚠️ HomingController 内部 `clip(kp·δ/action_scale, ±1)`，输出再被 deploy 端
+        # 乘 scale_xyz=BACKUP_ACTION_SCALE*LOOKAHEAD=0.05 应用。等效 kp = kp_pos *
+        # scale_xyz/action_scale —— 必须 action_scale==scale_xyz 才能保 kp=1 deadbeat。
+        # 之前用 MAX_CART_SPEED/CTRL_HZ=0.03 → 等效 kp≈1.667 超调（rate limit 0.03 远端
+        # 截顶，但接近 goal 时 unclipped 路径就会 1.67x 超调）。
+        homing_action_scale=BACKUP_ACTION_SCALE * LOOKAHEAD,
         homing_rot_action_scale=BACKUP_ROTATION_SCALE * LOOKAHEAD,
         homing_kp_pos=1.0,
         homing_kp_rot=1.0,
@@ -548,12 +548,19 @@ def main():
                 # interpret the vector as sequential Euler angles.
                 cur_R = R.from_quat(actual_quat_xyzw)
                 dR = R.from_rotvec(action_scaled_rpy)
-                # ⚠️ 旋转乘法顺序必须与 env (frrl/envs/real.py:278) 一致：
-                # delta * curr（world frame）。env 训练 backup policy 时用的就是
-                # world-frame rotation delta。曾用 curr * delta (body frame) →
-                # SpaceMouse / backup policy 的 yaw 应用方向反了，2026-05-03
-                # deploy_task_with_backup 同款 bug 修复时一并修这里。
-                target_quat_xyzw = list((dR * cur_R).as_quat())
+                # 旋转 frame **per-mode**：
+                #   TASK   (SpaceMouse): world frame `dR * cur_R`，对齐 real.py:278
+                #          的 BC 训练分布；操作员把 puck 当 world-frame 控制。
+                #   BACKUP (sim-trained): panda_backup_policy_env.py:676 用 `q_cur·dquat`
+                #          → body frame `cur_R * dR`。
+                #   HOMING (HomingController): homing.py:119-127 输出 body-frame delta，
+                #          配 `q_cur·dq_local` → body frame `cur_R * dR`。
+                # 之前 7c3c81a 一刀切改成 world frame 修了 SpaceMouse，但破坏了
+                # BACKUP/HOMING（HOMING 阶段乱转 + 永远收敛不到 tcp_start）。
+                if new_mode == Mode.TASK:
+                    target_quat_xyzw = list((dR * cur_R).as_quat())  # world
+                else:  # BACKUP / HOMING
+                    target_quat_xyzw = list((cur_R * dR).as_quat())  # body
             else:
                 target_quat_xyzw = actual_quat_xyzw
 

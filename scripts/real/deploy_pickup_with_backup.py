@@ -52,6 +52,7 @@ from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 from frrl.envs.real_config import center_square_crop, make_task_config
 from frrl.envs.real import euler_2_quat
+from frrl.fault_injection import EncoderBiasInjector
 from frrl.robots.franka_real.cameras.realsense import RealSenseCameraManager
 from frrl.robots.franka_real.vision.hand_detector import HandDetector
 
@@ -490,6 +491,10 @@ def main():
     ap.add_argument("--bias-monitor", action="store_true",
                     help="启用 BiasMonitor：保存 q_true/q_biased/bias 时间序列 npz + "
                          "实时 matplotlib 双线波形图。默认输出 charts/bias_deploy_pickup_with_backup_*。")
+    ap.add_argument("--max-episode-steps", type=int, default=200,
+                    help="TASK 模式单 episode 最大步数（默认 200 = 20s @ 10Hz）。"
+                         "BC 抓不住 / 卡死时超时计为失败 → force_open + go_home + supervisor.reset()，"
+                         "避免主循环无限 inference 死锁。")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -592,8 +597,59 @@ def main():
           f"success_z_threshold = {success_z_threshold:.3f}m")
     print(f"[OK] TASK workspace: min={task_workspace_min.tolist()}, max={task_workspace_max.tolist()}")
 
-    # 起步先 homing 一次，让机械臂到 reset_pose 准备开始（d_safe 同主 FSM 阈值）
-    # 失败直接 abort —— 启动时 homing 不通就进 main loop 是定时炸弹
+    # ---------- Bias injection runtime（替 FrankaRealEnv 在这个手写部署脚本里做同事） ----------
+    # 跟 frrl/envs/real.py:125-138, 210-250 一致的语义：
+    #   - 启动 / 每个 episode 起点：clear bias → 物理 home → 采样新 bias → set_encoder_bias
+    #   - 主循环每 iter: 用 q_true / q_biased / active_bias 喂 BiasMonitor
+    #   - shutdown: clear bias + bias_monitor.close()
+    bias_injector = None
+    bias_monitor = None
+    if args.bias and task_cfg.encoder_bias_config is not None:
+        bias_injector = EncoderBiasInjector(task_cfg.encoder_bias_config)
+        print(f"[OK] EncoderBiasInjector active, range={task_cfg.encoder_bias_config.bias_range}")
+        if args.bias_monitor:
+            from frrl.fault_injection import BiasMonitor
+            bias_monitor = BiasMonitor(
+                update_hz=2.0,
+                save_path=bias_monitor_save_path,
+            )
+            print(f"[OK] BiasMonitor live (writes {bias_monitor_save_path}.{{npz,png}} on close)")
+    elif args.bias_monitor and not args.bias:
+        print("[WARN] --bias-monitor 需配 --bias 才有效；当前 --bias 未开，monitor 跳过")
+
+    def _clear_bias_and_anchor():
+        """Episode 边界：清 bias 之前 anchor 当前 biased 位姿到 unbiased setpoint，避免
+        impedance setpoint 跳到 stale 旧 biased 位置。复刻 real.py:210-217。"""
+        try:
+            state_true = get_state_true()
+            real_pose = state_true["pose"]
+            requests.post(URL + "set_encoder_bias",
+                          json={"bias": [0.0]*7}, timeout=2.0)
+            requests.post(URL + "pose", json={"arr": real_pose}, timeout=0.5)
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[bias] clear+anchor failed: {e}")
+
+    def _sample_and_inject_bias(ep_num: int):
+        """采样新 bias 并 HTTP set_encoder_bias。Episode 边界（复位完成后）调用。"""
+        if bias_injector is None:
+            return
+        bias_injector.on_episode_start(num_joints=7)
+        bias = bias_injector.current_bias
+        if bias is not None:
+            try:
+                requests.post(URL + "set_encoder_bias",
+                              json={"bias": bias.tolist()}, timeout=2.0)
+                print(f"[bias] ep#{ep_num} injected: {np.round(bias, 4).tolist()} rad")
+                if bias_monitor is not None:
+                    bias_monitor.mark_episode_boundary(ep_num=ep_num, bias=bias)
+            except Exception as e:
+                print(f"[bias] set_encoder_bias failed: {e}")
+            time.sleep(0.3)  # impedance transient settling
+
+    # 启动 homing：先清 bias 让 controller 在 unbiased frame 走，homing 完再注入
+    if bias_injector is not None:
+        _clear_bias_and_anchor()
     if not go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
                                   hand_detector, cam_mgr, d_safe=d_safe):
         print("[FATAL] 启动 homing 失败（hand 在工作区？stiffness 切换失败？）→ 不进入主循环")
@@ -607,6 +663,9 @@ def main():
             pass
         return
 
+    # 启动 homing 完成 → 第一个 episode 注入新 bias
+    _sample_and_inject_bias(ep_num=0)
+
     # ---------- Supervisor ----------
     supervisor = HierarchicalSupervisor(
         d_safe=d_safe,
@@ -614,7 +673,11 @@ def main():
         clear_n_steps=CLEAR_N_STEPS,
         homing_pos_tol=HOMING_POS_TOL,
         homing_rot_tol=HOMING_ROT_TOL,
-        homing_action_scale=BACKUP_MAX_CART_SPEED / CTRL_HZ,
+        # ⚠️ 必须等于 apply 处的 scale_xyz/scale_rot（line 813-815），否则 HomingController
+        # 内部 `clip(kp * delta / scale, ±1)` 与外部缩放对不上 → 等效 kp 偏离 1.0 (deadbeat)。
+        # 之前用 BACKUP_MAX_CART_SPEED/CTRL_HZ=0.03，外部用 BACKUP_ACTION_SCALE*LOOKAHEAD=0.05
+        # → 等效 kp_pos≈1.667 超调。
+        homing_action_scale=BACKUP_ACTION_SCALE * BACKUP_LOOKAHEAD,
         homing_rot_action_scale=BACKUP_ROTATION_SCALE * BACKUP_LOOKAHEAD,
         homing_kp_pos=1.0,
         homing_kp_rot=1.0,
@@ -628,6 +691,8 @@ def main():
     gripper_cmdr = GripperCommander()
     rng = np.random.default_rng(0)
     success_count = 0
+    failure_count = 0
+    task_steps = 0  # TASK 模式累计步数；超过 max_episode_steps 计 timeout 失败
     iter_count = 0
     last_action7 = None  # 给诊断 print 用
     prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
@@ -659,6 +724,14 @@ def main():
             fk_tcp = np.array(state["pose"][:3], dtype=np.float64)
             tcp_noisy = fk_tcp + rng.normal(0, TCP_NOISE_STD, 3)
             hand_body_equiv = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
+
+            # BiasMonitor 喂样：q_true / q_biased / active_bias（fallback q_biased - q_true）
+            # 复刻 deploy_backup_policy.py:443-450 + frrl/envs/real.py:299
+            if bias_monitor is not None:
+                active_bias = state_biased.get("bias")
+                if active_bias is None:
+                    active_bias = (np.array(state_biased["q"]) - np.array(state["q"])).tolist()
+                bias_monitor.update(state["q"], state_biased["q"], active_bias)
 
             # ---------- Hand detection ----------
             color_img, depth_img = hand_detector.get_frames()
@@ -759,12 +832,15 @@ def main():
                     print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放物块（BC 训练分布对齐）")
                     homing_ok = True
                     if not args.dry_run:
+                        # bias=ON：先 anchor + clear bias 再 home，让 controller 在 unbiased
+                        # frame 跑 reset，否则 home 期间 setpoint 与物理位置错位（real.py:210-217）
+                        if bias_injector is not None:
+                            _clear_bias_and_anchor()
                         homing_ok = go_home_to_reset_pose(
                             reset_pose_6d, precision_param, compliance_param,
                             hand_detector, cam_mgr, d_safe=d_safe,
                         )
                         if homing_ok:
-                            # 同步 GripperCommander 内部 state（go_home 直接调 /open_gripper）
                             gripper_cmdr.force_open()
                             if args.wait_operator:
                                 wait_for_operator_with_camera_drain(
@@ -773,6 +849,8 @@ def main():
                                 )
                             else:
                                 drain_sleep(1.0, hand_detector, cam_mgr)
+                            # home 完成 → 采样新 bias 注入（下个 episode 用）
+                            _sample_and_inject_bias(ep_num=success_count + failure_count)
                         else:
                             # hand 中断：不 reset supervisor，让下一帧 step 自然切 BACKUP
                             print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
@@ -781,6 +859,7 @@ def main():
                         backup_obs_buf.clear()
                         last_hand_pos = None
                         last_hand_time = None
+                        task_steps = 0  # 新 episode，重置 timeout 计数
                     prev_mode = new_mode
                 continue  # 重读 state 再进下一帧
 
@@ -834,9 +913,17 @@ def main():
             if np.any(np.abs(action_rpy) > 1e-6):
                 cur_R = R.from_quat(actual_quat_xyzw)
                 dR = R.from_rotvec(action_rpy)
-                # 旋转乘法顺序与 env (frrl/envs/real.py:278) 一致：delta * curr (world frame)
-                # BC 训练时 env 用的就是 world-frame rotation delta
-                target_quat_xyzw = list((dR * cur_R).as_quat())
+                # 旋转 frame **必须 per-mode**，因为各 policy 训练 env 不一致：
+                #   TASK   (BC): real.py:278 用 `from_rotvec(δ) * from_quat(cur)` → world frame
+                #   BACKUP (sim-trained): panda_backup_policy_env.py:676 `q_cur·dquat` → body frame
+                #   HOMING (HomingController): homing.py:119-127 算 `dq_local = q_cur⁻¹·q_target`
+                #                              配 `q_cur·dq_local` → body frame
+                # 之前 1f8446d 一刀切改成 world frame 修了 BC，但破坏了 BACKUP/HOMING（HOMING
+                # 阶段机械臂"亂轉" + supervisor 永远收敛不到 tcp_start）。
+                if new_mode == Mode.TASK:
+                    target_quat_xyzw = list((dR * cur_R).as_quat())  # world
+                else:  # BACKUP / HOMING
+                    target_quat_xyzw = list((cur_R * dR).as_quat())  # body
             else:
                 target_quat_xyzw = actual_quat_xyzw
             # 跟上一帧 quat 同半球，避免 sign-flip 让 impedance 走 360° 长路
@@ -851,36 +938,67 @@ def main():
                 gripper_cmdr.step(float(action7[6]), float(state["gripper_pos"]))
 
             # ---------- Auto-success detection (TASK 模式) + episode reset ----------
-            if args.auto_reset_on_success and new_mode == Mode.TASK:
+            #   - SUCCESS：z 抬升 + gripper 夹住
+            #   - TIMEOUT：TASK 累计 task_steps >= max_episode_steps（BC 卡死/失败时兜底）
+            # 两条路径走相同收尾：force_open + go_home_to_reset_pose + supervisor.reset。
+            episode_done = False
+            done_reason = None
+            if new_mode == Mode.TASK:
+                task_steps += 1
                 z = float(state["pose"][2])
                 grip = float(state["gripper_pos"])
-                if z >= success_z_threshold and args.gripper_held_min < grip < args.gripper_held_max:
+                if (
+                    args.auto_reset_on_success
+                    and z >= success_z_threshold
+                    and args.gripper_held_min < grip < args.gripper_held_max
+                ):
                     success_count += 1
-                    print(f"\n[SUCCESS #{success_count}] z={z:.3f}, gripper={grip:.3f}")
-                    homing_ok = True
-                    if not args.dry_run:
-                        # 完整复位到 reset_pose（跟 BC 训练时 episode 边界一致）
-                        homing_ok = go_home_to_reset_pose(
-                            reset_pose_6d, precision_param, compliance_param,
-                            hand_detector, cam_mgr, d_safe=d_safe,
-                        )
-                        if homing_ok:
-                            # 同步 GripperCommander 内部 state
-                            gripper_cmdr.force_open()
-                            if args.wait_operator:
-                                wait_for_operator_with_camera_drain(
-                                    hand_detector, cam_mgr,
-                                    "    [pause] 把物块放回任意位置，按 Enter 开始下一集 (Ctrl+C 退出)... ",
-                                )
-                            else:
-                                drain_sleep(1.5, hand_detector, cam_mgr)
-                        else:
-                            print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
+                    episode_done = True
+                    done_reason = f"SUCCESS #{success_count}: z={z:.3f}, gripper={grip:.3f}"
+                elif task_steps >= args.max_episode_steps:
+                    failure_count += 1
+                    episode_done = True
+                    done_reason = (
+                        f"TIMEOUT #{failure_count}: task_steps={task_steps} "
+                        f">= {args.max_episode_steps}, z={z:.3f}, grip={grip:.3f}"
+                    )
+            else:
+                task_steps = 0  # 非 TASK 模式不计步（BACKUP/HOMING 期间也不算 episode 时间）
+
+            if episode_done:
+                print(f"\n[{done_reason}]")
+                homing_ok = True
+                if not args.dry_run:
+                    # timeout 路径先强制张爪释放可能抓住的物块，避免 go_home 期间拖拽
+                    if done_reason and done_reason.startswith("TIMEOUT"):
+                        gripper_cmdr.force_open()
+                        drain_sleep(0.4, hand_detector, cam_mgr)
+                    # bias=ON：anchor + clear bias 再 home（unbiased frame 复位）
+                    if bias_injector is not None:
+                        _clear_bias_and_anchor()
+                    homing_ok = go_home_to_reset_pose(
+                        reset_pose_6d, precision_param, compliance_param,
+                        hand_detector, cam_mgr, d_safe=d_safe,
+                    )
                     if homing_ok:
-                        supervisor.reset()
-                        backup_obs_buf.clear()
-                        last_hand_pos = None
-                        last_hand_time = None
+                        gripper_cmdr.force_open()
+                        if args.wait_operator:
+                            wait_for_operator_with_camera_drain(
+                                hand_detector, cam_mgr,
+                                "    [pause] 把物块放回任意位置，按 Enter 开始下一集 (Ctrl+C 退出)... ",
+                            )
+                        else:
+                            drain_sleep(1.5, hand_detector, cam_mgr)
+                        # home 完成 → 采样新 bias 注入（下个 episode 用）
+                        _sample_and_inject_bias(ep_num=success_count + failure_count)
+                    else:
+                        print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
+                if homing_ok:
+                    supervisor.reset()
+                    backup_obs_buf.clear()
+                    last_hand_pos = None
+                    last_hand_time = None
+                    task_steps = 0
 
             # ---------- Visualization ----------
             vis = hand_detector.draw_detection(color_img, hand)
@@ -893,8 +1011,8 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, mode_colors[new_mode], 2)
             cv2.putText(vis, f"hand_dist: {min_hand_dist:.3f}m", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"successes: {success_count}", (10, 90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(vis, f"S/F: {success_count}/{failure_count}  step:{task_steps}",
+                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.imshow("deploy_pickup_with_backup", vis)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
@@ -937,6 +1055,16 @@ def main():
         except Exception as e:
             print(f"[shutdown] clear_encoder_bias 失败: {e}")
 
+        # 关 BiasMonitor（保存 npz / 关 matplotlib 窗口）
+        try:
+            if bias_monitor is not None:
+                bias_monitor.close()
+                print(f"[shutdown] BiasMonitor saved → {bias_monitor_save_path}.{{npz,png}}")
+        except (NameError, UnboundLocalError):
+            pass
+        except Exception as e:
+            print(f"[shutdown] bias_monitor.close 失败: {e}")
+
         try:
             hand_detector.stop()
         except Exception:
@@ -946,7 +1074,10 @@ def main():
         except Exception:
             pass
         cv2.destroyAllWindows()
-        print(f"=== Done. Total successes: {success_count} ===")
+        total = success_count + failure_count
+        rate = (success_count / total * 100) if total > 0 else 0.0
+        print(f"=== Done. Successes: {success_count}, Failures: {failure_count}, "
+              f"Rate: {rate:.1f}% ({total} episodes) ===")
 
 
 if __name__ == "__main__":

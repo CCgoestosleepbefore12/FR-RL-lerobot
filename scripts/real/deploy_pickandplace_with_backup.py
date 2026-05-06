@@ -481,6 +481,10 @@ def main():
                          "（手就算只触发避让没碰物块，gripper 状态/物块视觉位置已与 BC 训练分布偏离），"
                          "BC 在 tcp_start resume 后乱动 / 卡死。**pickup 不要用此 flag**，留作未来"
                          "wipe / 多阶段长 episode 任务的对比实验入口。")
+    ap.add_argument("--max-episode-steps", type=int, default=400,
+                    help="TASK 模式单 episode 最大步数（默认 400 = 40s @ 10Hz；pickandplace 较长）。"
+                         "兜底用——主路径仍是操作员 SPACE/Enter；超时计为 fail 强制 go_home，"
+                         "避免 BC 卡死时主循环死锁。")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -590,7 +594,9 @@ def main():
         clear_n_steps=CLEAR_N_STEPS,
         homing_pos_tol=HOMING_POS_TOL,
         homing_rot_tol=HOMING_ROT_TOL,
-        homing_action_scale=BACKUP_MAX_CART_SPEED / CTRL_HZ,
+        # ⚠️ 必须等于 apply 处的 scale_xyz/scale_rot（HomingController 内部 clip(kp·δ/scale)
+        # 与外部缩放必须一致），否则等效 kp 偏离 1.0 (deadbeat)。
+        homing_action_scale=BACKUP_ACTION_SCALE * BACKUP_LOOKAHEAD,
         homing_rot_action_scale=BACKUP_ROTATION_SCALE * BACKUP_LOOKAHEAD,
         homing_kp_pos=1.0,
         homing_kp_rot=1.0,
@@ -605,6 +611,7 @@ def main():
     rng = np.random.default_rng(0)
     success_count = 0
     fail_count = 0
+    task_steps = 0  # TASK 模式累计步数；超过 max_episode_steps 计 timeout 失败
     iter_count = 0
     last_action7 = None  # 给诊断 print 用
     prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
@@ -751,31 +758,29 @@ def main():
                     prev_mode = new_mode
                     # 不 reset supervisor、不 force_open、不 go_home，直接进下一帧让 BC 接管
                 else:
-                    print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放物块（BC 训练分布对齐）")
+                    print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放餐具 + 等 S 继续")
                     homing_ok = True
                     if not args.dry_run:
                         homing_ok = go_home_to_reset_pose(
                             reset_pose_6d, precision_param, compliance_param,
                             hand_detector, cam_mgr, d_safe=d_safe,
                         )
-                        if homing_ok:
-                            # 同步 GripperCommander 内部 state（go_home 直接调 /open_gripper）
-                            gripper_cmdr.force_open()
-                            if args.wait_operator:
-                                wait_for_operator_with_camera_drain(
-                                    hand_detector, cam_mgr,
-                                    "    [pause] 把物块放回任意位置，按 Enter 让 BC 继续... ",
-                                )
-                            else:
-                                drain_sleep(1.0, hand_detector, cam_mgr)
-                        else:
+                        if not homing_ok:
                             # hand 中断：不 reset supervisor，让下一帧 step 自然切 BACKUP
                             print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
                     if homing_ok:
+                        gripper_cmdr.force_open()
                         supervisor.reset()
                         backup_obs_buf.clear()
                         last_hand_pos = None
                         last_hand_time = None
+                        task_steps = 0
+                        # 清掉 BACKUP 期间操作员可能误触的 ENTER/SPACE（pynput thread 一直在跑），
+                        # 否则下一帧 TASK poll 会把那个 outcome 当 success/fail 误终结新 episode。
+                        # 然后跟 success 路径同样的协议：等 S 才进下一集。
+                        keyboard_listener.mark_episode_ended()
+                        print("=== [recover] 完成。把餐具放回盘子 + 收手离开 + 按 S 继续 ===")
+                        keyboard_listener.wait_for_start()
                     prev_mode = new_mode
                 continue  # 重读 state 再进下一帧
 
@@ -829,9 +834,14 @@ def main():
             if np.any(np.abs(action_rpy) > 1e-6):
                 cur_R = R.from_quat(actual_quat_xyzw)
                 dR = R.from_rotvec(action_rpy)
-                # 旋转乘法顺序与 env (frrl/envs/real.py:278) 一致：delta * curr (world frame)
-                # BC 训练时 env 用的就是 world-frame rotation delta
-                target_quat_xyzw = list((dR * cur_R).as_quat())
+                # 旋转 frame **per-mode**（详见 deploy_pickup_with_backup.py 同款注释）：
+                #   TASK   (BC, real.py:278): world frame `dR * cur_R`
+                #   BACKUP (sim env): body frame `cur_R * dR`
+                #   HOMING (HomingController): body frame `cur_R * dR`
+                if new_mode == Mode.TASK:
+                    target_quat_xyzw = list((dR * cur_R).as_quat())  # world
+                else:  # BACKUP / HOMING
+                    target_quat_xyzw = list((cur_R * dR).as_quat())  # body
             else:
                 target_quat_xyzw = actual_quat_xyzw
             # 跟上一帧 quat 同半球，避免 sign-flip 让 impedance 走 360° 长路
@@ -848,16 +858,31 @@ def main():
             # ---------- Success detection (KeyboardRewardListener) + episode reset ----------
             # 用 pynput 独立线程接 S/Enter/Space/Backspace（与 deploy_bc_inference.py 同款），
             # 比 cv2.waitKey 稳：不会有 buffer 误触发，不依赖 OpenCV 窗口聚焦。
-            outcome_dict = keyboard_listener.poll() if new_mode == Mode.TASK else None
-            if outcome_dict is not None:
-                outcome = outcome_dict.get("outcome", "unknown")
-                if outcome == "success":
-                    success_count += 1
-                    print(f"\n[SUCCESS #{success_count}] keyboard ENTER")
-                else:
+            # Timeout 兜底：BC 卡死时 task_steps 超 max_episode_steps 自动计 fail。
+            episode_done = False
+            outcome = None
+            if new_mode == Mode.TASK:
+                task_steps += 1
+                outcome_dict = keyboard_listener.poll()
+                if outcome_dict is not None:
+                    outcome = outcome_dict.get("outcome", "unknown")
+                    if outcome == "success":
+                        success_count += 1
+                        print(f"\n[SUCCESS #{success_count}] keyboard ENTER")
+                    else:
+                        fail_count += 1
+                        print(f"\n[{outcome.upper()}] (fail/discard #{fail_count})")
+                    episode_done = True
+                elif task_steps >= args.max_episode_steps:
+                    outcome = "timeout"
                     fail_count += 1
-                    print(f"\n[{outcome.upper()}] (fail/discard #{fail_count})")
+                    print(f"\n[TIMEOUT #{fail_count}] task_steps={task_steps} "
+                          f">= {args.max_episode_steps} (fail)")
+                    episode_done = True
+            else:
+                task_steps = 0
 
+            if episode_done:
                 homing_ok = True
                 if not args.dry_run:
                     # 立刻 force_open 释放餐具（让操作员能拿起放回盘子）
@@ -873,6 +898,7 @@ def main():
                     backup_obs_buf.clear()
                     last_hand_pos = None
                     last_hand_time = None
+                    task_steps = 0
                     keyboard_listener.mark_episode_ended()
                     # 等下次操作员按 S 才进下一集
                     print(f"=== ep done. 把餐具放回盘子 + 收手离开工作区 + 按 S 开始下一集 ===")
@@ -890,8 +916,8 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, mode_colors[new_mode], 2)
             cv2.putText(vis, f"hand_dist: {min_hand_dist:.3f}m", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"S {success_count}  F {fail_count}", (10, 90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(vis, f"S {success_count}  F {fail_count}  step:{task_steps}",
+                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(vis, "S=start  ENTER=success  SPACE=fail  Q=quit",
                         (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
             cv2.imshow("deploy_pickandplace_with_backup", vis)
