@@ -64,7 +64,7 @@
         "image_embedding_pooling_dim": 8,
         "state_encoder_hidden_dim": 256,
         "latent_dim": 256,
-        "num_discrete_actions": null,
+        "num_discrete_actions": 3,
         "online_steps": 100000,
         "online_buffer_capacity": 50000,
         "offline_buffer_capacity": 50000,
