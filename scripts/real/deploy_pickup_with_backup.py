@@ -52,7 +52,7 @@ from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 from frrl.envs.real_config import center_square_crop, make_task_config
 from frrl.envs.real import euler_2_quat
-from frrl.fault_injection import EncoderBiasInjector
+from frrl.fault_injection import BiasDeployController
 from frrl.robots.franka_real.cameras.realsense import RealSenseCameraManager
 from frrl.robots.franka_real.vision.hand_detector import HandDetector
 
@@ -597,59 +597,22 @@ def main():
           f"success_z_threshold = {success_z_threshold:.3f}m")
     print(f"[OK] TASK workspace: min={task_workspace_min.tolist()}, max={task_workspace_max.tolist()}")
 
-    # ---------- Bias injection runtime（替 FrankaRealEnv 在这个手写部署脚本里做同事） ----------
-    # 跟 frrl/envs/real.py:125-138, 210-250 一致的语义：
-    #   - 启动 / 每个 episode 起点：clear bias → 物理 home → 采样新 bias → set_encoder_bias
-    #   - 主循环每 iter: 用 q_true / q_biased / active_bias 喂 BiasMonitor
-    #   - shutdown: clear bias + bias_monitor.close()
-    bias_injector = None
-    bias_monitor = None
+    # ---------- Bias injection runtime（BiasDeployController 封装；详见 frrl/fault_injection.py） ----------
+    bias_ctrl = None
     if args.bias and task_cfg.encoder_bias_config is not None:
-        bias_injector = EncoderBiasInjector(task_cfg.encoder_bias_config)
-        print(f"[OK] EncoderBiasInjector active, range={task_cfg.encoder_bias_config.bias_range}")
-        if args.bias_monitor:
-            from frrl.fault_injection import BiasMonitor
-            bias_monitor = BiasMonitor(
-                update_hz=2.0,
-                save_path=bias_monitor_save_path,
-            )
-            print(f"[OK] BiasMonitor live (writes {bias_monitor_save_path}.{{npz,png}} on close)")
+        bias_ctrl = BiasDeployController(
+            task_cfg.encoder_bias_config,
+            url=URL,
+            monitor_save_path=bias_monitor_save_path,
+            enable_monitor=args.bias_monitor,
+        )
+        print(f"[OK] BiasDeployController active, range={task_cfg.encoder_bias_config.bias_range}")
     elif args.bias_monitor and not args.bias:
         print("[WARN] --bias-monitor 需配 --bias 才有效；当前 --bias 未开，monitor 跳过")
 
-    def _clear_bias_and_anchor():
-        """Episode 边界：清 bias 之前 anchor 当前 biased 位姿到 unbiased setpoint，避免
-        impedance setpoint 跳到 stale 旧 biased 位置。复刻 real.py:210-217。"""
-        try:
-            state_true = get_state_true()
-            real_pose = state_true["pose"]
-            requests.post(URL + "set_encoder_bias",
-                          json={"bias": [0.0]*7}, timeout=2.0)
-            requests.post(URL + "pose", json={"arr": real_pose}, timeout=0.5)
-            time.sleep(0.5)
-        except Exception as e:
-            print(f"[bias] clear+anchor failed: {e}")
-
-    def _sample_and_inject_bias(ep_num: int):
-        """采样新 bias 并 HTTP set_encoder_bias。Episode 边界（复位完成后）调用。"""
-        if bias_injector is None:
-            return
-        bias_injector.on_episode_start(num_joints=7)
-        bias = bias_injector.current_bias
-        if bias is not None:
-            try:
-                requests.post(URL + "set_encoder_bias",
-                              json={"bias": bias.tolist()}, timeout=2.0)
-                print(f"[bias] ep#{ep_num} injected: {np.round(bias, 4).tolist()} rad")
-                if bias_monitor is not None:
-                    bias_monitor.mark_episode_boundary(ep_num=ep_num, bias=bias)
-            except Exception as e:
-                print(f"[bias] set_encoder_bias failed: {e}")
-            time.sleep(0.3)  # impedance transient settling
-
-    # 启动 homing：先清 bias 让 controller 在 unbiased frame 走，homing 完再注入
-    if bias_injector is not None:
-        _clear_bias_and_anchor()
+    # 启动 homing：先清 bias + anchor 让 controller 在 unbiased frame 跑 reset
+    if bias_ctrl is not None:
+        bias_ctrl.begin_transition()
     if not go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
                                   hand_detector, cam_mgr, d_safe=d_safe):
         print("[FATAL] 启动 homing 失败（hand 在工作区？stiffness 切换失败？）→ 不进入主循环")
@@ -663,8 +626,9 @@ def main():
             pass
         return
 
-    # 启动 homing 完成 → 第一个 episode 注入新 bias
-    _sample_and_inject_bias(ep_num=0)
+    # 启动 homing 完成 → 第一个 episode 采样并注入 bias
+    if bias_ctrl is not None:
+        bias_ctrl.finish_transition(ep_num=0, resample=True)
 
     # ---------- Supervisor ----------
     supervisor = HierarchicalSupervisor(
@@ -725,13 +689,8 @@ def main():
             tcp_noisy = fk_tcp + rng.normal(0, TCP_NOISE_STD, 3)
             hand_body_equiv = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
 
-            # BiasMonitor 喂样：q_true / q_biased / active_bias（fallback q_biased - q_true）
-            # 复刻 deploy_backup_policy.py:443-450 + frrl/envs/real.py:299
-            if bias_monitor is not None:
-                active_bias = state_biased.get("bias")
-                if active_bias is None:
-                    active_bias = (np.array(state_biased["q"]) - np.array(state["q"])).tolist()
-                bias_monitor.update(state["q"], state_biased["q"], active_bias)
+            if bias_ctrl is not None:
+                bias_ctrl.on_step(state, state_biased)
 
             # ---------- Hand detection ----------
             color_img, depth_img = hand_detector.get_frames()
@@ -832,10 +791,11 @@ def main():
                     print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放物块（BC 训练分布对齐）")
                     homing_ok = True
                     if not args.dry_run:
-                        # bias=ON：先 anchor + clear bias 再 home，让 controller 在 unbiased
-                        # frame 跑 reset，否则 home 期间 setpoint 与物理位置错位（real.py:210-217）
-                        if bias_injector is not None:
-                            _clear_bias_and_anchor()
+                        # bias=ON：clear bias + anchor 再 home（unbiased frame 复位）。
+                        # Recovery 沿用同一 episode 的 bias（resample=False），保证
+                        # episode 内 bias 恒定，曲线平行。
+                        if bias_ctrl is not None:
+                            bias_ctrl.begin_transition()
                         homing_ok = go_home_to_reset_pose(
                             reset_pose_6d, precision_param, compliance_param,
                             hand_detector, cam_mgr, d_safe=d_safe,
@@ -849,8 +809,11 @@ def main():
                                 )
                             else:
                                 drain_sleep(1.0, hand_detector, cam_mgr)
-                            # home 完成 → 采样新 bias 注入（下个 episode 用）
-                            _sample_and_inject_bias(ep_num=success_count + failure_count)
+                            if bias_ctrl is not None:
+                                bias_ctrl.finish_transition(
+                                    ep_num=success_count + failure_count,
+                                    resample=False,  # 同集延续，不采新 bias
+                                )
                         else:
                             # hand 中断：不 reset supervisor，让下一帧 step 自然切 BACKUP
                             print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
@@ -973,9 +936,9 @@ def main():
                     if done_reason and done_reason.startswith("TIMEOUT"):
                         gripper_cmdr.force_open()
                         drain_sleep(0.4, hand_detector, cam_mgr)
-                    # bias=ON：anchor + clear bias 再 home（unbiased frame 复位）
-                    if bias_injector is not None:
-                        _clear_bias_and_anchor()
+                    # 新集边界：clear bias + anchor → home → 采新 bias
+                    if bias_ctrl is not None:
+                        bias_ctrl.begin_transition()
                     homing_ok = go_home_to_reset_pose(
                         reset_pose_6d, precision_param, compliance_param,
                         hand_detector, cam_mgr, d_safe=d_safe,
@@ -989,8 +952,11 @@ def main():
                             )
                         else:
                             drain_sleep(1.5, hand_detector, cam_mgr)
-                        # home 完成 → 采样新 bias 注入（下个 episode 用）
-                        _sample_and_inject_bias(ep_num=success_count + failure_count)
+                        if bias_ctrl is not None:
+                            bias_ctrl.finish_transition(
+                                ep_num=success_count + failure_count,
+                                resample=True,  # 新 episode 采新 bias
+                            )
                     else:
                         print("[recover] homing 被 hand 检测中断 → 让主 FSM 接管")
                 if homing_ok:
@@ -1049,21 +1015,17 @@ def main():
         except Exception as e:
             print(f"[shutdown] go_home 失败: {e}")
 
-        print("[shutdown] 清 encoder bias...")
+        # BiasDeployController 自己负责 clear_encoder_bias + 保 npz/png + 关图。
+        # 没开 --bias 也走一次 HTTP clear（兜底，防上次跑完没清干净）。
         try:
-            requests.post(URL + "clear_encoder_bias", timeout=2.0)
-        except Exception as e:
-            print(f"[shutdown] clear_encoder_bias 失败: {e}")
-
-        # 关 BiasMonitor（保存 npz / 关 matplotlib 窗口）
-        try:
-            if bias_monitor is not None:
-                bias_monitor.close()
-                print(f"[shutdown] BiasMonitor saved → {bias_monitor_save_path}.{{npz,png}}")
+            if bias_ctrl is not None:
+                bias_ctrl.close()
+            else:
+                requests.post(URL + "clear_encoder_bias", timeout=2.0)
         except (NameError, UnboundLocalError):
             pass
         except Exception as e:
-            print(f"[shutdown] bias_monitor.close 失败: {e}")
+            print(f"[shutdown] bias 收尾失败: {e}")
 
         try:
             hand_detector.stop()

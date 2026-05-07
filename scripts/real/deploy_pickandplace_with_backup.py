@@ -52,6 +52,7 @@ from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 from frrl.envs.real_config import center_square_crop, make_task_config
 from frrl.envs.real import euler_2_quat
+from frrl.fault_injection import BiasDeployController
 from frrl.robots.franka_real.cameras.realsense import RealSenseCameraManager
 from frrl.robots.franka_real.vision.hand_detector import HandDetector
 
@@ -485,6 +486,15 @@ def main():
                     help="TASK 模式单 episode 最大步数（默认 400 = 40s @ 10Hz；pickandplace 较长）。"
                          "兜底用——主路径仍是操作员 SPACE/Enter；超时计为 fail 强制 go_home，"
                          "避免 BC 卡死时主循环死锁。")
+    ap.add_argument("--bias", action="store_true",
+                    help="启用 J1 encoder bias 注入（默认 OFF）。每 episode 边界采新 bias，"
+                         "recovery 期间沿用同一 bias（episode 内恒定）。详见 BiasDeployController。")
+    ap.add_argument("--bias-range", type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
+                    help="覆盖 bias 采样范围（rad）。默认 None = 用 task factory 内置值。"
+                         "仅当 --bias 时生效。")
+    ap.add_argument("--bias-monitor", action="store_true",
+                    help="启用 BiasMonitor：保存 q_true/q_biased 时间序列 npz + 实时双线图。"
+                         "默认输出 charts/bias_deploy_pickandplace_with_backup_*。仅当 --bias 时生效。")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -558,8 +568,22 @@ def main():
         print(f"[FAIL] controller setup: {e}")
         return
 
-    # ---------- Pickup task config（拿 reset_pose / 阻抗参数 / 工作空间边界给 TASK 用） ----------
-    task_cfg = make_task_config(task="pickandplace", use_bias=False, reward_backend="keyboard")
+    # ---------- Pickandplace task config（拿 reset_pose / 阻抗参数 / 工作空间边界给 TASK 用） ----------
+    bias_monitor_save_path = None
+    if args.bias_monitor and args.bias:
+        from datetime import datetime
+        Path("charts").mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bias_monitor_save_path = f"charts/bias_deploy_pickandplace_with_backup_{ts}"
+        print(f"[OK] BiasMonitor enabled → {bias_monitor_save_path}.{{npz,png}}")
+    task_cfg = make_task_config(
+        task="pickandplace", use_bias=args.bias, reward_backend="keyboard",
+        enable_bias_monitor=(args.bias_monitor and args.bias),
+        bias_monitor_save_path=bias_monitor_save_path,
+        bias_range=tuple(args.bias_range) if args.bias_range is not None else None,
+    )
+    if args.bias and args.bias_range is not None:
+        print(f"[OK] bias_range override: {tuple(args.bias_range)} rad")
     reset_pose_6d = task_cfg.reset_pose
     precision_param = task_cfg.precision_param
     compliance_param = task_cfg.compliance_param
@@ -572,8 +596,22 @@ def main():
           f"success_z_threshold = {success_z_threshold:.3f}m")
     print(f"[OK] TASK workspace: min={task_workspace_min.tolist()}, max={task_workspace_max.tolist()}")
 
-    # 起步先 homing 一次，让机械臂到 reset_pose 准备开始（d_safe 同主 FSM 阈值）
-    # 失败直接 abort —— 启动时 homing 不通就进 main loop 是定时炸弹
+    # Bias controller（封装 EncoderBiasInjector + BiasMonitor + HTTP 调用）
+    bias_ctrl = None
+    if args.bias and task_cfg.encoder_bias_config is not None:
+        bias_ctrl = BiasDeployController(
+            task_cfg.encoder_bias_config,
+            url=URL,
+            monitor_save_path=bias_monitor_save_path,
+            enable_monitor=args.bias_monitor,
+        )
+        print(f"[OK] BiasDeployController active, range={task_cfg.encoder_bias_config.bias_range}")
+    elif args.bias_monitor and not args.bias:
+        print("[WARN] --bias-monitor 需配 --bias 才有效；当前 --bias 未开，monitor 跳过")
+
+    # 起步先 homing 一次（bias=ON 时先 clear+anchor）
+    if bias_ctrl is not None:
+        bias_ctrl.begin_transition()
     if not go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
                                   hand_detector, cam_mgr, d_safe=d_safe):
         print("[FATAL] 启动 homing 失败（hand 在工作区？stiffness 切换失败？）→ 不进入主循环")
@@ -642,6 +680,8 @@ def main():
     # 第一 episode 之前先等操作员按 S（与 deploy_bc_inference.py 同款流程）
     print("=== 等待操作员按 S 开始第一 episode ===")
     keyboard_listener.wait_for_start()
+    if bias_ctrl is not None:
+        bias_ctrl.finish_transition(ep_num=0, resample=True)
     print("=== ep 1 开始 ===\n")
 
     dt = 1.0 / CTRL_HZ
@@ -661,6 +701,9 @@ def main():
             fk_tcp = np.array(state["pose"][:3], dtype=np.float64)
             tcp_noisy = fk_tcp + rng.normal(0, TCP_NOISE_STD, 3)
             hand_body_equiv = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
+
+            if bias_ctrl is not None:
+                bias_ctrl.on_step(state, state_biased)
 
             # ---------- Hand detection ----------
             color_img, depth_img = hand_detector.get_frames()
@@ -761,6 +804,9 @@ def main():
                     print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放餐具 + 等 S 继续")
                     homing_ok = True
                     if not args.dry_run:
+                        # bias=ON：clear+anchor → home → resample=False（同集沿用旧 bias）
+                        if bias_ctrl is not None:
+                            bias_ctrl.begin_transition()
                         homing_ok = go_home_to_reset_pose(
                             reset_pose_6d, precision_param, compliance_param,
                             hand_detector, cam_mgr, d_safe=d_safe,
@@ -781,6 +827,11 @@ def main():
                         keyboard_listener.mark_episode_ended()
                         print("=== [recover] 完成。把餐具放回盘子 + 收手离开 + 按 S 继续 ===")
                         keyboard_listener.wait_for_start()
+                        if bias_ctrl is not None:
+                            bias_ctrl.finish_transition(
+                                ep_num=success_count + fail_count,
+                                resample=False,  # 同集延续，不采新 bias
+                            )
                     prev_mode = new_mode
                 continue  # 重读 state 再进下一帧
 
@@ -887,6 +938,9 @@ def main():
                 if not args.dry_run:
                     # 立刻 force_open 释放餐具（让操作员能拿起放回盘子）
                     gripper_cmdr.force_open()
+                    # 新集边界：clear+anchor → home → resample=True
+                    if bias_ctrl is not None:
+                        bias_ctrl.begin_transition()
                     homing_ok = go_home_to_reset_pose(
                         reset_pose_6d, precision_param, compliance_param,
                         hand_detector, cam_mgr, d_safe=d_safe,
@@ -903,6 +957,11 @@ def main():
                     # 等下次操作员按 S 才进下一集
                     print(f"=== ep done. 把餐具放回盘子 + 收手离开工作区 + 按 S 开始下一集 ===")
                     keyboard_listener.wait_for_start()
+                    if bias_ctrl is not None:
+                        bias_ctrl.finish_transition(
+                            ep_num=success_count + fail_count,
+                            resample=True,
+                        )
                     print(f"=== 下一 episode 开始 ===\n")
 
             # ---------- Visualization ----------
@@ -956,11 +1015,17 @@ def main():
         except Exception as e:
             print(f"[shutdown] go_home 失败: {e}")
 
-        print("[shutdown] 清 encoder bias...")
+        # BiasDeployController 自己负责 clear_encoder_bias + 保 npz/png + 关图。
+        # 没开 --bias 也走一次 HTTP clear（兜底，防上次跑完没清干净）。
         try:
-            requests.post(URL + "clear_encoder_bias", timeout=2.0)
+            if bias_ctrl is not None:
+                bias_ctrl.close()
+            else:
+                requests.post(URL + "clear_encoder_bias", timeout=2.0)
+        except (NameError, UnboundLocalError):
+            pass
         except Exception as e:
-            print(f"[shutdown] clear_encoder_bias 失败: {e}")
+            print(f"[shutdown] bias 收尾失败: {e}")
 
         try:
             hand_detector.stop()
