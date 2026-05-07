@@ -158,6 +158,8 @@ python scripts/tools/inspect_demo_pickle.py data/task_policy_demos/*.pkl
 
 ## 算法说明：BC 与 SAC 的关系
 
+> **实现细节**（NLL 公式 / SpatialLearnedEmbeddings / demo pickle pipeline）独立成文：[`bc_pretrain_internals.md`](bc_pretrain_internals.md)。本节只讲算法对比和参数选择，不重复细节。
+
 代码里 `bc_pretrain_task_policy.py` / `pretrain_task_policy.py` / `learner.py` 看起来都跟 SAC 网络绑在一起，但实际跑的算法可以是纯 BC、纯 SAC、或 SAC + BC pretrain 混合。先拆开两者的算法本质，再说为什么共享一套网络代码。
 
 ### 算法对比
