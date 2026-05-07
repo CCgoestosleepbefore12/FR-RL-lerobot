@@ -13,10 +13,11 @@ with demos only; the difference is that we reuse the full
 `frrl/rl/learner.py` (PyTorch) so the network + optimizer state are byte-for-byte
 what the online phase will pick up.
 
-Usage:
+Usage（用对应 task 的 per-task config，例如 train_hil_sac_pickup_real.json /
+train_hil_sac_wipe_real.json）：
     python scripts/tools/pretrain_task_policy.py \\
-        --config scripts/configs/train_task_policy_franka.json \\
-        --demo-paths "data/wipe_demos/*.pkl" \\
+        --config scripts/configs/train_hil_sac_wipe_real.json \\
+        --demo-paths "data/no_bias/wipe/*.pkl" \\
         --steps 5000 \\
         --output-dir checkpoints/task_policy_pretrain
 """

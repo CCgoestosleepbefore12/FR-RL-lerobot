@@ -16,12 +16,13 @@
 critic_only_online_steps=2000 自己 calibrate（actor 已是 imitation policy，
 不会沿错误 critic gradient 漂走）。
 
-用法：
+用法（用对应 task 的 per-task config，例如 train_hil_sac_pickup_real.json /
+train_hil_sac_wipe_real.json，不要用已删除的 generic train_task_policy_franka.json）：
   python scripts/tools/bc_pretrain_task_policy.py \\
-      --config scripts/configs/train_task_policy_franka.json \\
-      --demo-paths "data/wipe_demos/*.pkl" \\
-      --steps 5000 \\
-      --output-dir checkpoints/wipe_bc_pretrain_$(date +%Y%m%d_%H%M%S)
+      --config scripts/configs/train_hil_sac_wipe_real.json \\
+      --demo-paths "data/no_bias/wipe/*.pkl" \\
+      --steps 20000 \\
+      --output-dir checkpoints/no_bias/wipe/wipe_bc_$(date +%Y%m%d_%H%M%S)
 
 ⚠️ 真机后续 resume 时 train_config.json 里的 offline_only_mode 会被覆盖成 false
 （resume_online_from_pretrain.sh 会 paste online config），不需要手动改。
