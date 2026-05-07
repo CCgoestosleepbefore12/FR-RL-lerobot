@@ -203,27 +203,6 @@ def build_bc_batch(state14, images_dict, device):
     return batch
 
 
-# ---------- 等操作员 + drain（仅当 --wait-operator 时用）----------
-def wait_for_operator_with_camera_drain(hand_detector, cam_mgr, prompt: str):
-    """阻塞等操作员按 Enter，期间 ~20 Hz drain 两个相机的 pyrealsense pipeline。"""
-    import select
-    import sys
-    print(prompt, flush=True)
-    while True:
-        try:
-            hand_detector.get_frames()
-        except Exception:
-            pass
-        try:
-            cam_mgr.get_images()
-        except Exception:
-            pass
-        if select.select([sys.stdin], [], [], 0)[0]:
-            sys.stdin.readline()
-            return
-        time.sleep(0.05)
-
-
 # ---------- drain-aware sleep（替代 time.sleep，期间持续 drain 相机帧）----------
 def drain_sleep(seconds: float, hand_detector, cam_mgr):
     """阻塞 `seconds` 秒，期间以 ~20 Hz 持续 drain 两个相机的 pyrealsense
@@ -462,26 +441,12 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="不发 /pose / 不发 gripper 命令，纯测 obs/inference")
     ap.add_argument("--no-workspace-clamp", action="store_true")
-    ap.add_argument("--auto-reset-on-success", action="store_true", default=True,
-                    help="BC 触发 success 后调 go_home_to_reset_pose 完整复位")
-    ap.add_argument("--lift-threshold", type=float, default=0.06,
-                    help="z 抬升触发 success 的阈值 m（reset_z + 此值）")
-    ap.add_argument("--wait-operator", action="store_true",
-                    help="success 复位后阻塞等待操作员按 Enter 再开下一集（默认 sleep 1.5s 自动继续）")
-    ap.add_argument("--gripper-held-min", type=float, default=0.02,
-                    help="auto-success gripper_pos 下界（< 此值视作空夹）。"
-                         "2026-04-30 从 0.05 降到 0.02：海绵被 130N 压扁到 ~0.038，"
-                         "0.05 误判抓住海绵为空夹。0.02 既容纳压扁海绵又能滤空抓。"
-                         "硬物可调回 0.05。")
-    ap.add_argument("--gripper-held-max", type=float, default=0.6,
-                    help="auto-success gripper_pos 上界（> 此值视作张开未夹）")
     ap.add_argument("--no-reset-on-recovery", action="store_true",
                     help="BACKUP/HOMING → TASK 转换时不强制 go_home_to_reset_pose，让 supervisor "
                          "的 HOMING 自然把 TCP 拉回 tcp_start，BC 接着 episode 半路 resume。"
-                         "⚠️ 2026-04-30 实测 pickup 任务下基本无法完成：BACKUP 期间场景几乎必变"
-                         "（手就算只触发避让没碰物块，gripper 状态/物块视觉位置已与 BC 训练分布偏离），"
-                         "BC 在 tcp_start resume 后乱动 / 卡死。**pickup 不要用此 flag**，留作未来"
-                         "wipe / 多阶段长 episode 任务的对比实验入口。")
+                         "pickandplace 是多阶段任务（pick → transit → place），mid-episode resume "
+                         "理论上比 pickup 更复杂——BACKUP 期间餐具可能位置变化 / 不在夹爪里，"
+                         "BC 在 tcp_start resume 后大概率走错。默认仍走 force home。")
     ap.add_argument("--max-episode-steps", type=int, default=400,
                     help="TASK 模式单 episode 最大步数（默认 400 = 40s @ 10Hz；pickandplace 较长）。"
                          "兜底用——主路径仍是操作员 SPACE/Enter；超时计为 fail 强制 go_home，"
@@ -591,9 +556,7 @@ def main():
     # controller 在桌面 / 工作面以下卡死。BACKUP / HOMING 仍用宽 WORKSPACE_MIN/MAX。
     task_workspace_min = task_cfg.abs_pose_limit_low[:3].astype(np.float64)
     task_workspace_max = task_cfg.abs_pose_limit_high[:3].astype(np.float64)
-    success_z_threshold = float(reset_pose_6d[2]) + args.lift_threshold
-    print(f"[OK] reset_pose.xyz = {np.round(reset_pose_6d[:3], 3)}, "
-          f"success_z_threshold = {success_z_threshold:.3f}m")
+    print(f"[OK] reset_pose.xyz = {np.round(reset_pose_6d[:3], 3)}")
     print(f"[OK] TASK workspace: min={task_workspace_min.tolist()}, max={task_workspace_max.tolist()}")
 
     # Bias controller（封装 EncoderBiasInjector + BiasMonitor + HTTP 调用）
@@ -651,7 +614,6 @@ def main():
     fail_count = 0
     task_steps = 0  # TASK 模式累计步数；超过 max_episode_steps 计 timeout 失败
     iter_count = 0
-    last_action7 = None  # 给诊断 print 用
     prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
 
     # KeyboardRewardListener: pynput 独立线程（"双线程"），与 deploy_bc_inference.py
@@ -840,7 +802,6 @@ def main():
                 tcp_current_pos=actual_xyz_biased,
                 tcp_current_quat=actual_quat_wxyz,
             )
-            last_action7 = action7
             prev_mode = new_mode
 
             # ---------- Debug print: 每 10 iter (1s) 一行 ----------

@@ -658,7 +658,6 @@ def main():
     failure_count = 0
     task_steps = 0  # TASK 模式累计步数；超过 max_episode_steps 计 timeout 失败
     iter_count = 0
-    last_action7 = None  # 给诊断 print 用
     prev_mode = Mode.TASK  # 跟踪 mode 转换，BACKUP/HOMING→TASK 时 force home
 
     print("\n=== Deployment Active ===")
@@ -831,7 +830,6 @@ def main():
                 tcp_current_pos=actual_xyz_biased,
                 tcp_current_quat=actual_quat_wxyz,
             )
-            last_action7 = action7
             prev_mode = new_mode
 
             # ---------- Debug print: 每 10 iter (1s) 一行 ----------
