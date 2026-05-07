@@ -43,7 +43,7 @@
             "observation.state": {
                 "type": "STATE",
                 "shape": [
-                    29
+                    14
                 ]
             }
         },
