@@ -128,6 +128,9 @@ def main():
     ap.add_argument("--bias", action="store_true",
                     help="启用 J1 encoder bias 注入（默认 OFF）。与 deploy 脚本约定一致：不加 "
                          "flag → 干净 DAgger 介入；加 flag → 介入数据带 bias 分布。")
+    ap.add_argument("--bias-range", type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
+                    help="覆盖 bias 采样范围（rad）。默认 None = 用 task factory 内置值"
+                         "（pickup/pickandplace=±0.1, wipe=±0.2）。仅当 --bias 时生效。")
     ap.add_argument("-n", "--successes-needed", type=int, default=30,
                     help="目标 success episode 数")
     ap.add_argument("--iter", type=int, default=1,
@@ -171,7 +174,10 @@ def main():
         reward_backend="keyboard",  # 操作员按 Enter/Space 决定 success/discard
         enable_bias_monitor=False,
         bias_monitor_save_path=None,
+        bias_range=tuple(args.bias_range) if args.bias_range is not None else None,
     )
+    if args.bias and args.bias_range is not None:
+        logging.info(f"[dagger] bias_range override: {tuple(args.bias_range)} rad")
     env = FrankaRealEnv(cfg_env)
     logging.info(
         f"[dagger] env up: task={args.task}, gripper_locked={cfg_env.gripper_locked}, "

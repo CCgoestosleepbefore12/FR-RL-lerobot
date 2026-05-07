@@ -104,11 +104,14 @@ def build_action_from_spacemouse(
     return action
 
 
-def make_config(task: str, use_bias: bool) -> FrankaRealConfig:
+def make_config(task: str, use_bias: bool, bias_range=None) -> FrankaRealConfig:
     """Dispatch to per-task factory in real_config.py。
 
     采集模式默认开 BiasMonitor 弹窗（仅本地 demo 时；远程 headless 训练用默认 False）。
     bias_monitor_save_path 默认存到 charts/bias_<timestamp>.{npz,png}。
+
+    Args:
+        bias_range: 覆盖 task factory 内置 bias 范围。None 时用默认（pickup/pap ±0.1, wipe ±0.2）。
     """
     bias_monitor_save_path = None
     if use_bias:
@@ -124,6 +127,7 @@ def make_config(task: str, use_bias: bool) -> FrankaRealConfig:
         reward_backend="keyboard",
         enable_bias_monitor=use_bias,
         bias_monitor_save_path=bias_monitor_save_path,
+        bias_range=bias_range,
     )
 
 
@@ -175,6 +179,10 @@ def main():
     ap.add_argument("--bias", action="store_true",
                     help="启用 J1 encoder bias 注入（默认 OFF）。与 deploy 脚本约定一致：不加 "
                          "flag → 干净 demo；加 flag → 收集带 bias 的 demo（写到 data/with_bias/）。")
+    ap.add_argument("--bias-range", type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
+                    help="覆盖 bias 采样范围（rad）。默认 None = 用 task factory 内置值"
+                         "（pickup/pickandplace=±0.1, wipe=±0.2）。例：--bias-range -0.2 0.2。"
+                         "仅当 --bias 时生效。")
     ap.add_argument("--output-dir", type=str, default=None,
                     help="default: data/{task}_demos/")
     ap.add_argument("--save-every", type=int, default=10,
@@ -193,7 +201,12 @@ def main():
     bias_dir = "with_bias" if args.bias else "no_bias"
     output_dir = args.output_dir or f"data/{bias_dir}/{args.task}"
 
-    cfg = make_config(task=args.task, use_bias=args.bias)
+    cfg = make_config(
+        task=args.task, use_bias=args.bias,
+        bias_range=tuple(args.bias_range) if args.bias_range is not None else None,
+    )
+    if args.bias and args.bias_range is not None:
+        logging.info(f"bias_range override: {tuple(args.bias_range)} rad")
     env = FrankaRealEnv(cfg)
     spacemouse = SpaceMouseExpert()
     logging.info(
