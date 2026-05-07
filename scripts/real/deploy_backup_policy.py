@@ -46,8 +46,10 @@ from frrl.policies.sac.modeling_sac import SACPolicy
 from frrl.rl.supervisor import HierarchicalSupervisor, Mode
 from frrl.teleoperators.spacemouse.spacemouse_expert import SpaceMouseExpert
 from frrl.robots.franka_real.vision.hand_detector import HandDetector
-
-URL = "http://192.168.100.1:5000/"
+from frrl.robots.franka_real.http_client import (
+    URL, post, get_state_true, get_state_biased, send_pose,
+)
+from frrl.robots.franka_real.geometry import compute_hand_body_equiv
 
 # HierarchicalSupervisor thresholds (Route A: center-to-center semantics)
 # Sim training uses hand_body-to-obstacle center distance with
@@ -87,14 +89,8 @@ LOOKAHEAD = 2.0
 # Rate limit: max Cartesian speed (m/s). Clips single-step delta.
 MAX_CART_SPEED = 0.30          # m/s — Franka nominal max is ~2 m/s
 
-# Franka flange → pinch_site (TCP) offset along gripper +z axis.
-# Sim's arm bounding sphere is centered at panda_hand body (= flange, mocap weld
-# point, rotation-invariant). Real's state["pose"][:3] is at pinch_site (TCP).
-# To align, we reconstruct the flange-equivalent point:
-#   hand_body_equiv = TCP - TCP_OFFSET * gripper_z_base
-# and use it as the center for min_hand_dist (matches sim's collision-check
-# reference point). See docs/backup_policy_deployment.md §6.4 for rationale.
-TCP_OFFSET = 0.1034  # m, Franka Hand kinematic flange→pinch offset
+# TCP_OFFSET (Franka flange→pinch_site offset, 0.1034m) 现在在
+# frrl/robots/franka_real/geometry.py。compute_hand_body_equiv 也从那里 import。
 
 OBS_STACK = 3
 CTRL_HZ = 10.0
@@ -106,48 +102,9 @@ WORKSPACE_MAX = np.array([0.70,  0.30, 0.60])
 TCP_NOISE_STD = 0.005  # matches training DR_TCP_POS_STD
 
 
-def post(path, **kw):
-    return requests.post(URL + path, timeout=2.0, **kw)
-
-
-def get_state_true():
-    """Unbiased state — use for POLICY OBSERVATION (matches training distribution)."""
-    r = post("getstate_true")
-    r.raise_for_status()
-    return r.json()
-
-
-def get_state_biased():
-    """Biased state — use for TARGET construction so controller frame matches
-    the frame we send /pose in. Without this, bias creates a phantom error the
-    controller keeps trying to 'fix', causing weird drift."""
-    r = post("getstate")
-    r.raise_for_status()
-    return r.json()
-
-
-def send_pose(target_xyz, target_quat_xyzw):
-    # franka_server expects [x, y, z, qx, qy, qz, qw] (scipy convention)
-    pose7 = [*target_xyz.tolist(), *target_quat_xyzw]
-    try:
-        requests.post(URL + "pose", json={"arr": pose7}, timeout=0.5)
-    except requests.exceptions.Timeout:
-        pass
-
-
 def quat_xyzw_to_wxyz(q_xyzw):
     """Franka server (scipy) → HomingController (sim env) convention."""
     return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float64)
-
-
-def compute_hand_body_equiv(tcp_pos, quat_xyzw):
-    """Sim-equivalent arm sphere center: flange point 10.34cm behind TCP along
-    the gripper +z axis. Matches panda_hand body xpos (= mocap weld point) in
-    sim, which is the reference center for collision termination at training
-    time. Use true (unbiased) pose so real geometry matches bbox_center frame.
-    """
-    gripper_z_base = R.from_quat(quat_xyzw).apply([0, 0, 1])
-    return tcp_pos - TCP_OFFSET * gripper_z_base
 
 
 def build_obs28(state, hand_pos, hand_vel, tcp_noisy):

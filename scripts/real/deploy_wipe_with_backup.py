@@ -55,8 +55,14 @@ from frrl.envs.real import euler_2_quat
 from frrl.fault_injection import BiasDeployController
 from frrl.robots.franka_real.cameras.realsense import RealSenseCameraManager
 from frrl.robots.franka_real.vision.hand_detector import HandDetector
-
-URL = "http://192.168.100.1:5000/"
+from frrl.robots.franka_real.http_client import (
+    URL, post, get_state_true, get_state_biased, send_pose, align_quat_sign,
+)
+from frrl.robots.franka_real.geometry import compute_hand_body_equiv
+from frrl.robots.franka_real.camera_drain import (
+    drain_sleep, check_hand_close_during_homing, interpolate_move_with_drain,
+)
+from frrl.robots.franka_real.gripper_commander import GripperCommander
 
 # ---------- Backup FSM thresholds（沿用 deploy_backup_policy.py）----------
 D_SAFE_BY_VERSION = {"v2": 0.30, "v3": 0.40}
@@ -85,7 +91,6 @@ BACKUP_ROTATION_SCALE = 0.05
 BACKUP_LOOKAHEAD = 2.0
 BACKUP_MAX_CART_SPEED = 0.30
 
-TCP_OFFSET = 0.1034
 OBS_STACK = 3
 CTRL_HZ = 10.0
 TCP_NOISE_STD = 0.005
@@ -111,47 +116,6 @@ def crop_resize_front(rgb_img):
     v0, v1, u0, u1 = FRONT_CROP_VYUX
     cropped = rgb_img[v0:v1, u0:u1]
     return cv2.resize(cropped, IMAGE_SIZE)
-
-
-# ---------- HTTP helpers ----------
-def post(path, **kw):
-    return requests.post(URL + path, timeout=2.0, **kw)
-
-
-def get_state_true():
-    r = post("getstate_true")
-    r.raise_for_status()
-    return r.json()
-
-
-def get_state_biased():
-    r = post("getstate")
-    r.raise_for_status()
-    return r.json()
-
-
-def send_pose(target_xyz, target_quat_xyzw):
-    pose7 = [*target_xyz.tolist(), *target_quat_xyzw]
-    try:
-        requests.post(URL + "pose", json={"arr": pose7}, timeout=0.5)
-    except requests.exceptions.Timeout:
-        pass
-
-
-def align_quat_sign(q, q_ref):
-    """把 q 翻到跟 q_ref 同半球，避免 impedance controller 收到 sign-flipped quat
-    后做 360° slerp。每次 send_pose 之前调用。"""
-    q = np.asarray(q, dtype=np.float64)
-    q_ref = np.asarray(q_ref, dtype=np.float64)
-    if float(np.dot(q, q_ref)) < 0:
-        q = -q
-    return q.tolist()
-
-
-def compute_hand_body_equiv(tcp_pos, quat_xyzw):
-    """Flange 中心 = TCP 沿 gripper +z 退 10.34cm，对齐 sim 碰撞参考点。"""
-    gripper_z_base = R.from_quat(quat_xyzw).apply([0, 0, 1])
-    return tcp_pos - TCP_OFFSET * gripper_z_base
 
 
 # ---------- Backup obs helpers（沿用 deploy_backup_policy.py）----------
@@ -201,90 +165,6 @@ def build_bc_batch(state14, images_dict, device):
         t = torch.from_numpy(img).permute(2, 0, 1).float().unsqueeze(0) / 255.0
         batch[f"observation.images.{cam_name}"] = t.to(device)
     return batch
-
-
-# ---------- drain-aware sleep（替代 time.sleep，期间持续 drain 相机帧）----------
-def drain_sleep(seconds: float, hand_detector, cam_mgr):
-    """阻塞 `seconds` 秒，期间以 ~20 Hz 持续 drain 两个相机的 pyrealsense
-    pipeline，避免 buffer 堵塞导致 pipeline 进入坏状态（表现为 wait_for_frames
-    超时 / 拿到 stale 帧）。所有 deploy 主循环里的 `time.sleep` 在 hand_detector
-    和 cam_mgr 已经 init 之后都应该改用这个，让 BACKUP 安全网在阻塞期间也活着。
-    """
-    end = time.time() + seconds
-    while time.time() < end:
-        try:
-            hand_detector.get_frames()
-        except Exception:
-            pass
-        try:
-            cam_mgr.get_images()
-        except Exception:
-            pass
-        time.sleep(0.05)  # ~20 Hz drain rate
-
-
-# ---------- 安全 hand 距离检查（homing 期间 ~20 Hz 调用，发现手就中断）----------
-def check_hand_close_during_homing(hand_detector, d_safe: float):
-    """读相机帧 + 检测 hand，如果 hand 距离机械臂 < d_safe 返回 True。
-
-    复刻主循环的 hand 检测逻辑，给 interpolate_move_safety 用。这一步同时也
-    drain 掉 hand_detector pipeline 一帧（detect 内部调 wait_for_frames）。
-    """
-    try:
-        color, depth = hand_detector.get_frames()
-        state = get_state_true()
-        fk_tcp = np.array(state["pose"][:3], dtype=np.float64)
-        hand_body = compute_hand_body_equiv(fk_tcp, state["pose"][3:])
-        hand = hand_detector.detect(
-            color, depth,
-            exclude_near_flange=hand_body, flange_radius=0.10,
-            exclude_near_tcp=fk_tcp, tcp_radius=0.06,
-        )
-        if hand.active:
-            dist = float(np.linalg.norm(hand.pos_robot - hand_body))
-            return dist < d_safe
-    except Exception:
-        pass
-    return False
-
-
-# ---------- 平滑插值运动 + 安全检查（hand 进 D_SAFE 立即中断）----------
-def interpolate_move_with_drain(start_xyz, start_quat_xyzw, goal_xyz, goal_quat_xyzw,
-                                 timeout: float, hand_detector, cam_mgr,
-                                 d_safe: float, hz: float = 10.0):
-    """从 start 线性插值到 goal，每 0.1s 发一帧 pose；每个 tick 内 ~20 Hz 检查
-    hand 距离，hand < d_safe 立即返回 False（caller 中断 homing）。
-
-    返回：True = 完成全部插值；False = hand 检测中断。
-    """
-    steps = max(int(timeout * hz), 2)
-    dt = 1.0 / hz
-    start_xyz = np.asarray(start_xyz, dtype=np.float64)
-    goal_xyz = np.asarray(goal_xyz, dtype=np.float64)
-    start_quat = np.asarray(start_quat_xyzw, dtype=np.float64)
-    goal_quat = np.asarray(goal_quat_xyzw, dtype=np.float64)
-    if float(np.dot(start_quat, goal_quat)) < 0:
-        goal_quat = -goal_quat
-
-    for i in range(1, steps + 1):
-        t = i / steps
-        xyz = start_xyz + t * (goal_xyz - start_xyz)
-        quat = (1.0 - t) * start_quat + t * goal_quat
-        quat = quat / (np.linalg.norm(quat) + 1e-12)
-        send_pose(xyz, list(quat))
-
-        # tick 内 ~20 Hz 检查 hand 距离 + drain wrist cam pipeline
-        end_t = time.time() + dt
-        while time.time() < end_t:
-            if check_hand_close_during_homing(hand_detector, d_safe):
-                print(f"[safety] hand intrusion @ homing step {i}/{steps} → abort")
-                return False
-            try:
-                cam_mgr.get_images()
-            except Exception:
-                pass
-            time.sleep(0.05)
-    return True
 
 
 # ---------- Episode reset homing（success 后开新 episode 时复位机械臂）----------
@@ -385,45 +265,6 @@ def go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
     drain_sleep(settle_s, hand_detector, cam_mgr)
     print("[homing] reset done")
     return True
-
-
-# ---------- Gripper command（hil-serl convention thresholding）----------
-class GripperCommander:
-    """跟 frrl/envs/real.py:_send_gripper_command 同语义：基于 BC action[6]
-    阈值 ±0.5 触发 /open_gripper or /close_gripper，加 hysteresis 避免抖动。
-    """
-    def __init__(self, sleep_after=0.6):
-        self.sleep_after = sleep_after
-        self.last_act_time = 0.0
-        self.commanded_state = "open"  # 假设 reset 后是张开
-
-    def step(self, action_gripper, current_gripper_pos):
-        now = time.time()
-        if (now - self.last_act_time) < self.sleep_after:
-            return  # rate limit
-        # hil-serl thresholding
-        if action_gripper <= -0.5 and current_gripper_pos > 0.85 and self.commanded_state != "closed":
-            try:
-                requests.post(URL + "close_gripper", timeout=1.0)
-                self.commanded_state = "closed"
-                self.last_act_time = now
-            except Exception as e:
-                print(f"[gripper] close failed: {e}")
-        elif action_gripper >= 0.5 and current_gripper_pos < 0.85 and self.commanded_state != "open":
-            try:
-                requests.post(URL + "open_gripper", timeout=1.0)
-                self.commanded_state = "open"
-                self.last_act_time = now
-            except Exception as e:
-                print(f"[gripper] open failed: {e}")
-
-    def force_open(self):
-        try:
-            requests.post(URL + "open_gripper", timeout=1.0)
-            self.commanded_state = "open"
-            self.last_act_time = time.time()
-        except Exception:
-            pass
 
 
 # ---------- Main ----------
