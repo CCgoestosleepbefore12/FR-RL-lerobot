@@ -125,14 +125,15 @@ def main():
     ap.add_argument("--ckpt", required=True,
                     help="path to .../pretrained_model 目录")
     ap.add_argument("--task", required=True, choices=list(TASK_CONFIG_FACTORIES.keys()))
-    ap.add_argument("--no-bias", action="store_true",
-                    help="禁用 J1 encoder bias 注入（默认开，让 DAgger 介入数据与 deploy 分布一致）")
+    ap.add_argument("--bias", action="store_true",
+                    help="启用 J1 encoder bias 注入（默认 OFF）。与 deploy 脚本约定一致：不加 "
+                         "flag → 干净 DAgger 介入；加 flag → 介入数据带 bias 分布。")
     ap.add_argument("-n", "--successes-needed", type=int, default=30,
                     help="目标 success episode 数")
     ap.add_argument("--iter", type=int, default=1,
                     help="DAgger 迭代轮次编号；写入文件名方便后续合并管理")
     ap.add_argument("--output-dir", type=str, default=None,
-                    help="default: data/{no_bias|with_bias}/{task}/（按 --no-bias flag 自动分流）")
+                    help="default: data/{no_bias|with_bias}/{task}/（按 --bias flag 自动分流）")
     ap.add_argument("--enter-threshold", type=float, default=0.05,
                     help="sm magnitude > 此值或按键 → 立刻进 ACTIVE 状态（默认 0.05，"
                          "对齐 frrl/teleoperators/spacemouse/configuration_spacemouse.py）")
@@ -149,10 +150,10 @@ def main():
                         format="%(asctime)s %(levelname)s %(message)s")
 
     # 默认目录按 bias 状态分流（2026-04-30 数据重组），与 collect_demo_task_policy.py 一致：
-    #   --no-bias    → data/no_bias/{task}/
-    #   default ON   → data/with_bias/{task}/
+    #   default      → data/no_bias/{task}/   （干净 DAgger）
+    #   --bias       → data/with_bias/{task}/ （带 bias DAgger）
     # demo 和 dagger 共用同一目录（pkl 文件名前缀区分），合并训练时一个 glob 全覆盖
-    bias_dir = "no_bias" if args.no_bias else "with_bias"
+    bias_dir = "with_bias" if args.bias else "no_bias"
     output_dir = args.output_dir or f"data/{bias_dir}/{args.task}"
 
     # ---------- Load policy ----------
@@ -166,7 +167,7 @@ def main():
     # ---------- Build env ----------
     cfg_env = make_task_config(
         task=args.task,
-        use_bias=not args.no_bias,
+        use_bias=args.bias,
         reward_backend="keyboard",  # 操作员按 Enter/Space 决定 success/discard
         enable_bias_monitor=False,
         bias_monitor_save_path=None,
@@ -174,7 +175,7 @@ def main():
     env = FrankaRealEnv(cfg_env)
     logging.info(
         f"[dagger] env up: task={args.task}, gripper_locked={cfg_env.gripper_locked}, "
-        f"max_ep_len={cfg_env.max_episode_length}, bias={'ON' if not args.no_bias else 'OFF'}, "
+        f"max_ep_len={cfg_env.max_episode_length}, bias={'ON' if args.bias else 'OFF'}, "
         f"target {args.successes_needed} successes"
     )
 

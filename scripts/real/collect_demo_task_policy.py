@@ -25,9 +25,9 @@ Operator protocol during collection:
 Output: data/{task}_demos/{task}_demos_{N}_{complete|aborted}_{timestamp}.pkl
 
 Usage:
-    python scripts/real/collect_demo_task_policy.py --task wipe                # 50 wipe demos, bias on, gripper closed
-    python scripts/real/collect_demo_task_policy.py --task pickup -n 30        # 30 pickup demos, bias on, gripper free
-    python scripts/real/collect_demo_task_policy.py --task pickup --no-bias    # baseline (no bias)
+    python scripts/real/collect_demo_task_policy.py --task wipe                # 50 wipe demos, no bias, gripper closed
+    python scripts/real/collect_demo_task_policy.py --task pickup -n 30        # 30 pickup demos, no bias, gripper free
+    python scripts/real/collect_demo_task_policy.py --task pickup --bias       # 50 pickup demos with J1 bias injection
 """
 
 import argparse
@@ -172,8 +172,9 @@ def main():
                          f" 已注册: {list(TASK_CONFIG_FACTORIES.keys())}")
     ap.add_argument("-n", "--successes-needed", type=int, default=50,
                     help="target number of successful demos (default 50)")
-    ap.add_argument("--no-bias", action="store_true",
-                    help="disable J1 bias injection (default: bias enabled)")
+    ap.add_argument("--bias", action="store_true",
+                    help="启用 J1 encoder bias 注入（默认 OFF）。与 deploy 脚本约定一致：不加 "
+                         "flag → 干净 demo；加 flag → 收集带 bias 的 demo（写到 data/with_bias/）。")
     ap.add_argument("--output-dir", type=str, default=None,
                     help="default: data/{task}_demos/")
     ap.add_argument("--save-every", type=int, default=10,
@@ -186,18 +187,18 @@ def main():
     )
 
     # 默认目录按 bias 状态分流（2026-04-30 数据重组）：
-    #   --no-bias    → data/no_bias/{task}/
-    #   default ON   → data/with_bias/{task}/
+    #   default      → data/no_bias/{task}/   （干净 demo）
+    #   --bias       → data/with_bias/{task}/ （带 bias 注入）
     # --output-dir 显式指定时覆盖此默认。
-    bias_dir = "no_bias" if args.no_bias else "with_bias"
+    bias_dir = "with_bias" if args.bias else "no_bias"
     output_dir = args.output_dir or f"data/{bias_dir}/{args.task}"
 
-    cfg = make_config(task=args.task, use_bias=not args.no_bias)
+    cfg = make_config(task=args.task, use_bias=args.bias)
     env = FrankaRealEnv(cfg)
     spacemouse = SpaceMouseExpert()
     logging.info(
         f"collection ready — task={args.task}, reward=keyboard, "
-        f"bias={'J1 U(-0.2, 0.2) per episode' if not args.no_bias else 'DISABLED'}, "
+        f"bias={'J1 U(-0.2, 0.2) per episode' if args.bias else 'DISABLED'}, "
         f"gripper_locked={cfg.gripper_locked}, max_ep_len={cfg.max_episode_length}, "
         f"random_reset={cfg.random_reset} (xy_range={cfg.random_xy_range}), "
         f"output_dir={output_dir}, target {args.successes_needed} successes"
