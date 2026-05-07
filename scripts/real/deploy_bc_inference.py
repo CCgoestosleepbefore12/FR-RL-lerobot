@@ -56,8 +56,9 @@ def main():
                     help="path to .../pretrained_model 目录（与 from_pretrained 同语义）")
     ap.add_argument("--task", required=True, choices=list(TASK_CONFIG_FACTORIES.keys()),
                     help="走哪个 task factory 起 env")
-    ap.add_argument("--no-bias", action="store_true",
-                    help="env 上不注入 J1 encoder bias（部署测试默认关，避免再加扰动）")
+    ap.add_argument("--bias", action="store_true",
+                    help="启用 J1 encoder bias 注入（默认 OFF）。与 deploy_*_with_backup.py "
+                         "约定一致：不加 flag → 干净测试；加 flag → 测 bias 鲁棒性。")
     ap.add_argument("--no-teleop", action="store_true",
                     help="不开 SpaceMouse；纯 policy deterministic 测试，最干净的隔离")
     ap.add_argument("--n-episodes", type=int, default=10,
@@ -92,7 +93,7 @@ def main():
     ap.add_argument("--bias-range", type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
                     help="覆盖 bias 采样范围（rad）。默认 None = 用 task factory 内置值"
                          "（pickup/pickandplace=±0.1, wipe=±0.2）。例：--bias-range -0.05 0.05 "
-                         "测温和 bias；--bias-range -0.2 0.2 测大 bias。仅当 bias=ON 生效（不加 --no-bias）。")
+                         "测温和 bias；--bias-range -0.2 0.2 测大 bias。仅当 --bias 时生效。")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -114,22 +115,24 @@ def main():
     # 实际 success 判定在本脚本主循环里做，对齐 hil-serl pickup wrapper。
     backend = "pose" if args.auto_success else "keyboard"
     bias_monitor_save_path = None
-    if args.bias_monitor:
+    if args.bias_monitor and args.bias:
         # Path 已在顶部 import；datetime 没有，局部 import OK
         from datetime import datetime
         Path("charts").mkdir(exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         bias_monitor_save_path = f"charts/bias_deploy_{args.task}_{ts}"
         logging.info(f"[deploy] BiasMonitor enabled → {bias_monitor_save_path}.{{npz,png}}")
+    elif args.bias_monitor and not args.bias:
+        logging.warning("[deploy] --bias-monitor 需配 --bias 才有效；当前 --bias 未开，monitor 跳过")
     cfg_env = make_task_config(
         task=args.task,
-        use_bias=not args.no_bias,
+        use_bias=args.bias,
         reward_backend=backend,
-        enable_bias_monitor=args.bias_monitor,
+        enable_bias_monitor=(args.bias_monitor and args.bias),
         bias_monitor_save_path=bias_monitor_save_path,
         bias_range=tuple(args.bias_range) if args.bias_range is not None else None,
     )
-    if args.bias_range is not None and not args.no_bias:
+    if args.bias_range is not None and args.bias:
         logging.info(f"[deploy] bias_range override: {tuple(args.bias_range)} rad")
     env = FrankaRealEnv(cfg_env)
     reset_z = float(cfg_env.reset_pose[2])
