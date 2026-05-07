@@ -208,6 +208,12 @@ class FrankaRealEnv(gym.Env):
         # 实物理位置（/getstate_true）作为新 setpoint，controller 看到 setpoint
         # = 当前位置 → 误差 0 → 不动。
         if self.bias_injector is not None:
+            # 推 NaN 样本进 monitor → matplotlib `set_data` 遇 NaN 自动断线，
+            # 避免 episode N 末和 episode N+1 首样本被一条直线连接产生伪交叉。
+            # 跟 BiasDeployController.begin_transition 同款 trick。
+            if self._bias_monitor is not None:
+                nan7 = np.full(7, np.nan, dtype=np.float32)
+                self._bias_monitor.update(nan7, nan7, nan7)
             # 读 unbiased 物理位置（即将作为新 setpoint）
             state_true = self._http_post("getstate_true").json()
             real_pose = np.array(state_true["pose"], dtype=np.float64)
