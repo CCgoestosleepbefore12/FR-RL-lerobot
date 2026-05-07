@@ -63,6 +63,7 @@ from frrl.robots.franka_real.camera_drain import (
     drain_sleep, check_hand_close_during_homing, interpolate_move_with_drain,
 )
 from frrl.robots.franka_real.gripper_commander import GripperCommander
+from frrl.robots.franka_real.abort_signal import install as install_sigint, aborted
 
 # ---------- Backup FSM thresholds（沿用 deploy_backup_policy.py）----------
 D_SAFE_BY_VERSION = {"v2": 0.30, "v3": 0.40}
@@ -269,6 +270,10 @@ def go_home_to_reset_pose(reset_pose_6d, precision_param, compliance_param,
 
 # ---------- Main ----------
 def main():
+    # SIGINT handler: 把 Ctrl+C 转 flag（matplotlib Tk 吞 KeyboardInterrupt 解决方案，
+    # 详见 frrl/robots/franka_real/abort_signal.py）
+    install_sigint()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--bc-ckpt", required=True,
                     help="path to BC pickup .../pretrained_model")
@@ -489,7 +494,7 @@ def main():
 
     dt = 1.0 / CTRL_HZ
     try:
-        while True:
+        while not aborted():
             t0 = time.time()
 
             # ---------- Sensors ----------
@@ -791,7 +796,8 @@ def main():
                 time.sleep(dt - elapsed)
 
     except KeyboardInterrupt:
-        print("\n[!] Ctrl+C, 收尾")
+        # Backup path：install_sigint 后正常 Ctrl+C 应走 aborted() flag 不抛异常。
+        print("\n[!] KeyboardInterrupt fallback, 收尾")
     finally:
         # ---------- 安全收尾 ----------
         # 顺序：强制张爪释放物块 → 把机械臂带回 reset_pose 安全停泊 → 清 bias →

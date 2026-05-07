@@ -40,6 +40,7 @@ from frrl.configs.policies import PreTrainedConfig
 from frrl.envs.real import FrankaRealEnv
 from frrl.envs.real_config import TASK_CONFIG_FACTORIES, make_task_config
 from frrl.policies.sac.modeling_sac import SACPolicy
+from frrl.robots.franka_real.abort_signal import install as install_sigint, aborted
 
 
 def _flush_stdin_buffer() -> None:
@@ -51,6 +52,10 @@ def _flush_stdin_buffer() -> None:
 
 
 def main():
+    # 装 SIGINT handler 把 Ctrl+C 转成 flag，绕开 matplotlib Tk backend 吞 KeyboardInterrupt
+    # 的问题（详见 frrl/robots/franka_real/abort_signal.py）。
+    install_sigint()
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ckpt", required=True,
                     help="path to .../pretrained_model 目录（与 from_pretrained 同语义）")
@@ -157,9 +162,10 @@ def main():
 
     # ---------- Inference loop ----------
     success_cnt = 0
-    abort = False
     try:
         for ep_idx in range(args.n_episodes):
+            if aborted():
+                break
             obs, _ = env.reset()
             ep_return = 0.0
             ep_len = 0
@@ -169,7 +175,7 @@ def main():
             logging.info(f"[deploy] ===== episode {ep_idx + 1}/{args.n_episodes} 开始 =====")
 
             done = False
-            while not done:
+            while not done and not aborted():
                 # ---------- batch obs ----------
                 batch = {}
                 for k, v in obs.items():
@@ -289,8 +295,9 @@ def main():
             )
 
     except KeyboardInterrupt:
-        logging.info("[deploy] Ctrl+C — exiting")
-        abort = True
+        # Backup path：理论上 install_sigint 后 SIGINT 不再抛 KeyboardInterrupt，
+        # 但万一某条路径绕过（比如 input() 阻塞）仍 catch 一下兜底。
+        logging.info("[deploy] KeyboardInterrupt fallback — exiting")
     finally:
         try:
             env.go_home()
@@ -307,7 +314,7 @@ def main():
         env.close()
         _flush_stdin_buffer()
 
-    logging.info(f"[deploy] DONE. success {success_cnt}/{args.n_episodes}{' (aborted)' if abort else ''}")
+    logging.info(f"[deploy] DONE. success {success_cnt}/{args.n_episodes}{' (aborted)' if aborted() else ''}")
 
 
 if __name__ == "__main__":
