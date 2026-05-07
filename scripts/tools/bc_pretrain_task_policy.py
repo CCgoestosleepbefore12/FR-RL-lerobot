@@ -92,6 +92,11 @@ def main():
                          "新 dagger pkl 在此 flag 下只取人类纠错帧，自主帧（policy 当时是对的）丢弃。"
                          "典型用法：--demo-paths 'data/no_bias/pickup/*.pkl' --intervention-only "
                          "→ demo + dagger 同目录一次取全，原 demo 全用 + dagger 介入帧补强。")
+    ap.add_argument("--no-auto-stats", action="store_true",
+                    help="默认 ON：从 --demo-paths 自动算 observation.state / action 的 MIN_MAX "
+                         "stats 并覆盖 cfg.policy.dataset_stats，免去手动跑 compute_dataset_stats "
+                         "再 paste 到 config 的步骤。加此 flag 关闭走 config 里写好的 stats（适合"
+                         "复现历史训练）。")
     args = ap.parse_args()
 
     init_logging()
@@ -116,6 +121,22 @@ def main():
     cfg.policy.offline_pretrain_steps = args.steps
     cfg.output_dir = Path(args.output_dir)
     cfg.batch_size = args.batch_size
+
+    # Auto-stats: 直接从 --demo-paths 算 dataset_stats 并覆盖 config 里的值，省去
+    # 人工 compute_dataset_stats → paste 步骤。images stats 不动（用 ImageNet 默认）。
+    # ⚠️ 这一步必须在 SACPolicy(config=cfg.policy) 之前 —— policy 会把 dataset_stats
+    # snapshot 到 normalizer state，初始化后再改 config 不生效。
+    if not args.no_auto_stats:
+        from scripts.tools.compute_dataset_stats import compute_stats_from_paths
+        auto_stats, n_trans = compute_stats_from_paths(demos, verbose=True)
+        if cfg.policy.dataset_stats is None:
+            cfg.policy.dataset_stats = {}
+        for key in ("observation.state", "action"):
+            cfg.policy.dataset_stats[key] = auto_stats[key]
+        logging.info(
+            f"[BC] auto-stats: {n_trans} transitions → "
+            f"overwrote dataset_stats[{', '.join(repr(k) for k in auto_stats)}]"
+        )
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
 

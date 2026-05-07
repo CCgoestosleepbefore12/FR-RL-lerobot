@@ -64,6 +64,11 @@ def main():
         "--output-dir", default=None,
         help="Checkpoint output dir (overrides cfg.output_dir)"
     )
+    ap.add_argument(
+        "--no-auto-stats", action="store_true",
+        help="默认 ON：从 --demo-paths 自动算 observation.state / action 的 MIN_MAX stats "
+             "并覆盖 cfg.policy.dataset_stats。加此 flag 关闭走 config 里写好的 stats。"
+    )
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -95,6 +100,20 @@ def main():
         cfg.output_dir = Path(args.output_dir)
     elif cfg.output_dir is not None and not isinstance(cfg.output_dir, Path):
         cfg.output_dir = Path(cfg.output_dir)
+
+    # Auto-stats（详见 bc_pretrain_task_policy.py 同款注释）：必须在 learner.train 之前
+    # 注入，否则 SACPolicy.from_config 已经 snapshot 到 normalizer state。
+    if not args.no_auto_stats:
+        from scripts.tools.compute_dataset_stats import compute_stats_from_paths
+        auto_stats, n_trans = compute_stats_from_paths(demos, verbose=True)
+        if cfg.policy.dataset_stats is None:
+            cfg.policy.dataset_stats = {}
+        for key in ("observation.state", "action"):
+            cfg.policy.dataset_stats[key] = auto_stats[key]
+        logging.info(
+            f"[pretrain] auto-stats: {n_trans} transitions → "
+            f"overwrote dataset_stats[{', '.join(repr(k) for k in auto_stats)}]"
+        )
 
     logging.info(
         f"pretrain: steps={args.steps}, output_dir={cfg.output_dir}, "
