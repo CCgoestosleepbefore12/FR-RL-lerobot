@@ -347,9 +347,23 @@ class FrankaRealEnv(gym.Env):
         Useful for collection / training scripts that finish early and want the
         arm in a safe position before shutting down. Unlike `reset()`, this
         does NOT resample bias, touch episode counters, or block on the S key.
+
+        ⚠️ 如果 bias_injector 正在注入（即上一 episode 的 bias 还活着），先做
+        clear + anchor preamble 跟 reset() 一致——否则 _go_to_reset 在 biased
+        frame 下解 IK，机械臂物理位置偏离 reset_pose 约 7-15cm（@ J1 bias=0.2rad）。
+        Caller 的 finally 块原本指望这步 home 真到位。
+
         Errors are logged and swallowed so close-out always reaches `env.close()`.
         """
         try:
+            # bias=ON 时跟 reset() 同款 preamble：clear bias + anchor unbiased pose，
+            # 再 home。详见 reset() line 210-217 注释。
+            if self.bias_injector is not None:
+                state_true = self._http_post("getstate_true").json()
+                real_pose = np.array(state_true["pose"], dtype=np.float64)
+                self._set_encoder_bias([0.0] * 7)
+                self._send_pos_command(real_pose)
+                time.sleep(0.5)
             self._recover()
             self._go_to_reset(joint_reset=False)
             self._recover()
