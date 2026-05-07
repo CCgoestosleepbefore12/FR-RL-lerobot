@@ -123,20 +123,11 @@ def main():
     cfg.batch_size = args.batch_size
 
     # Auto-stats: 直接从 --demo-paths 算 dataset_stats 并覆盖 config 里的值，省去
-    # 人工 compute_dataset_stats → paste 步骤。images stats 不动（用 ImageNet 默认）。
-    # ⚠️ 这一步必须在 SACPolicy(config=cfg.policy) 之前 —— policy 会把 dataset_stats
-    # snapshot 到 normalizer state，初始化后再改 config 不生效。
+    # 人工 compute_dataset_stats → paste 步骤。详见 scripts/tools/compute_dataset_stats.py
+    # 的 auto_inject_dataset_stats。必须在 SACPolicy(config=cfg.policy) 之前调。
     if not args.no_auto_stats:
-        from scripts.tools.compute_dataset_stats import compute_stats_from_paths
-        auto_stats, n_trans = compute_stats_from_paths(demos, verbose=True)
-        if cfg.policy.dataset_stats is None:
-            cfg.policy.dataset_stats = {}
-        for key in ("observation.state", "action"):
-            cfg.policy.dataset_stats[key] = auto_stats[key]
-        logging.info(
-            f"[BC] auto-stats: {n_trans} transitions → "
-            f"overwrote dataset_stats[{', '.join(repr(k) for k in auto_stats)}]"
-        )
+        from scripts.tools.compute_dataset_stats import auto_inject_dataset_stats
+        auto_inject_dataset_stats(cfg, force=True)  # BC pretrain 总有 demos，force=True
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
 

@@ -58,6 +58,49 @@ def _stats_min_max(arr: np.ndarray, name: str = "") -> Dict[str, list]:
     return {"min": mn.tolist(), "max": mx.tolist()}
 
 
+def auto_inject_dataset_stats(cfg, *, force: bool = False) -> bool:
+    """Compute dataset_stats from cfg.policy.demo_pickle_paths and inject into
+    cfg.policy.dataset_stats. Idempotent guard for the SAC training stack.
+
+    Args:
+        cfg: TrainRLServerPipelineConfig（带 .policy.demo_pickle_paths 与
+            .policy.dataset_stats）。
+        force: True 时无视所有 skip 条件强制重算。默认 False（学习器场景下
+            cfg.dataset 非空 / cfg.resume / 无 demo_paths 都跳过）。
+
+    Returns:
+        True = 成功 inject；False = skip（resume / 无 demo / 走 HF 数据集）。
+
+    Skip 条件（非 force）：
+      * 走 HuggingFace lerobot 数据集（cfg.dataset 非 None） → ds_meta.stats 走它的路径
+      * Resume 训练（cfg.resume=True） → ckpt 内 train_config.json 已有 stats
+      * demo_pickle_paths 空 → 没数据可算
+
+    必须在 make_policy 之前调用，否则 normalizer 已经 snapshot 旧 stats，改 cfg 不生效。
+    """
+    if not force:
+        if getattr(cfg, "dataset", None) is not None:
+            return False
+        if getattr(cfg, "resume", False):
+            logging.info("[auto_stats] skip: cfg.resume=True，ckpt 内 train_config.json 已有 stats")
+            return False
+        if not cfg.policy.demo_pickle_paths:
+            return False
+
+    auto_stats, n_trans = compute_stats_from_paths(
+        cfg.policy.demo_pickle_paths, verbose=True
+    )
+    if cfg.policy.dataset_stats is None:
+        cfg.policy.dataset_stats = {}
+    for key in ("observation.state", "action"):
+        cfg.policy.dataset_stats[key] = auto_stats[key]
+    logging.info(
+        f"[auto_stats] {n_trans} transitions → "
+        f"overwrote dataset_stats[{', '.join(repr(k) for k in auto_stats)}]"
+    )
+    return True
+
+
 def compute_stats_from_paths(
     pickle_patterns: List[str],
     *,

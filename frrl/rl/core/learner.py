@@ -324,6 +324,13 @@ def add_actor_information_and_train(
         )
         logging.info(f"Dataset stats loaded: {list(ds_meta.stats.keys())}")
 
+    # Auto-stats: 从 cfg.policy.demo_pickle_paths 自动算 dataset_stats 并覆盖 cfg。
+    # 跳过条件：cfg.dataset 走 HF 路径 / cfg.resume 走 ckpt 内 stats / 无 demo_paths。
+    # 必须在 make_policy 之前——policy 初始化时 normalizer snapshot stats，之后改 cfg
+    # 无效。详见 scripts/tools/compute_dataset_stats.py:auto_inject_dataset_stats。
+    from scripts.tools.compute_dataset_stats import auto_inject_dataset_stats
+    auto_inject_dataset_stats(cfg)
+
     logging.info("Initializing policy")
 
     policy: SACPolicy = make_policy(

@@ -101,19 +101,11 @@ def main():
     elif cfg.output_dir is not None and not isinstance(cfg.output_dir, Path):
         cfg.output_dir = Path(cfg.output_dir)
 
-    # Auto-stats（详见 bc_pretrain_task_policy.py 同款注释）：必须在 learner.train 之前
-    # 注入，否则 SACPolicy.from_config 已经 snapshot 到 normalizer state。
+    # Auto-stats（详见 scripts/tools/compute_dataset_stats.py 的 auto_inject_dataset_stats）。
+    # 必须在 learner.train 之前注入，否则 SACPolicy.from_config 已经 snapshot 到 normalizer state。
     if not args.no_auto_stats:
-        from scripts.tools.compute_dataset_stats import compute_stats_from_paths
-        auto_stats, n_trans = compute_stats_from_paths(demos, verbose=True)
-        if cfg.policy.dataset_stats is None:
-            cfg.policy.dataset_stats = {}
-        for key in ("observation.state", "action"):
-            cfg.policy.dataset_stats[key] = auto_stats[key]
-        logging.info(
-            f"[pretrain] auto-stats: {n_trans} transitions → "
-            f"overwrote dataset_stats[{', '.join(repr(k) for k in auto_stats)}]"
-        )
+        from scripts.tools.compute_dataset_stats import auto_inject_dataset_stats
+        auto_inject_dataset_stats(cfg, force=True)  # pretrain 总有 demos，force=True
 
     logging.info(
         f"pretrain: steps={args.steps}, output_dir={cfg.output_dir}, "
