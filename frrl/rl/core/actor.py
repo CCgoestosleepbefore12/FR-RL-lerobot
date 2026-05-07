@@ -258,7 +258,7 @@ def act_with_policy(
 
     # Auto-stats: 跟 learner 对齐——必须 actor / learner 用同一份 stats，否则 actor 的
     # normalizer 与 learner 的 buffer normalizer 错位 → action / obs 在两边解释不同。
-    # 详见 scripts/tools/compute_dataset_stats.py:auto_inject_dataset_stats。
+    # 详见 frrl.utils.dataset_stats.auto_inject_dataset_stats。
     from frrl.utils.dataset_stats import auto_inject_dataset_stats
     auto_inject_dataset_stats(cfg)
 

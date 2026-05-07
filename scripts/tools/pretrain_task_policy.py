@@ -101,7 +101,7 @@ def main():
     elif cfg.output_dir is not None and not isinstance(cfg.output_dir, Path):
         cfg.output_dir = Path(cfg.output_dir)
 
-    # Auto-stats（详见 scripts/tools/compute_dataset_stats.py 的 auto_inject_dataset_stats）。
+    # Auto-stats（详见 frrl.utils.dataset_stats.auto_inject_dataset_stats）。
     # 必须在 learner.train 之前注入，否则 SACPolicy.from_config 已经 snapshot 到 normalizer state。
     if not args.no_auto_stats:
         from frrl.utils.dataset_stats import auto_inject_dataset_stats

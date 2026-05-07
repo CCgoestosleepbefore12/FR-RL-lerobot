@@ -123,8 +123,8 @@ def main():
     cfg.batch_size = args.batch_size
 
     # Auto-stats: 直接从 --demo-paths 算 dataset_stats 并覆盖 config 里的值，省去
-    # 人工 compute_dataset_stats → paste 步骤。详见 scripts/tools/compute_dataset_stats.py
-    # 的 auto_inject_dataset_stats。必须在 SACPolicy(config=cfg.policy) 之前调。
+    # 人工 compute_dataset_stats → paste 步骤。详见 frrl.utils.dataset_stats.
+    # auto_inject_dataset_stats。必须在 SACPolicy(config=cfg.policy) 之前调。
     if not args.no_auto_stats:
         from frrl.utils.dataset_stats import auto_inject_dataset_stats
         auto_inject_dataset_stats(cfg, force=True)  # BC pretrain 总有 demos，force=True
