@@ -616,6 +616,15 @@ def main():
                     print(f"\n[recover] {prev_mode.name}→TASK：force home + 释放物块（BC 训练分布对齐）")
                     homing_ok = True
                     if not args.dry_run:
+                        # ⚠️ 顺序很重要：BC SUCCESS 后操作员习惯立刻伸手放物块进 workspace，
+                        # 但 force-home 是 5s blocking 三段插值，hand 进 0.4m 立刻 abort。
+                        # 之前把 home 放最前 → home 总在 abort、BACKUP 反复接管，看着像卡顿。
+                        # 现在先 wait_operator（让操作员放完物块、收手离开工作区），再 home。
+                        if args.wait_operator:
+                            wait_for_operator_with_camera_drain(
+                                hand_detector, cam_mgr,
+                                "    [pause] 把物块放回任意位置 + 收手离开工作区，按 Enter 开始 home... ",
+                            )
                         # bias=ON：clear bias + anchor 再 home（unbiased frame 复位）。
                         # Recovery 沿用同一 episode 的 bias（resample=False），保证
                         # episode 内 bias 恒定，曲线平行。
@@ -627,12 +636,9 @@ def main():
                         )
                         if homing_ok:
                             gripper_cmdr.force_open()
-                            if args.wait_operator:
-                                wait_for_operator_with_camera_drain(
-                                    hand_detector, cam_mgr,
-                                    "    [pause] 把物块放回任意位置，按 Enter 让 BC 继续... ",
-                                )
-                            else:
+                            # 不再二次 wait（已在 home 前 wait）；非 wait_operator 模式
+                            # sleep 1s 给 controller settle
+                            if not args.wait_operator:
                                 drain_sleep(1.0, hand_detector, cam_mgr)
                             if bias_ctrl is not None:
                                 bias_ctrl.finish_transition(
@@ -760,6 +766,14 @@ def main():
                     if done_reason and done_reason.startswith("TIMEOUT"):
                         gripper_cmdr.force_open()
                         drain_sleep(0.4, hand_detector, cam_mgr)
+                    # ⚠️ 同 recovery 路径：先 wait_operator（让操作员放物块 + 收手），
+                    # 再 home。否则 home 总因为操作员手在 workspace 而 abort + thrashing。
+                    if args.wait_operator:
+                        wait_for_operator_with_camera_drain(
+                            hand_detector, cam_mgr,
+                            "    [pause] 把物块放回任意位置 + 收手离开工作区，"
+                            "按 Enter 开始下一集 (Ctrl+C 退出)... ",
+                        )
                     # 新集边界：clear bias + anchor → home → 采新 bias
                     if bias_ctrl is not None:
                         bias_ctrl.begin_transition()
@@ -769,12 +783,8 @@ def main():
                     )
                     if homing_ok:
                         gripper_cmdr.force_open()
-                        if args.wait_operator:
-                            wait_for_operator_with_camera_drain(
-                                hand_detector, cam_mgr,
-                                "    [pause] 把物块放回任意位置，按 Enter 开始下一集 (Ctrl+C 退出)... ",
-                            )
-                        else:
+                        # wait 已在 home 前完成，这里只 settle
+                        if not args.wait_operator:
                             drain_sleep(1.5, hand_detector, cam_mgr)
                         if bias_ctrl is not None:
                             bias_ctrl.finish_transition(
