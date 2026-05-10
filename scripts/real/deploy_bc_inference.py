@@ -105,13 +105,18 @@ def main():
                         format="%(asctime)s %(levelname)s %(message)s")
 
     # ---------- Load policy ----------
-    logging.info(f"[deploy] loading SACPolicy from {args.ckpt}")
+    # ⚠️ SACPolicy.from_pretrained 首次 load DINOv3 ViT + safetensors → GPU 约
+    # 80 秒，期间无 log 输出。打个进度提示，避免误以为卡住按 Ctrl+C。
+    import time as _t
+    _t0 = _t.time()
+    logging.info(f"[deploy] loading SACPolicy from {args.ckpt} (~80s 首次加载，请耐心等)")
     cfg_p = PreTrainedConfig.from_pretrained(args.ckpt)
     cfg_p.pretrained_path = args.ckpt
     cfg_p.device = args.device
     policy = SACPolicy.from_pretrained(args.ckpt, config=cfg_p)
     policy.eval().to(args.device)
-    logging.info(f"[deploy] num_discrete_actions={policy.config.num_discrete_actions}, "
+    logging.info(f"[deploy] policy loaded in {_t.time()-_t0:.1f}s. "
+                 f"num_discrete_actions={policy.config.num_discrete_actions}, "
                  f"continuous_action_dim={policy.actor.action_dim}")
 
     # ---------- Build env via task factory ----------

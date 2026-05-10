@@ -322,21 +322,26 @@ def main():
         raise SystemExit(f"[ERROR] BC ckpt not found: {args.bc_ckpt}")
 
     # ---------- Load both policies ----------
-    print(f"[..] Loading BC policy from {args.bc_ckpt}")
+    # ⚠️ SACPolicy.from_pretrained 首次约 80s（DINOv3 ViT + safetensors → GPU），
+    # 期间无 log 输出。BC + backup 两个加起来约 2-3 分钟，请耐心等。
+    import time as _t
+    _t_load = _t.time()
+    print(f"[..] Loading BC policy from {args.bc_ckpt} (~80s 首次加载...)")
     bc_cfg = PreTrainedConfig.from_pretrained(args.bc_ckpt)
     bc_cfg.pretrained_path = args.bc_ckpt
     bc_cfg.device = device
     bc_policy = SACPolicy.from_pretrained(args.bc_ckpt, config=bc_cfg)
     bc_policy.eval().to(device)
-    print("[OK] BC policy loaded")
+    print(f"[OK] BC policy loaded in {_t.time()-_t_load:.1f}s")
 
-    print(f"[..] Loading backup policy from {backup_ckpt}")
+    _t_load = _t.time()
+    print(f"[..] Loading backup policy from {backup_ckpt} (~80s 首次加载...)")
     backup_cfg = PreTrainedConfig.from_pretrained(backup_ckpt)
     backup_cfg.pretrained_path = backup_ckpt
     backup_cfg.device = device
     backup_policy = SACPolicy.from_pretrained(backup_ckpt, config=backup_cfg)
     backup_policy.eval().to(device)
-    print("[OK] Backup policy loaded")
+    print(f"[OK] Backup policy loaded in {_t.time()-_t_load:.1f}s")
 
     # ---------- Sensors ----------
     T_cam_to_robot = np.load(args.calibration)
